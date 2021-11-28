@@ -1,3 +1,4 @@
 .dfx/
 target/
 Cargo.lock
+.idea/
