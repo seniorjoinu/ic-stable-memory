@@ -17,8 +17,6 @@ pub struct StableMemoryAllocator<T: MemContext> {
     pub offset: Word,
 }
 
-// TODO: remove flush - replace with specialized functions
-
 impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     const SIZE: usize = (MAGIC.len()
         + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
@@ -63,221 +61,94 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         mem_block.set_allocated(true, context);
 
-        // TODO: remove
-        self.flush(context)?;
-
         Ok(mem_block)
     }
 
-    fn grow_and_create_new_free_block(
-        &mut self,
-        size: usize,
-        context: &mut T,
-    ) -> Result<MemBlock<T>, SMAError> {
-        let offset = context.size_pages() * PAGE_SIZE_BYTES as Word;
-
-        let mut size_need_pages = size / PAGE_SIZE_BYTES;
-        if size % PAGE_SIZE_BYTES > 0 {
-            size_need_pages += 1;
-        }
-
-        context
-            .grow(size_need_pages as u64)
-            .map_err(|_| SMAError::OutOfMemory)?;
-
-        let mem_block = MemBlock::write_free_at(
-            offset,
-            size_need_pages * PAGE_SIZE_BYTES - (MEM_BLOCK_OVERHEAD_BYTES * 2),
-            EMPTY_WORD,
-            EMPTY_WORD,
-            context,
-        );
-
-        Ok(mem_block)
-    }
-
-    fn remove_block_from_free_list(
-        &mut self,
-        mem_block: &MemBlock<T>,
-        mem_block_seg_class_idx: usize,
-        context: &mut T,
-    ) {
-        let prev_offset = mem_block.get_prev_free();
-        let next_offset = mem_block.get_next_free();
-
-        if prev_offset != EMPTY_WORD && next_offset != EMPTY_WORD {
-            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context);
-            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context);
-
-            prev.set_next_free(next_offset, context);
-            next.set_prev_free(prev_offset, context);
-        } else if prev_offset != EMPTY_WORD {
-            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context);
-            prev.set_next_free(next_offset, context);
-        } else if next_offset != EMPTY_WORD {
-            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context);
-            next.set_prev_free(prev_offset, context);
-        } else {
-            // appropriate is the only one in the class - delete the whole class
-            // TODO: add persistence
-            self.segregation_size_classes[mem_block_seg_class_idx] = EMPTY_WORD;
-        }
-    }
-
-    fn add_block_to_free_list(&mut self, new_mem_block: &mut MemBlock<T>, context: &mut T) {
-        let seg_class_idx = self.find_seg_class_idx(new_mem_block.size);
-
-        // if there are no blocks in this class - just insert
-        if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
-            // TODO: add persistence
-            self.segregation_size_classes[seg_class_idx] = new_mem_block.offset;
-
-            return;
-        }
-
-        // if there are some blocks - find a place for it, such as addr(prev) < addr(new) < addr(next)
-        let mut cur_mem_block = MemBlock::read_at(
-            self.segregation_size_classes[seg_class_idx],
-            MemBlockSide::Start,
-            context,
-        );
-
-        // TODO: remove
-        if cur_mem_block.get_prev_free() != EMPTY_WORD {
+    pub fn deallocate(&mut self, offset: Word, context: &mut T) {
+        let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
+            .unwrap_or_else(|| unreachable!());
+        if !mem_block.allocated {
             unreachable!();
         }
 
-        // if the inserting block address is lesser than the first address in the free list - insert before
-        if new_mem_block.offset < cur_mem_block.offset {
-            self.segregation_size_classes[seg_class_idx] = new_mem_block.offset;
-            cur_mem_block.set_prev_free(new_mem_block.offset, context);
-            new_mem_block.set_next_free(cur_mem_block.offset, context);
+        mem_block.set_allocated(false, context);
 
-            return;
-        }
-
-        // if there is only one mem block in the free list - insert after
-        if cur_mem_block.get_next_free() == EMPTY_WORD {
-            cur_mem_block.set_next_free(new_mem_block.offset, context);
-            new_mem_block.set_prev_free(cur_mem_block.offset, context);
-
-            return;
-        }
-
-        // otherwise - try to find a place in between or at the end of the free list
-        let mut next_mem_block =
-            MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context);
-
-        loop {
-            if new_mem_block.offset > cur_mem_block.offset
-                && new_mem_block.offset < next_mem_block.offset
-            {
-                cur_mem_block.set_next_free(new_mem_block.offset, context);
-                new_mem_block.set_prev_free(cur_mem_block.offset, context);
-
-                next_mem_block.set_prev_free(new_mem_block.offset, context);
-                new_mem_block.set_next_free(next_mem_block.offset, context);
-
-                return;
+        // try to merge with physically prev block
+        if let Some(prev_mem_block) = MemBlock::read_at(offset, MemBlockSide::End, context) {
+            if !prev_mem_block.allocated {
+                self.remove_block_from_free_list(
+                    &prev_mem_block,
+                    self.find_seg_class_idx(prev_mem_block.size),
+                    context,
+                );
+                mem_block = mem_block.merge_with(prev_mem_block, context);
             }
-
-            if next_mem_block.get_next_free() == EMPTY_WORD {
-                next_mem_block.set_next_free(new_mem_block.offset, context);
-                new_mem_block.set_prev_free(next_mem_block.offset, context);
-
-                return;
-            }
-
-            cur_mem_block = next_mem_block;
-            next_mem_block =
-                MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context);
         }
+
+        // try to merge with physically next block
+        if let Some(next_mem_block) = MemBlock::read_at(
+            offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
+            MemBlockSide::Start,
+            context,
+        ) {
+            if !next_mem_block.allocated {
+                self.remove_block_from_free_list(
+                    &next_mem_block,
+                    self.find_seg_class_idx(next_mem_block.size),
+                    context,
+                );
+                mem_block = mem_block.merge_with(next_mem_block, context);
+            }
+        }
+
+        self.add_block_to_free_list(&mut mem_block, context);
     }
 
-    // find a free block that has a size bigger than the provided size, but optimal (not too big)
-    // if there is none - return None
-    fn find_appropriate_free_mem_block(
-        &self,
-        size: usize,
+    pub fn reallocate(
+        &mut self,
+        offset: Word,
+        wanted_size: usize,
         context: &mut T,
-    ) -> Option<(MemBlock<T>, usize)> {
-        let initial_seg_class_idx = self.find_seg_class_idx(size);
-        let mut result: Option<(MemBlock<T>, usize)> = None;
+    ) -> Result<MemBlock<T>, SMAError> {
+        let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
+            .unwrap_or_else(|| unreachable!());
 
-        // for each segregation class, starting from the most appropriate (closer)
-        for seg_class_idx in initial_seg_class_idx..MAX_SEGREGATION_CLASSES {
-            // skip if there is no free blocks at all
-            if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
-                continue;
-            }
-
-            // try to find at least one appropriate (size is bigger) free block
-            let mut appropriate_found = false;
-            let mut appropriate_free_mem_block = MemBlock::read_at(
-                self.segregation_size_classes[seg_class_idx],
-                MemBlockSide::Start,
-                context,
-            );
-            let mut next_free = appropriate_free_mem_block.get_next_free();
-
-            loop {
-                if appropriate_free_mem_block.size < size {
-                    if next_free == EMPTY_WORD {
-                        break;
-                    }
-
-                    appropriate_free_mem_block =
-                        MemBlock::read_at(next_free, MemBlockSide::Start, context);
-                    next_free = appropriate_free_mem_block.get_next_free();
-                } else {
-                    appropriate_found = true;
-                    break;
-                }
-            }
-
-            if !appropriate_found {
-                continue;
-            }
-
-            // then try to find a block that is closer to the provided size in the remainder of blocks of this segregation class
-            loop {
-                if next_free == EMPTY_WORD {
-                    break;
-                }
-
-                let mut next_free_mem_block =
-                    MemBlock::read_at(next_free, MemBlockSide::Start, context);
-
-                if next_free_mem_block.size < size {
-                    next_free = next_free_mem_block.get_next_free();
-
-                    if next_free == EMPTY_WORD {
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if appropriate_free_mem_block.size - size > next_free_mem_block.size - size {
-                    appropriate_free_mem_block = next_free_mem_block.clone();
-                }
-
-                next_free = next_free_mem_block.get_next_free();
-
-                if next_free == EMPTY_WORD {
-                    break;
-                }
-            }
-
-            // return the one closest to provided size
-            result = Some((appropriate_free_mem_block, seg_class_idx));
+        if mem_block.size >= wanted_size {
+            return Ok(mem_block);
         }
 
-        result
+        mem_block.set_allocated(false, context);
+
+        if let Some(next_mem_block) = MemBlock::read_at(
+            offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
+            MemBlockSide::Start,
+            context,
+        ) {
+            if mem_block.size + next_mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2 >= wanted_size
+                && !next_mem_block.allocated
+            {
+                self.remove_block_from_free_list(
+                    &next_mem_block,
+                    self.find_seg_class_idx(next_mem_block.size),
+                    context,
+                );
+                mem_block = mem_block.merge_with(next_mem_block, context);
+
+                mem_block.set_allocated(true, context);
+
+                return Ok(mem_block);
+            }
+        }
+
+        self.add_block_to_free_list(&mut mem_block, context);
+
+        self.allocate(wanted_size, context)
     }
 
     pub fn init(offset: Word, context: &mut T) -> Result<Self, SMAError> {
         Self::init_grow_if_need(offset, context)?;
+
+        context.write(offset, &MAGIC);
 
         let mut this = StableMemoryAllocator {
             segregation_size_classes: [SegregationClassPtr::default(); MAX_SEGREGATION_CLASSES],
@@ -287,9 +158,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             offset,
         };
 
-        let initial_mem_block =
-            this.init_first_free_mem_block(offset + Self::SIZE as Word, context)?;
-        this.flush(context)?;
+        this.init_first_free_mem_block(offset + Self::SIZE as Word, context)?;
 
         Ok(this)
     }
@@ -350,6 +219,221 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         })
     }
 
+    fn grow_and_create_new_free_block(
+        &mut self,
+        size: usize,
+        context: &mut T,
+    ) -> Result<MemBlock<T>, SMAError> {
+        let offset = context.size_pages() * PAGE_SIZE_BYTES as Word;
+
+        let mut size_need_pages = size / PAGE_SIZE_BYTES;
+        if size % PAGE_SIZE_BYTES > 0 {
+            size_need_pages += 1;
+        }
+
+        context
+            .grow(size_need_pages as u64)
+            .map_err(|_| SMAError::OutOfMemory)?;
+
+        let mem_block = MemBlock::write_free_at(
+            offset,
+            size_need_pages * PAGE_SIZE_BYTES - (MEM_BLOCK_OVERHEAD_BYTES * 2),
+            EMPTY_WORD,
+            EMPTY_WORD,
+            context,
+        );
+
+        Ok(mem_block)
+    }
+
+    fn remove_block_from_free_list(
+        &mut self,
+        mem_block: &MemBlock<T>,
+        mem_block_seg_class_idx: usize,
+        context: &mut T,
+    ) {
+        let prev_offset = mem_block.get_prev_free();
+        let next_offset = mem_block.get_next_free();
+
+        if prev_offset != EMPTY_WORD && next_offset != EMPTY_WORD {
+            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
+                .unwrap_or_else(|| unreachable!());
+            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
+                .unwrap_or_else(|| unreachable!());
+
+            prev.set_next_free(next_offset, context);
+            next.set_prev_free(prev_offset, context);
+        } else if prev_offset != EMPTY_WORD {
+            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
+                .unwrap_or_else(|| unreachable!());
+            prev.set_next_free(next_offset, context);
+        } else if next_offset != EMPTY_WORD {
+            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
+                .unwrap_or_else(|| unreachable!());
+            next.set_prev_free(prev_offset, context);
+        } else {
+            // appropriate is the only one in the class - delete the whole class
+            self.set_segregation_class(mem_block_seg_class_idx, EMPTY_WORD, context);
+        }
+    }
+
+    fn add_block_to_free_list(&mut self, new_mem_block: &mut MemBlock<T>, context: &mut T) {
+        let seg_class_idx = self.find_seg_class_idx(new_mem_block.size);
+
+        // if there are no blocks in this class - just insert
+        if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
+            self.set_segregation_class(seg_class_idx, new_mem_block.offset, context);
+
+            return;
+        }
+
+        // if there are some blocks - find a place for it, such as addr(prev) < addr(new) < addr(next)
+        let mut cur_mem_block = MemBlock::read_at(
+            self.segregation_size_classes[seg_class_idx],
+            MemBlockSide::Start,
+            context,
+        )
+        .unwrap_or_else(|| unreachable!());
+
+        // TODO: remove
+        if cur_mem_block.get_prev_free() != EMPTY_WORD {
+            unreachable!();
+        }
+
+        // if the inserting block address is lesser than the first address in the free list - insert before
+        if new_mem_block.offset < cur_mem_block.offset {
+            self.set_segregation_class(seg_class_idx, new_mem_block.offset, context);
+            cur_mem_block.set_prev_free(new_mem_block.offset, context);
+            new_mem_block.set_next_free(cur_mem_block.offset, context);
+
+            return;
+        }
+
+        // if there is only one mem block in the free list - insert after
+        if cur_mem_block.get_next_free() == EMPTY_WORD {
+            cur_mem_block.set_next_free(new_mem_block.offset, context);
+            new_mem_block.set_prev_free(cur_mem_block.offset, context);
+
+            return;
+        }
+
+        // otherwise - try to find a place in between or at the end of the free list
+        let mut next_mem_block =
+            MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
+                .unwrap_or_else(|| unreachable!());
+
+        loop {
+            if new_mem_block.offset > cur_mem_block.offset
+                && new_mem_block.offset < next_mem_block.offset
+            {
+                cur_mem_block.set_next_free(new_mem_block.offset, context);
+                new_mem_block.set_prev_free(cur_mem_block.offset, context);
+
+                next_mem_block.set_prev_free(new_mem_block.offset, context);
+                new_mem_block.set_next_free(next_mem_block.offset, context);
+
+                return;
+            }
+
+            if next_mem_block.get_next_free() == EMPTY_WORD {
+                next_mem_block.set_next_free(new_mem_block.offset, context);
+                new_mem_block.set_prev_free(next_mem_block.offset, context);
+
+                return;
+            }
+
+            cur_mem_block = next_mem_block;
+            next_mem_block =
+                MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
+                    .unwrap_or_else(|| unreachable!());
+        }
+    }
+
+    // find a free block that has a size bigger than the provided size, but optimal (not too big)
+    // if there is none - return None
+    fn find_appropriate_free_mem_block(
+        &self,
+        size: usize,
+        context: &mut T,
+    ) -> Option<(MemBlock<T>, usize)> {
+        let initial_seg_class_idx = self.find_seg_class_idx(size);
+        let mut result: Option<(MemBlock<T>, usize)> = None;
+
+        // for each segregation class, starting from the most appropriate (closer)
+        for seg_class_idx in initial_seg_class_idx..MAX_SEGREGATION_CLASSES {
+            // skip if there is no free blocks at all
+            if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
+                continue;
+            }
+
+            // try to find at least one appropriate (size is bigger) free block
+            let mut appropriate_found = false;
+            let mut appropriate_free_mem_block = MemBlock::read_at(
+                self.segregation_size_classes[seg_class_idx],
+                MemBlockSide::Start,
+                context,
+            )
+            .unwrap_or_else(|| unreachable!());
+            let mut next_free = appropriate_free_mem_block.get_next_free();
+
+            loop {
+                if appropriate_free_mem_block.size < size {
+                    if next_free == EMPTY_WORD {
+                        break;
+                    }
+
+                    appropriate_free_mem_block =
+                        MemBlock::read_at(next_free, MemBlockSide::Start, context)
+                            .unwrap_or_else(|| unreachable!());
+                    next_free = appropriate_free_mem_block.get_next_free();
+                } else {
+                    appropriate_found = true;
+                    break;
+                }
+            }
+
+            if !appropriate_found {
+                continue;
+            }
+
+            // then try to find a block that is closer to the provided size in the remainder of blocks of this segregation class
+            loop {
+                if next_free == EMPTY_WORD {
+                    break;
+                }
+
+                let mut next_free_mem_block =
+                    MemBlock::read_at(next_free, MemBlockSide::Start, context)
+                        .unwrap_or_else(|| unreachable!());
+
+                if next_free_mem_block.size < size {
+                    next_free = next_free_mem_block.get_next_free();
+
+                    if next_free == EMPTY_WORD {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if appropriate_free_mem_block.size - size > next_free_mem_block.size - size {
+                    appropriate_free_mem_block = next_free_mem_block.clone();
+                }
+
+                next_free = next_free_mem_block.get_next_free();
+
+                if next_free == EMPTY_WORD {
+                    break;
+                }
+            }
+
+            // return the one closest to provided size
+            result = Some((appropriate_free_mem_block, seg_class_idx));
+        }
+
+        result
+    }
+
     // TODO: rewrite using low-level functions
     fn init_first_free_mem_block(
         &mut self,
@@ -368,9 +452,9 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
 
         let seg_idx = self.find_seg_class_idx(mem_block_size_bytes);
-
         let mem_block = MemBlock::write_free_at(offset, mem_block_size_bytes, 0, 0, context);
-        self.segregation_size_classes[seg_idx] = offset;
+
+        self.set_segregation_class(seg_idx, offset, context);
 
         Ok(mem_block)
     }
@@ -385,33 +469,46 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
     }
 
-    fn flush(&mut self, context: &mut T) -> Result<(), SMAError> {
-        let mut payload = vec![];
-
-        payload.extend(MAGIC);
-
-        for i in self.segregation_size_classes {
-            payload.extend(i.to_le_bytes());
+    fn set_segregation_class(
+        &mut self,
+        seg_class_idx: usize,
+        ptr: SegregationClassPtr,
+        context: &mut T,
+    ) {
+        if seg_class_idx >= MAX_SEGREGATION_CLASSES {
+            unreachable!();
         }
 
-        for i in self.collection_declarations {
-            payload.extend(i.to_le_bytes());
-        }
+        self.segregation_size_classes[seg_class_idx] = ptr;
+        let buf = ptr.to_le_bytes();
 
-        context.write(self.offset, &payload);
-
-        Ok(())
+        context.write(
+            self.offset + (MAGIC.len() + seg_class_idx * size_of::<SegregationClassPtr>()) as Word,
+            &buf,
+        );
     }
 
-    fn is_magic(offset: Word, context: &T) -> Option<bool> {
-        if !context.offset_exists(offset) {
-            return None;
+    fn set_collection_declaration(
+        &mut self,
+        declaration_id: usize,
+        ptr: CollectionDeclarationPtr,
+        context: &mut T,
+    ) {
+        if declaration_id >= MAX_COLLECTION_DECLARATIONS {
+            unreachable!();
         }
 
-        let mut buf = [0u8; 4];
-        context.read(offset, &mut buf);
+        self.collection_declarations[declaration_id] = ptr;
+        let buf = ptr.to_le_bytes();
 
-        Some(buf == MAGIC)
+        context.write(
+            self.offset
+                + (MAGIC.len()
+                    + MAX_SEGREGATION_CLASSES
+                    + declaration_id * size_of::<CollectionDeclarationPtr>())
+                    as Word,
+            &buf,
+        );
     }
 
     fn init_grow_if_need(offset: Word, context: &mut T) -> Result<(), SMAError> {
