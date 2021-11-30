@@ -59,53 +59,6 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         self.add_block_to_free_list(&mut mem_block, context);
     }
 
-    pub fn try_merge(
-        &mut self,
-        mut mem_block: MemBlock<T>,
-        side: MemBlockSide,
-        context: &mut T,
-    ) -> MemBlock<T> {
-        match side {
-            MemBlockSide::Start => {
-                if let Some(mut next_mem_block) = MemBlock::read_at(
-                    mem_block.offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
-                    MemBlockSide::Start,
-                    context,
-                ) {
-                    if !next_mem_block.allocated {
-                        next_mem_block =
-                            self.try_merge(next_mem_block, MemBlockSide::Start, context);
-
-                        self.remove_block_from_free_list(
-                            &next_mem_block,
-                            self.find_seg_class_idx(next_mem_block.size),
-                            context,
-                        );
-                        mem_block = mem_block.merge_with(next_mem_block, context);
-                    }
-                }
-            }
-            MemBlockSide::End => {
-                if let Some(mut prev_mem_block) =
-                    MemBlock::read_at(mem_block.offset, MemBlockSide::End, context)
-                {
-                    if !prev_mem_block.allocated {
-                        prev_mem_block = self.try_merge(prev_mem_block, MemBlockSide::End, context);
-
-                        self.remove_block_from_free_list(
-                            &prev_mem_block,
-                            self.find_seg_class_idx(prev_mem_block.size),
-                            context,
-                        );
-                        mem_block = mem_block.merge_with(prev_mem_block, context);
-                    }
-                }
-            }
-        };
-
-        mem_block
-    }
-
     pub fn reallocate(
         &mut self,
         offset: Word,
@@ -225,6 +178,53 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             marker: PhantomData,
             offset,
         })
+    }
+
+    fn try_merge(
+        &mut self,
+        mut mem_block: MemBlock<T>,
+        side: MemBlockSide,
+        context: &mut T,
+    ) -> MemBlock<T> {
+        match side {
+            MemBlockSide::Start => {
+                if let Some(mut next_mem_block) = MemBlock::read_at(
+                    mem_block.offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
+                    MemBlockSide::Start,
+                    context,
+                ) {
+                    if !next_mem_block.allocated {
+                        next_mem_block =
+                            self.try_merge(next_mem_block, MemBlockSide::Start, context);
+
+                        self.remove_block_from_free_list(
+                            &next_mem_block,
+                            self.find_seg_class_idx(next_mem_block.size),
+                            context,
+                        );
+                        mem_block = mem_block.merge_with(next_mem_block, context);
+                    }
+                }
+            }
+            MemBlockSide::End => {
+                if let Some(mut prev_mem_block) =
+                    MemBlock::read_at(mem_block.offset, MemBlockSide::End, context)
+                {
+                    if !prev_mem_block.allocated {
+                        prev_mem_block = self.try_merge(prev_mem_block, MemBlockSide::End, context);
+
+                        self.remove_block_from_free_list(
+                            &prev_mem_block,
+                            self.find_seg_class_idx(prev_mem_block.size),
+                            context,
+                        );
+                        mem_block = mem_block.merge_with(prev_mem_block, context);
+                    }
+                }
+            }
+        };
+
+        mem_block
     }
 
     fn grow_and_create_new_free_block(
@@ -502,14 +502,14 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         );
     }
 
-    fn set_collection_declaration(
+    pub fn set_collection_declaration(
         &mut self,
         declaration_id: usize,
         ptr: CollectionDeclarationPtr,
         context: &mut T,
     ) {
         if declaration_id >= MAX_COLLECTION_DECLARATIONS {
-            unreachable!();
+            panic!("Too many declarations");
         }
 
         self.collection_declarations[declaration_id] = ptr;

@@ -20,6 +20,7 @@ pub const MAGIC: [u8; 4] = [1, 3, 3, 7];
 pub const MAX_COLLECTION_DECLARATIONS: usize = 224;
 pub const MAX_SEGREGATION_CLASSES: usize = 32;
 
+#[derive(Debug)]
 pub enum SMAError {
     AlreadyInitialized,
     OutOfMemory,
