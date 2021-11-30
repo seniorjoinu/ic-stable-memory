@@ -56,13 +56,14 @@ impl MemContext for TestMemContext {
 
     fn read(&self, offset: Word, buf: &mut [u8]) {
         for i in offset..offset + buf.len() as Word {
-            buf[(i - offset) as usize] = *self.data.get(i as usize).unwrap()
+            buf[(i - offset) as usize] = self.data[i as usize]
         }
     }
 
     fn write(&mut self, offset: Word, buf: &[u8]) {
-        for i in offset..offset + buf.len() as Word {
-            std::mem::replace(&mut self.data[i as usize], buf[(i - offset) as usize]);
-        }
+        self.data.splice(
+            (offset as usize)..(offset as usize + buf.len()),
+            Vec::from(buf),
+        );
     }
 }

@@ -24,4 +24,5 @@ pub enum SMAError {
     AlreadyInitialized,
     OutOfMemory,
     InvalidMagicSequence,
+    NoMemBlockAtAddress,
 }

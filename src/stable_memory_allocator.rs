@@ -22,86 +22,88 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
         + MAX_COLLECTION_DECLARATIONS * size_of::<CollectionDeclarationPtr>());
 
-    pub fn allocate(&mut self, size: usize, context: &mut T) -> Result<MemBlock<T>, SMAError> {
+    pub fn allocate(&mut self, size: usize, context: &mut T) -> Result<Word, SMAError> {
         let mut mem_block = if let Some((appropriate_mem_block, seg_class_idx)) =
             self.find_appropriate_free_mem_block(size, context)
         {
-            if appropriate_mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES {
-                // split the block in two
-                let (old_mem_block, mut new_free_block) =
-                    appropriate_mem_block.split_mem_block(size, context);
+            self.remove_block_from_free_list(&appropriate_mem_block, seg_class_idx, context);
 
-                // then remove the old one from free list and add a new one to it
-                self.remove_block_from_free_list(&old_mem_block, seg_class_idx, context);
-                self.add_block_to_free_list(&mut new_free_block, context);
-
-                old_mem_block
-            } else {
-                // remove the whole block from free list
-                self.remove_block_from_free_list(&appropriate_mem_block, seg_class_idx, context);
-                appropriate_mem_block
-            }
+            self.split_if_needed(appropriate_mem_block, size, context)
         } else {
             // this block is not added to the free list yet, so we won't remove it from there
             // can return OOM error
-            let big_mem_block = self.grow_and_create_new_free_block(size, context)?;
+            let big_mem_block =
+                self.grow_and_create_new_free_block(size + MEM_BLOCK_OVERHEAD_BYTES * 2, context)?;
 
-            // check if the block is too big and split
-            if big_mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES {
-                let (old_mem_block, mut new_free_block) =
-                    big_mem_block.split_mem_block(size, context);
-
-                self.add_block_to_free_list(&mut new_free_block, context);
-
-                old_mem_block
-            } else {
-                big_mem_block
-            }
+            self.split_if_needed(big_mem_block, size, context)
         };
 
         mem_block.set_allocated(true, context);
 
-        Ok(mem_block)
+        Ok(mem_block.offset)
     }
 
     pub fn deallocate(&mut self, offset: Word, context: &mut T) {
         let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
+
         if !mem_block.allocated {
             unreachable!();
         }
 
         mem_block.set_allocated(false, context);
 
-        // try to merge with physically prev block
-        if let Some(prev_mem_block) = MemBlock::read_at(offset, MemBlockSide::End, context) {
-            if !prev_mem_block.allocated {
-                self.remove_block_from_free_list(
-                    &prev_mem_block,
-                    self.find_seg_class_idx(prev_mem_block.size),
-                    context,
-                );
-                mem_block = mem_block.merge_with(prev_mem_block, context);
-            }
-        }
-
-        // try to merge with physically next block
-        if let Some(next_mem_block) = MemBlock::read_at(
-            offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
-            MemBlockSide::Start,
-            context,
-        ) {
-            if !next_mem_block.allocated {
-                self.remove_block_from_free_list(
-                    &next_mem_block,
-                    self.find_seg_class_idx(next_mem_block.size),
-                    context,
-                );
-                mem_block = mem_block.merge_with(next_mem_block, context);
-            }
-        }
+        mem_block = self.try_merge(mem_block, MemBlockSide::End, context);
+        mem_block = self.try_merge(mem_block, MemBlockSide::Start, context);
 
         self.add_block_to_free_list(&mut mem_block, context);
+    }
+
+    pub fn try_merge(
+        &mut self,
+        mut mem_block: MemBlock<T>,
+        side: MemBlockSide,
+        context: &mut T,
+    ) -> MemBlock<T> {
+        match side {
+            MemBlockSide::Start => {
+                if let Some(mut next_mem_block) = MemBlock::read_at(
+                    mem_block.offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
+                    MemBlockSide::Start,
+                    context,
+                ) {
+                    if !next_mem_block.allocated {
+                        next_mem_block =
+                            self.try_merge(next_mem_block, MemBlockSide::Start, context);
+
+                        self.remove_block_from_free_list(
+                            &next_mem_block,
+                            self.find_seg_class_idx(next_mem_block.size),
+                            context,
+                        );
+                        mem_block = mem_block.merge_with(next_mem_block, context);
+                    }
+                }
+            }
+            MemBlockSide::End => {
+                if let Some(mut prev_mem_block) =
+                    MemBlock::read_at(mem_block.offset, MemBlockSide::End, context)
+                {
+                    if !prev_mem_block.allocated {
+                        prev_mem_block = self.try_merge(prev_mem_block, MemBlockSide::End, context);
+
+                        self.remove_block_from_free_list(
+                            &prev_mem_block,
+                            self.find_seg_class_idx(prev_mem_block.size),
+                            context,
+                        );
+                        mem_block = mem_block.merge_with(prev_mem_block, context);
+                    }
+                }
+            }
+        };
+
+        mem_block
     }
 
     pub fn reallocate(
@@ -109,40 +111,46 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         offset: Word,
         wanted_size: usize,
         context: &mut T,
-    ) -> Result<MemBlock<T>, SMAError> {
+    ) -> Result<Word, SMAError> {
         let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
 
         if mem_block.size >= wanted_size {
-            return Ok(mem_block);
+            return Ok(mem_block.offset);
         }
 
         mem_block.set_allocated(false, context);
 
-        if let Some(next_mem_block) = MemBlock::read_at(
-            offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
-            MemBlockSide::Start,
-            context,
-        ) {
-            if mem_block.size + next_mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2 >= wanted_size
-                && !next_mem_block.allocated
-            {
-                self.remove_block_from_free_list(
-                    &next_mem_block,
-                    self.find_seg_class_idx(next_mem_block.size),
-                    context,
-                );
-                mem_block = mem_block.merge_with(next_mem_block, context);
+        mem_block = self.try_merge(mem_block, MemBlockSide::Start, context);
 
-                mem_block.set_allocated(true, context);
+        if mem_block.size >= wanted_size {
+            mem_block = self.split_if_needed(mem_block, wanted_size, context);
+            mem_block.set_allocated(true, context);
 
-                return Ok(mem_block);
-            }
+            return Ok(mem_block.offset);
         }
 
+        // if reallocating didn't work - add to free list and allocate a new one
         self.add_block_to_free_list(&mut mem_block, context);
-
         self.allocate(wanted_size, context)
+    }
+
+    pub fn read_at(offset: Word, context: &T) -> Result<Vec<u8>, SMAError> {
+        MemBlock::read_at(offset, MemBlockSide::Start, context)
+            .ok_or(SMAError::NoMemBlockAtAddress)
+            .map(|it| it.read_content(context))
+    }
+
+    pub fn is_allocated_at(offset: Word, context: &T) -> Result<bool, SMAError> {
+        MemBlock::read_at(offset, MemBlockSide::Start, context)
+            .ok_or(SMAError::NoMemBlockAtAddress)
+            .map(|it| it.allocated)
+    }
+
+    pub fn write_at(offset: Word, buf: &[u8], context: &mut T) -> Result<bool, SMAError> {
+        MemBlock::read_at(offset, MemBlockSide::Start, context)
+            .ok_or(SMAError::NoMemBlockAtAddress)
+            .map(|it| it.write_content(buf, context))
     }
 
     pub fn init(offset: Word, context: &mut T) -> Result<Self, SMAError> {
@@ -258,6 +266,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         if prev_offset != EMPTY_WORD && next_offset != EMPTY_WORD {
             let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
+
             let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
@@ -266,11 +275,16 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         } else if prev_offset != EMPTY_WORD {
             let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
-            prev.set_next_free(next_offset, context);
+
+            prev.set_next_free(EMPTY_WORD, context);
         } else if next_offset != EMPTY_WORD {
             let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
-            next.set_prev_free(prev_offset, context);
+
+            next.set_prev_free(EMPTY_WORD, context);
+
+            // don't forget to make it the first of the class
+            self.set_segregation_class(mem_block_seg_class_idx, next.offset, context);
         } else {
             // appropriate is the only one in the class - delete the whole class
             self.set_segregation_class(mem_block_seg_class_idx, EMPTY_WORD, context);
@@ -532,6 +546,23 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         Ok(())
     }
+
+    fn split_if_needed(
+        &mut self,
+        mem_block: MemBlock<T>,
+        size: usize,
+        context: &mut T,
+    ) -> MemBlock<T> {
+        if mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES {
+            let (old_mem_block, mut new_free_block) = mem_block.split_mem_block(size, context);
+
+            self.add_block_to_free_list(&mut new_free_block, context);
+
+            old_mem_block
+        } else {
+            mem_block
+        }
+    }
 }
 
 #[cfg(test)]
@@ -550,7 +581,8 @@ mod tests {
             StableMemoryAllocator::<TestMemContext>::SIZE as Word,
             MemBlockSide::Start,
             &mut context,
-        );
+        )
+        .unwrap();
 
         assert!(
             initial_free_mem_block.size > 0,
@@ -592,5 +624,120 @@ mod tests {
             allocator.collection_declarations, allocator_re.collection_declarations,
             "Collection declarations mismatch"
         );
+    }
+
+    #[test]
+    fn allocation_works_fine() {
+        let mut context = TestMemContext::default();
+        let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
+
+        let addr = sma.allocate(1000, &mut context).ok().unwrap();
+
+        let c = [b'k', b'e', b'k'];
+
+        let res = StableMemoryAllocator::write_at(addr, &c, &mut context)
+            .ok()
+            .unwrap();
+        let content = StableMemoryAllocator::read_at(addr, &context).ok().unwrap();
+
+        assert!(res, "Write should pass");
+        assert_eq!(content.len(), 1000, "Invalid content length 1");
+        assert_eq!(content[0..3], c, "Invalid content");
+
+        let addr = sma.allocate(100 * 1024 * 1024, &mut context).ok().unwrap();
+        let content = StableMemoryAllocator::read_at(addr, &context).ok().unwrap();
+        assert_eq!(content.len(), 100 * 1024 * 1024, "Invalid length 2");
+    }
+
+    #[test]
+    fn deallocate_works_fine() {
+        let mut context = TestMemContext::default();
+        let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
+
+        let addr_1 = sma.allocate(1000, &mut context).ok().unwrap();
+        let addr_2 = sma.allocate(200, &mut context).ok().unwrap();
+        let addr_3 = sma.allocate(12345, &mut context).ok().unwrap();
+        let addr_4 = sma.allocate(65636, &mut context).ok().unwrap();
+        let addr_5 = sma.allocate(123, &mut context).ok().unwrap();
+
+        assert!(
+            addr_1 != addr_2 && addr_2 != addr_3 && addr_3 != addr_4 && addr_4 != addr_5,
+            "allocate worked wrong"
+        );
+        assert!(
+            StableMemoryAllocator::read_at(addr_1, &context).is_ok(),
+            "should be able to read first 1"
+        );
+        assert!(
+            StableMemoryAllocator::read_at(addr_2, &context).is_ok(),
+            "should be able to read second 1"
+        );
+        assert!(
+            StableMemoryAllocator::read_at(addr_3, &context).is_ok(),
+            "should be able to read third 1"
+        );
+        assert!(
+            StableMemoryAllocator::read_at(addr_4, &context).is_ok(),
+            "should be able to read forth 1"
+        );
+        assert!(
+            StableMemoryAllocator::read_at(addr_5, &context).is_ok(),
+            "should be able to read fifth 1"
+        );
+
+        sma.deallocate(addr_3, &mut context);
+        sma.deallocate(addr_5, &mut context);
+        sma.deallocate(addr_1, &mut context);
+        sma.deallocate(addr_2, &mut context);
+        sma.deallocate(addr_4, &mut context);
+
+        assert!(
+            !StableMemoryAllocator::is_allocated_at(addr_1, &context)
+                .ok()
+                .unwrap(),
+            "first shouldn't be allocated"
+        );
+        assert!(
+            StableMemoryAllocator::is_allocated_at(addr_2, &context).is_err(),
+            "second shouldn't exist"
+        );
+        assert!(
+            StableMemoryAllocator::is_allocated_at(addr_3, &context).is_err(),
+            "third shouldn't exist"
+        );
+        assert!(
+            StableMemoryAllocator::is_allocated_at(addr_4, &context).is_err(),
+            "forth shouldn't exist"
+        );
+        assert!(
+            StableMemoryAllocator::is_allocated_at(addr_5, &context).is_err(),
+            "fifth shouldn't exist"
+        );
+
+        assert_eq!(
+            sma.segregation_size_classes
+                .iter()
+                .filter(|&&it| it != EMPTY_WORD)
+                .count(),
+            1,
+            "there should be only one large deallocated mem block"
+        );
+    }
+
+    #[test]
+    fn reallocate_works_fine() {
+        let mut context = TestMemContext::default();
+        let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
+
+        let addr_1 = sma.allocate(1000, &mut context).ok().unwrap();
+        let addr_2 = sma.allocate(200, &mut context).ok().unwrap();
+        let addr_3 = sma.allocate(2000, &mut context).ok().unwrap();
+
+        sma.deallocate(addr_2, &mut context);
+        let addr_1_1 = sma.reallocate(addr_1, 1164, &mut context).ok().unwrap();
+        assert_eq!(addr_1, addr_1_1, "new address should be the same");
+
+        let addr_1_2 = sma.reallocate(addr_1, 2000, &mut context).ok().unwrap();
+        assert_ne!(addr_1, addr_1_2, "new address shouldn't be the same");
     }
 }
