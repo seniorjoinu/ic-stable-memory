@@ -1,4 +1,4 @@
-.dfx/
-target/
-Cargo.lock
+*/**/.dfx/
+*/**/target/
+*/**/Cargo.lock
 .idea/

@@ -12,4 +12,4 @@ keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "memory"]
 path = "src/lib.rs"
 
 [dependencies]
-ic-cdk = "0.3.2"
+ic-cdk = "0.3"

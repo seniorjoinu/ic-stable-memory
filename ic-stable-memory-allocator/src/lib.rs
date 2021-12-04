@@ -1,6 +1,5 @@
 use crate::mem_context::StableMemContext;
 use crate::stable_memory_allocator::StableMemoryAllocator;
-use crate::types::{SMAError, Word};
 use ic_cdk::trap;
 
 pub mod mem_block;
@@ -11,7 +10,7 @@ pub mod utils;
 
 pub static mut STABLE_MEMORY_ALLOCATOR: Option<StableMemoryAllocator<StableMemContext>> = None;
 
-pub fn init_allocator(offset: Word) {
+pub fn init_allocator(offset: u64) {
     let allocator =
         StableMemoryAllocator::init(offset, &mut StableMemContext).unwrap_or_else(|e| {
             trap(format!("Unable to init StableMemoryAllocator: {:?}", e).as_str())
@@ -20,7 +19,7 @@ pub fn init_allocator(offset: Word) {
     unsafe { STABLE_MEMORY_ALLOCATOR = Some(allocator) }
 }
 
-pub fn reinit_allocator(offset: Word) {
+pub fn reinit_allocator(offset: u64) {
     let allocator = StableMemoryAllocator::reinit(offset, &StableMemContext).unwrap_or_else(|e| {
         trap(format!("Unable to reinit StableMemoryAllocator: {:?}", e).as_str())
     });
@@ -35,28 +34,4 @@ pub fn get_allocator() -> &'static mut StableMemoryAllocator<StableMemContext> {
             None => trap("StableMemoryAllocator is not initialized"),
         }
     }
-}
-
-pub fn stable_alloc(size: usize) -> Result<Word, SMAError> {
-    let sma = get_allocator();
-
-    sma.allocate(size, &mut StableMemContext)
-}
-
-pub fn stable_dealloc(offset: Word) {
-    let sma = get_allocator();
-
-    sma.deallocate(offset, &mut StableMemContext);
-}
-
-pub fn stable_realloc(offset: Word, wanted_size: usize) -> Result<Word, SMAError> {
-    let sma = get_allocator();
-
-    sma.reallocate(offset, wanted_size, &mut StableMemContext)
-}
-
-pub fn set_stable_collection_declaration(declaration_id: usize, ptr: Word) {
-    let sma = get_allocator();
-
-    sma.set_collection_declaration(declaration_id, ptr, &mut StableMemContext);
 }

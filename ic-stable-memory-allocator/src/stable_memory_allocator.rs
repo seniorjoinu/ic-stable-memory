@@ -3,26 +3,26 @@ use crate::mem_block::{
 };
 use crate::mem_context::MemContext;
 use crate::types::{
-    CollectionDeclarationPtr, SMAError, SegregationClassPtr, Word, EMPTY_WORD, MAGIC,
-    MAX_COLLECTION_DECLARATIONS, MAX_SEGREGATION_CLASSES, PAGE_SIZE_BYTES,
+    SMAError, SegregationClassPtr, CUSTOM_DATA_SIZE_PTRS, EMPTY_PTR, MAGIC,
+    MAX_SEGREGATION_CLASSES, PAGE_SIZE_BYTES,
 };
-use crate::utils::fast_log2_32;
+use crate::utils::{fast_log2_32, fast_log2_64};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
 pub struct StableMemoryAllocator<T: MemContext> {
     pub segregation_size_classes: [SegregationClassPtr; MAX_SEGREGATION_CLASSES],
-    pub collection_declarations: [CollectionDeclarationPtr; MAX_COLLECTION_DECLARATIONS],
+    pub custom_data: [u64; CUSTOM_DATA_SIZE_PTRS],
     pub(crate) marker: PhantomData<T>,
-    pub offset: Word,
+    pub offset: u64,
 }
 
 impl<T: MemContext + Clone> StableMemoryAllocator<T> {
-    const SIZE: usize = (MAGIC.len()
+    const SIZE: usize = MAGIC.len()
         + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
-        + MAX_COLLECTION_DECLARATIONS * size_of::<CollectionDeclarationPtr>());
+        + CUSTOM_DATA_SIZE_PTRS * size_of::<u64>();
 
-    pub fn allocate(&mut self, size: usize, context: &mut T) -> Result<Word, SMAError> {
+    pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<u64, SMAError> {
         let mut mem_block = if let Some((appropriate_mem_block, seg_class_idx)) =
             self.find_appropriate_free_mem_block(size, context)
         {
@@ -32,8 +32,10 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         } else {
             // this block is not added to the free list yet, so we won't remove it from there
             // can return OOM error
-            let big_mem_block =
-                self.grow_and_create_new_free_block(size + MEM_BLOCK_OVERHEAD_BYTES * 2, context)?;
+            let big_mem_block = self.grow_and_create_new_free_block(
+                size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+                context,
+            )?;
 
             self.split_if_needed(big_mem_block, size, context)
         };
@@ -43,7 +45,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         Ok(mem_block.offset)
     }
 
-    pub fn deallocate(&mut self, offset: Word, context: &mut T) {
+    pub fn deallocate(&mut self, offset: u64, context: &mut T) {
         let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
 
@@ -61,10 +63,10 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
     pub fn reallocate(
         &mut self,
-        offset: Word,
-        wanted_size: usize,
+        offset: u64,
+        wanted_size: u64,
         context: &mut T,
-    ) -> Result<Word, SMAError> {
+    ) -> Result<u64, SMAError> {
         let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
 
@@ -88,43 +90,52 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         self.allocate(wanted_size, context)
     }
 
-    pub fn read_at(offset: Word, context: &T) -> Result<Vec<u8>, SMAError> {
-        MemBlock::read_at(offset, MemBlockSide::Start, context)
-            .ok_or(SMAError::NoMemBlockAtAddress)
-            .map(|it| it.read_content(context))
+    pub fn read_at(ptr: u64, offset: u64, buf: &mut [u8], context: &T) -> Result<(), SMAError> {
+        let mem_block = MemBlock::read_at(ptr, MemBlockSide::Start, context)
+            .ok_or(SMAError::NoMemBlockAtAddress)?;
+
+        if !mem_block.read_content(offset, buf, context) {
+            return Err(SMAError::OutOfBounds);
+        }
+
+        Ok(())
     }
 
-    pub fn is_allocated_at(offset: Word, context: &T) -> Result<bool, SMAError> {
-        MemBlock::read_at(offset, MemBlockSide::Start, context)
+    pub fn is_allocated_at(ptr: u64, context: &T) -> Result<bool, SMAError> {
+        MemBlock::read_at(ptr, MemBlockSide::Start, context)
             .ok_or(SMAError::NoMemBlockAtAddress)
             .map(|it| it.allocated)
     }
 
-    pub fn write_at(offset: Word, buf: &[u8], context: &mut T) -> Result<bool, SMAError> {
-        MemBlock::read_at(offset, MemBlockSide::Start, context)
-            .ok_or(SMAError::NoMemBlockAtAddress)
-            .map(|it| it.write_content(buf, context))
+    pub fn write_at(ptr: u64, offset: u64, buf: &[u8], context: &mut T) -> Result<(), SMAError> {
+        let mem_block = MemBlock::read_at(ptr, MemBlockSide::Start, context)
+            .ok_or(SMAError::NoMemBlockAtAddress)?;
+
+        if !mem_block.write_content(offset, buf, context) {
+            return Err(SMAError::OutOfBounds);
+        }
+
+        Ok(())
     }
 
-    pub fn init(offset: Word, context: &mut T) -> Result<Self, SMAError> {
+    pub fn init(offset: u64, context: &mut T) -> Result<Self, SMAError> {
         Self::init_grow_if_need(offset, context)?;
 
         context.write(offset, &MAGIC);
 
         let mut this = StableMemoryAllocator {
             segregation_size_classes: [SegregationClassPtr::default(); MAX_SEGREGATION_CLASSES],
-            collection_declarations: [CollectionDeclarationPtr::default();
-                MAX_COLLECTION_DECLARATIONS],
+            custom_data: [u64::default(); CUSTOM_DATA_SIZE_PTRS],
             marker: PhantomData,
             offset,
         };
 
-        this.init_first_free_mem_block(offset + Self::SIZE as Word, context)?;
+        this.init_first_free_mem_block(offset + Self::SIZE as u64, context)?;
 
         Ok(this)
     }
 
-    pub fn reinit(mut offset: Word, context: &T) -> Result<Self, SMAError> {
+    pub fn reinit(mut offset: u64, context: &T) -> Result<Self, SMAError> {
         // checking magic sequence
         let mut magic_buf = [0u8; MAGIC.len()];
         context.read(offset, &mut magic_buf);
@@ -133,15 +144,14 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             return Err(SMAError::InvalidMagicSequence);
         }
 
-        offset += MAGIC.len() as Word;
-
         // reading segregation classes
         let mut segregation_classes_buf =
             [0u8; MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()];
-        context.read(offset, &mut segregation_classes_buf);
+        context.read(offset + MAGIC.len() as u64, &mut segregation_classes_buf);
 
         let mut segregation_size_classes =
             [SegregationClassPtr::default(); MAX_SEGREGATION_CLASSES];
+
         segregation_classes_buf
             .chunks_exact(size_of::<SegregationClassPtr>())
             .enumerate()
@@ -152,32 +162,53 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                 segregation_size_classes[idx] = SegregationClassPtr::from_le_bytes(buf);
             });
 
-        // reading collection declarations
-        offset += (MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()) as Word;
+        // reading custom data
+        let mut custom_data_buf = [0u8; CUSTOM_DATA_SIZE_PTRS * size_of::<u64>()];
+        context.read(
+            offset
+                + (MAGIC.len() + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()) as u64,
+            &mut custom_data_buf,
+        );
 
-        let mut collection_declarations_buf =
-            [0u8; MAX_COLLECTION_DECLARATIONS * size_of::<CollectionDeclarationPtr>()];
-        context.read(offset, &mut collection_declarations_buf);
-
-        let mut collection_declarations =
-            [CollectionDeclarationPtr::default(); MAX_COLLECTION_DECLARATIONS];
-        collection_declarations_buf
-            .chunks_exact(size_of::<CollectionDeclarationPtr>())
+        let mut custom_data = [u64::default(); CUSTOM_DATA_SIZE_PTRS];
+        custom_data_buf
+            .chunks_exact(size_of::<u64>())
             .enumerate()
             .for_each(|(idx, it)| {
-                let mut buf = [0u8; size_of::<CollectionDeclarationPtr>()];
+                let mut buf = [0u8; size_of::<u64>()];
                 buf.copy_from_slice(it);
 
-                collection_declarations[idx] = CollectionDeclarationPtr::from_le_bytes(buf);
+                custom_data[idx] = u64::from_le_bytes(buf);
             });
 
         // returning
         Ok(Self {
-            collection_declarations,
             segregation_size_classes,
+            custom_data,
             marker: PhantomData,
             offset,
         })
+    }
+
+    pub fn set_custom_data(&mut self, idx: usize, ptr: u64, context: &mut T) -> bool {
+        if idx >= CUSTOM_DATA_SIZE_PTRS {
+            return false;
+        }
+
+        self.custom_data[idx] = ptr;
+        context.write(
+            self.offset
+                + (MAGIC.len()
+                    + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
+                    + idx * size_of::<u64>()) as u64,
+            &ptr.to_le_bytes(),
+        );
+
+        true
+    }
+
+    pub fn get_custom_data(&self, idx: usize) -> u64 {
+        self.custom_data[idx]
     }
 
     fn try_merge(
@@ -189,7 +220,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         match side {
             MemBlockSide::Start => {
                 if let Some(mut next_mem_block) = MemBlock::read_at(
-                    mem_block.offset + (mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
+                    mem_block.offset + mem_block.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
                     MemBlockSide::Start,
                     context,
                 ) {
@@ -229,13 +260,13 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
     fn grow_and_create_new_free_block(
         &mut self,
-        size: usize,
+        size: u64,
         context: &mut T,
     ) -> Result<MemBlock<T>, SMAError> {
-        let offset = context.size_pages() * PAGE_SIZE_BYTES as Word;
+        let offset = context.size_pages() * PAGE_SIZE_BYTES as u64;
 
-        let mut size_need_pages = size / PAGE_SIZE_BYTES;
-        if size % PAGE_SIZE_BYTES > 0 {
+        let mut size_need_pages = size / PAGE_SIZE_BYTES as u64;
+        if size % PAGE_SIZE_BYTES as u64 > 0 {
             size_need_pages += 1;
         }
 
@@ -245,9 +276,9 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         let mem_block = MemBlock::write_free_at(
             offset,
-            size_need_pages * PAGE_SIZE_BYTES - (MEM_BLOCK_OVERHEAD_BYTES * 2),
-            EMPTY_WORD,
-            EMPTY_WORD,
+            size_need_pages * PAGE_SIZE_BYTES as u64 - (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+            EMPTY_PTR,
+            EMPTY_PTR,
             context,
         );
 
@@ -263,7 +294,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         let prev_offset = mem_block.get_prev_free();
         let next_offset = mem_block.get_next_free();
 
-        if prev_offset != EMPTY_WORD && next_offset != EMPTY_WORD {
+        if prev_offset != EMPTY_PTR && next_offset != EMPTY_PTR {
             let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
@@ -272,22 +303,22 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
             prev.set_next_free(next_offset, context);
             next.set_prev_free(prev_offset, context);
-        } else if prev_offset != EMPTY_WORD {
+        } else if prev_offset != EMPTY_PTR {
             let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
-            prev.set_next_free(EMPTY_WORD, context);
-        } else if next_offset != EMPTY_WORD {
+            prev.set_next_free(EMPTY_PTR, context);
+        } else if next_offset != EMPTY_PTR {
             let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
-            next.set_prev_free(EMPTY_WORD, context);
+            next.set_prev_free(EMPTY_PTR, context);
 
             // don't forget to make it the first of the class
             self.set_segregation_class(mem_block_seg_class_idx, next.offset, context);
         } else {
             // appropriate is the only one in the class - delete the whole class
-            self.set_segregation_class(mem_block_seg_class_idx, EMPTY_WORD, context);
+            self.set_segregation_class(mem_block_seg_class_idx, EMPTY_PTR, context);
         }
     }
 
@@ -295,7 +326,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         let seg_class_idx = self.find_seg_class_idx(new_mem_block.size);
 
         // if there are no blocks in this class - just insert
-        if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
+        if self.segregation_size_classes[seg_class_idx] == EMPTY_PTR {
             self.set_segregation_class(seg_class_idx, new_mem_block.offset, context);
 
             return;
@@ -310,7 +341,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         .unwrap_or_else(|| unreachable!());
 
         // TODO: remove
-        if cur_mem_block.get_prev_free() != EMPTY_WORD {
+        if cur_mem_block.get_prev_free() != EMPTY_PTR {
             unreachable!();
         }
 
@@ -324,7 +355,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
 
         // if there is only one mem block in the free list - insert after
-        if cur_mem_block.get_next_free() == EMPTY_WORD {
+        if cur_mem_block.get_next_free() == EMPTY_PTR {
             cur_mem_block.set_next_free(new_mem_block.offset, context);
             new_mem_block.set_prev_free(cur_mem_block.offset, context);
 
@@ -349,7 +380,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                 return;
             }
 
-            if next_mem_block.get_next_free() == EMPTY_WORD {
+            if next_mem_block.get_next_free() == EMPTY_PTR {
                 next_mem_block.set_next_free(new_mem_block.offset, context);
                 new_mem_block.set_prev_free(next_mem_block.offset, context);
 
@@ -367,7 +398,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     // if there is none - return None
     fn find_appropriate_free_mem_block(
         &self,
-        size: usize,
+        size: u64,
         context: &mut T,
     ) -> Option<(MemBlock<T>, usize)> {
         let initial_seg_class_idx = self.find_seg_class_idx(size);
@@ -376,7 +407,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         // for each segregation class, starting from the most appropriate (closer)
         for seg_class_idx in initial_seg_class_idx..MAX_SEGREGATION_CLASSES {
             // skip if there is no free blocks at all
-            if self.segregation_size_classes[seg_class_idx] == EMPTY_WORD {
+            if self.segregation_size_classes[seg_class_idx] == EMPTY_PTR {
                 continue;
             }
 
@@ -392,7 +423,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
             loop {
                 if appropriate_free_mem_block.size < size {
-                    if next_free == EMPTY_WORD {
+                    if next_free == EMPTY_PTR {
                         break;
                     }
 
@@ -412,7 +443,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
             // then try to find a block that is closer to the provided size in the remainder of blocks of this segregation class
             loop {
-                if next_free == EMPTY_WORD {
+                if next_free == EMPTY_PTR {
                     break;
                 }
 
@@ -423,7 +454,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                 if next_free_mem_block.size < size {
                     next_free = next_free_mem_block.get_next_free();
 
-                    if next_free == EMPTY_WORD {
+                    if next_free == EMPTY_PTR {
                         break;
                     }
 
@@ -436,7 +467,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
                 next_free = next_free_mem_block.get_next_free();
 
-                if next_free == EMPTY_WORD {
+                if next_free == EMPTY_PTR {
                     break;
                 }
             }
@@ -451,17 +482,17 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     // TODO: rewrite using low-level functions
     fn init_first_free_mem_block(
         &mut self,
-        offset: Word,
+        offset: u64,
         context: &mut T,
     ) -> Result<MemBlock<T>, SMAError> {
-        let grown_bytes = context.size_pages() * PAGE_SIZE_BYTES as Word;
+        let grown_bytes = context.size_pages() * PAGE_SIZE_BYTES as u64;
 
         if offset > grown_bytes {
             unreachable!();
         }
 
-        let mem_block_size_bytes = (grown_bytes - offset) as usize - MEM_BLOCK_OVERHEAD_BYTES * 2;
-        if mem_block_size_bytes < MIN_MEM_BLOCK_SIZE_BYTES {
+        let mem_block_size_bytes = grown_bytes - offset - (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64;
+        if mem_block_size_bytes < MIN_MEM_BLOCK_SIZE_BYTES as u64 {
             context.grow(1).map_err(|_| SMAError::OutOfMemory)?;
         }
 
@@ -473,8 +504,8 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         Ok(mem_block)
     }
 
-    fn find_seg_class_idx(&self, block_size_bytes: usize) -> usize {
-        let log = fast_log2_32(block_size_bytes as u32);
+    fn find_seg_class_idx(&self, block_size_bytes: u64) -> usize {
+        let log = fast_log2_64(block_size_bytes);
 
         if log > 3 {
             log as usize - 4
@@ -497,42 +528,18 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         let buf = ptr.to_le_bytes();
 
         context.write(
-            self.offset + (MAGIC.len() + seg_class_idx * size_of::<SegregationClassPtr>()) as Word,
+            self.offset + (MAGIC.len() + seg_class_idx * size_of::<SegregationClassPtr>()) as u64,
             &buf,
         );
     }
 
-    pub fn set_collection_declaration(
-        &mut self,
-        declaration_id: usize,
-        ptr: CollectionDeclarationPtr,
-        context: &mut T,
-    ) {
-        if declaration_id >= MAX_COLLECTION_DECLARATIONS {
-            panic!("Too many declarations");
-        }
-
-        self.collection_declarations[declaration_id] = ptr;
-        let buf = ptr.to_le_bytes();
-
-        context.write(
-            self.offset
-                + (MAGIC.len()
-                    + MAX_SEGREGATION_CLASSES
-                    + declaration_id * size_of::<CollectionDeclarationPtr>())
-                    as Word,
-            &buf,
-        );
-    }
-
-    fn init_grow_if_need(offset: Word, context: &mut T) -> Result<(), SMAError> {
+    fn init_grow_if_need(offset: u64, context: &mut T) -> Result<(), SMAError> {
         let size_need_bytes = offset
-            + MAGIC.len() as Word
-            + MAX_SEGREGATION_CLASSES as Word * size_of::<SegregationClassPtr>() as Word
-            + MAX_COLLECTION_DECLARATIONS as Word * size_of::<CollectionDeclarationPtr>() as Word;
+            + MAGIC.len() as u64
+            + MAX_SEGREGATION_CLASSES as u64 * size_of::<SegregationClassPtr>() as u64;
 
-        let mut size_need_pages = size_need_bytes / PAGE_SIZE_BYTES as Word;
-        if size_need_bytes % PAGE_SIZE_BYTES as Word > 0 {
+        let mut size_need_pages = size_need_bytes / PAGE_SIZE_BYTES as u64;
+        if size_need_bytes % PAGE_SIZE_BYTES as u64 > 0 {
             size_need_pages += 1;
         }
 
@@ -550,10 +557,10 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     fn split_if_needed(
         &mut self,
         mem_block: MemBlock<T>,
-        size: usize,
+        size: u64,
         context: &mut T,
     ) -> MemBlock<T> {
-        if mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES {
+        if mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES as u64 {
             let (old_mem_block, mut new_free_block) = mem_block.split_mem_block(size, context);
 
             self.add_block_to_free_list(&mut new_free_block, context);
@@ -570,20 +577,26 @@ mod tests {
     use crate::mem_block::{MemBlock, MemBlockSide, MEM_BLOCK_OVERHEAD_BYTES};
     use crate::mem_context::{MemContext, TestMemContext};
     use crate::stable_memory_allocator::StableMemoryAllocator;
-    use crate::types::{Word, EMPTY_WORD, PAGE_SIZE_BYTES};
+    use crate::types::{EMPTY_PTR, PAGE_SIZE_BYTES};
 
     #[test]
     fn init_works_fine() {
         let mut context = TestMemContext::default();
-        let allocator = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
+        let mut allocator = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
         let initial_free_mem_block = MemBlock::read_at(
-            StableMemoryAllocator::<TestMemContext>::SIZE as Word,
+            StableMemoryAllocator::<TestMemContext>::SIZE as u64,
             MemBlockSide::Start,
-            &mut context,
+            &context,
         )
         .unwrap();
 
+        assert_eq!(allocator.offset, 0, "Allocator offset is invalid");
+        assert_eq!(
+            initial_free_mem_block.offset,
+            StableMemoryAllocator::<TestMemContext>::SIZE as u64,
+            "Initial free block offset is invalid"
+        );
         assert!(
             initial_free_mem_block.size > 0,
             "Bad initial mem block size"
@@ -594,25 +607,28 @@ mod tests {
         );
         assert_eq!(
             initial_free_mem_block.get_next_free(),
-            EMPTY_WORD,
+            EMPTY_PTR,
             "Initial mem block should contain no next block"
         );
         assert_eq!(
             initial_free_mem_block.get_prev_free(),
-            EMPTY_WORD,
+            EMPTY_PTR,
             "Initial mem block should contain no prev block"
         );
         assert_eq!(
             initial_free_mem_block.offset
-                + (initial_free_mem_block.size + MEM_BLOCK_OVERHEAD_BYTES * 2) as Word,
-            context.size_pages() * PAGE_SIZE_BYTES as Word,
+                + initial_free_mem_block.size
+                + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+            context.size_pages() * PAGE_SIZE_BYTES as u64,
             "Invalid total size"
         );
         assert_eq!(
             initial_free_mem_block.offset,
-            StableMemoryAllocator::<TestMemContext>::SIZE as Word,
+            StableMemoryAllocator::<TestMemContext>::SIZE as u64,
             "Invalid SMA size"
         );
+
+        allocator.set_custom_data(0, 10, &mut context);
 
         let allocator_re = StableMemoryAllocator::reinit(0, &context).ok().unwrap();
 
@@ -620,9 +636,18 @@ mod tests {
             allocator.segregation_size_classes, allocator_re.segregation_size_classes,
             "Segregation size classes mismatch"
         );
+
         assert_eq!(
-            allocator.collection_declarations, allocator_re.collection_declarations,
-            "Collection declarations mismatch"
+            allocator.custom_data, allocator_re.custom_data,
+            "Custom data mismatch"
+        );
+
+        assert_eq!(allocator.offset, allocator_re.offset, "Offset mismatch");
+
+        assert_eq!(
+            allocator_re.get_custom_data(0),
+            10,
+            "Custom data entry mismatch"
         );
     }
 
@@ -631,22 +656,28 @@ mod tests {
         let mut context = TestMemContext::default();
         let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
-        let addr = sma.allocate(1000, &mut context).ok().unwrap();
+        let ptr = sma.allocate(1000, &mut context).ok().unwrap();
 
         let c = [b'k', b'e', b'k'];
 
-        let res = StableMemoryAllocator::write_at(addr, &c, &mut context)
+        let res = StableMemoryAllocator::write_at(ptr, 0, &c, &mut context)
             .ok()
             .unwrap();
-        let content = StableMemoryAllocator::read_at(addr, &context).ok().unwrap();
 
-        assert!(res, "Write should pass");
+        let mut content = [0u8; 1000];
+        StableMemoryAllocator::read_at(ptr, 0, &mut content, &context)
+            .ok()
+            .unwrap();
+
         assert_eq!(content.len(), 1000, "Invalid content length 1");
         assert_eq!(content[0..3], c, "Invalid content");
 
-        let addr = sma.allocate(100 * 1024 * 1024, &mut context).ok().unwrap();
-        let content = StableMemoryAllocator::read_at(addr, &context).ok().unwrap();
-        assert_eq!(content.len(), 100 * 1024 * 1024, "Invalid length 2");
+        let mut content = [0u8; 100 * 1024];
+        let ptr = sma.allocate(100 * 1024, &mut context).ok().unwrap();
+        StableMemoryAllocator::read_at(ptr, 0, &mut content, &context)
+            .ok()
+            .unwrap();
+        assert_eq!(content.len(), 100 * 1024, "Invalid length 2");
     }
 
     #[test]
@@ -665,23 +696,23 @@ mod tests {
             "allocate worked wrong"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_1, &context).is_ok(),
+            StableMemoryAllocator::read_at(addr_1, 0, &mut [0; 1000], &context).is_ok(),
             "should be able to read first 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_2, &context).is_ok(),
+            StableMemoryAllocator::read_at(addr_2, 0, &mut [0; 200], &context).is_ok(),
             "should be able to read second 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_3, &context).is_ok(),
+            StableMemoryAllocator::read_at(addr_3, 0, &mut [0; 12345], &context).is_ok(),
             "should be able to read third 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_4, &context).is_ok(),
+            StableMemoryAllocator::read_at(addr_4, 0, &mut [0; 65636], &context).is_ok(),
             "should be able to read forth 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_5, &context).is_ok(),
+            StableMemoryAllocator::read_at(addr_5, 0, &mut [0; 123], &context).is_ok(),
             "should be able to read fifth 1"
         );
 
@@ -717,7 +748,7 @@ mod tests {
         assert_eq!(
             sma.segregation_size_classes
                 .iter()
-                .filter(|&&it| it != EMPTY_WORD)
+                .filter(|&&it| it != EMPTY_PTR)
                 .count(),
             1,
             "there should be only one large deallocated mem block"

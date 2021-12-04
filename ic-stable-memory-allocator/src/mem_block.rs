@@ -1,23 +1,22 @@
 use crate::mem_context::MemContext;
-use crate::types::{Word, EMPTY_WORD, PAGE_SIZE_BYTES};
-use std::cmp::min_by;
+use crate::types::{EMPTY_PTR, PAGE_SIZE_BYTES};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
-pub const MEM_BLOCK_SIZE_BYTES: usize = size_of::<usize>();
+pub const MEM_BLOCK_SIZE_BYTES: usize = size_of::<u64>();
 pub const MEM_BLOCK_USED_SIZE_BYTES: usize = 1;
 pub const MEM_BLOCK_OVERHEAD_BYTES: usize = (MEM_BLOCK_SIZE_BYTES + MEM_BLOCK_USED_SIZE_BYTES) * 2;
-pub const MIN_MEM_BLOCK_SIZE_BYTES: usize = (MEM_BLOCK_OVERHEAD_BYTES + size_of::<Word>()) * 2;
+pub const MIN_MEM_BLOCK_SIZE_BYTES: usize = (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) * 2;
 pub const ALLOCATED: u8 = 228;
 pub const FREE: u8 = 227;
 
 #[derive(Clone, Copy)]
 pub struct MemBlock<T: MemContext + Clone> {
-    pub offset: Word,
-    pub size: usize,
+    pub offset: u64,
+    pub size: u64,
     pub allocated: bool,
-    prev_free: Word,
-    next_free: Word,
+    prev_free: u64,
+    next_free: u64,
     pub(crate) marker: PhantomData<T>,
 }
 
@@ -27,27 +26,34 @@ pub enum MemBlockSide {
 }
 
 impl<T: MemContext + Clone> MemBlock<T> {
-    pub fn read_content(&self, context: &T) -> Vec<u8> {
+    pub fn read_content(&self, mut offset: u64, buf: &mut [u8], context: &T) -> bool {
         if !self.allocated {
             unreachable!();
         }
 
-        let mut buf = vec![0; self.size];
-        context.read(self.offset + MEM_BLOCK_OVERHEAD_BYTES as Word, &mut buf);
-
-        buf
-    }
-
-    pub fn write_content(&self, content: &[u8], context: &mut T) -> bool {
-        if !self.allocated {
-            unreachable!();
-        }
-
-        if content.len() > self.size {
+        if offset + buf.len() as u64 > self.size {
             return false;
         }
 
-        context.write(self.offset + MEM_BLOCK_OVERHEAD_BYTES as Word, content);
+        offset += self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64;
+
+        context.read(offset, buf);
+
+        true
+    }
+
+    pub fn write_content(&self, mut offset: u64, buf: &[u8], context: &mut T) -> bool {
+        if !self.allocated {
+            unreachable!();
+        }
+
+        if offset + buf.len() as u64 > self.size {
+            return false;
+        }
+
+        offset += self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64;
+
+        context.write(offset, buf);
 
         true
     }
@@ -60,27 +66,27 @@ impl<T: MemContext + Clone> MemBlock<T> {
         self.allocated = allocated;
         let allocated_buf = if self.allocated { [ALLOCATED] } else { [FREE] };
 
-        context.write(self.offset + MEM_BLOCK_SIZE_BYTES as Word, &allocated_buf);
+        context.write(self.offset + MEM_BLOCK_SIZE_BYTES as u64, &allocated_buf);
         context.write(
-            self.offset + (MEM_BLOCK_OVERHEAD_BYTES + self.size + MEM_BLOCK_SIZE_BYTES) as Word,
+            self.offset + self.size + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
             &allocated_buf,
         );
 
         if !allocated {
-            let empty_word_ptr = EMPTY_WORD.to_le_bytes();
+            let empty_u64_ptr = EMPTY_PTR.to_le_bytes();
 
             context.write(
-                self.offset + MEM_BLOCK_OVERHEAD_BYTES as Word,
-                &empty_word_ptr,
+                self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64,
+                &empty_u64_ptr,
             );
             context.write(
-                self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<Word>()) as Word,
-                &empty_word_ptr,
+                self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
+                &empty_u64_ptr,
             );
         }
     }
 
-    pub fn set_prev_free(&mut self, prev_free: Word, context: &mut T) -> Word {
+    pub fn set_prev_free(&mut self, prev_free: u64, context: &mut T) -> u64 {
         if self.allocated {
             unreachable!();
         }
@@ -88,12 +94,12 @@ impl<T: MemContext + Clone> MemBlock<T> {
         let cur_prev_free = self.prev_free;
         self.prev_free = prev_free;
         let buf = prev_free.to_le_bytes();
-        context.write(self.offset + MEM_BLOCK_OVERHEAD_BYTES as Word, &buf);
+        context.write(self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &buf);
 
         cur_prev_free
     }
 
-    pub fn get_prev_free(&self) -> Word {
+    pub fn get_prev_free(&self) -> u64 {
         if self.allocated {
             unreachable!();
         }
@@ -101,7 +107,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
         self.prev_free
     }
 
-    pub fn set_next_free(&mut self, next_free: Word, context: &mut T) -> Word {
+    pub fn set_next_free(&mut self, next_free: u64, context: &mut T) -> u64 {
         if self.allocated {
             unreachable!();
         }
@@ -110,14 +116,14 @@ impl<T: MemContext + Clone> MemBlock<T> {
         self.next_free = next_free;
         let buf = next_free.to_le_bytes();
         context.write(
-            self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<Word>()) as Word,
+            self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
             &buf,
         );
 
         cur_next_free
     }
 
-    pub fn get_next_free(&self) -> Word {
+    pub fn get_next_free(&self) -> u64 {
         if self.allocated {
             unreachable!();
         }
@@ -130,16 +136,16 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
         context.write(self.offset, &empty_overhead);
         context.write(
-            self.offset + (MEM_BLOCK_OVERHEAD_BYTES + self.size) as Word,
+            self.offset + self.size + MEM_BLOCK_OVERHEAD_BYTES as u64,
             &empty_overhead,
         );
     }
 
     pub fn write_free_at(
-        offset: Word,
-        size: usize,
-        prev: Word,
-        next: Word,
+        offset: u64,
+        size: u64,
+        prev: u64,
+        next: u64,
         context: &mut T,
     ) -> MemBlock<T> {
         let mut open = vec![];
@@ -153,16 +159,13 @@ impl<T: MemContext + Clone> MemBlock<T> {
         close.push(FREE);
 
         context.write(offset, &open);
-        context.write(
-            offset + MEM_BLOCK_OVERHEAD_BYTES as Word + size as Word,
-            &close,
-        );
+        context.write(offset + size + MEM_BLOCK_OVERHEAD_BYTES as u64, &close);
 
-        let empty_word_ptr = EMPTY_WORD.to_le_bytes();
-        context.write(offset + MEM_BLOCK_OVERHEAD_BYTES as Word, &empty_word_ptr);
+        let empty_u64_ptr = EMPTY_PTR.to_le_bytes();
+        context.write(offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &empty_u64_ptr);
         context.write(
-            offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<Word>()) as Word,
-            &empty_word_ptr,
+            offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
+            &empty_u64_ptr,
         );
 
         MemBlock {
@@ -182,26 +185,26 @@ impl<T: MemContext + Clone> MemBlock<T> {
     //
     //                                 v or here
     // [size, used, data..., size, used]
-    pub fn read_at(mut offset: Word, side: MemBlockSide, context: &T) -> Option<MemBlock<T>> {
-        if offset >= context.size_pages() * PAGE_SIZE_BYTES as Word {
+    pub fn read_at(mut offset: u64, side: MemBlockSide, context: &T) -> Option<MemBlock<T>> {
+        if offset >= context.size_pages() * PAGE_SIZE_BYTES as u64 {
             return None;
         }
 
         if matches!(side, MemBlockSide::End) {
-            offset -= MEM_BLOCK_OVERHEAD_BYTES as Word;
+            offset -= MEM_BLOCK_OVERHEAD_BYTES as u64;
         }
 
         // read data stored under the pointer
         let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
         context.read(offset, &mut size_buf);
-        let size = usize::from_le_bytes(size_buf);
+        let size = u64::from_le_bytes(size_buf);
 
         if size == 0 {
             return None;
         }
 
         let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
-        context.read(offset + MEM_BLOCK_SIZE_BYTES as Word, &mut allocated_buf);
+        context.read(offset + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
         let allocated = if allocated_buf[0] == FREE {
             false
         } else if allocated_buf[0] == ALLOCATED {
@@ -212,17 +215,17 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
         if matches!(side, MemBlockSide::End) {
             // if that data was at the end - read from the start and compare
-            offset -= (size + MEM_BLOCK_OVERHEAD_BYTES) as Word;
+            offset -= size + MEM_BLOCK_OVERHEAD_BYTES as u64;
 
             let size_end = size;
             let allocated_end = allocated;
 
             let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
             context.read(offset, &mut size_buf);
-            let size_start = usize::from_le_bytes(size_buf);
+            let size_start = u64::from_le_bytes(size_buf);
 
             let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
-            context.read(offset + MEM_BLOCK_SIZE_BYTES as Word, &mut allocated_buf);
+            context.read(offset + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
             let allocated_start = if allocated_buf[0] == FREE {
                 false
             } else if allocated_buf[0] == ALLOCATED {
@@ -241,14 +244,14 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
             let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
             context.read(
-                offset + (MEM_BLOCK_OVERHEAD_BYTES + size_start) as Word,
+                offset + size_start + MEM_BLOCK_OVERHEAD_BYTES as u64,
                 &mut size_buf,
             );
-            let size_end = usize::from_le_bytes(size_buf);
+            let size_end = u64::from_le_bytes(size_buf);
 
             let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
             context.read(
-                offset + (MEM_BLOCK_OVERHEAD_BYTES + size_start + MEM_BLOCK_SIZE_BYTES) as Word,
+                offset + size_start + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
                 &mut allocated_buf,
             );
             let allocated_end = if allocated_buf[0] == FREE {
@@ -269,21 +272,21 @@ impl<T: MemContext + Clone> MemBlock<T> {
                 offset,
                 size,
                 allocated,
-                prev_free: EMPTY_WORD,
-                next_free: EMPTY_WORD,
+                prev_free: EMPTY_PTR,
+                next_free: EMPTY_PTR,
                 marker: PhantomData,
             })
         } else {
-            let mut prev_buf = [0u8; size_of::<Word>()];
-            context.read(offset + MEM_BLOCK_OVERHEAD_BYTES as Word, &mut prev_buf);
-            let prev = Word::from_le_bytes(prev_buf);
+            let mut prev_buf = [0u8; size_of::<u64>()];
+            context.read(offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &mut prev_buf);
+            let prev = u64::from_le_bytes(prev_buf);
 
-            let mut next_buf = [0u8; size_of::<Word>()];
+            let mut next_buf = [0u8; size_of::<u64>()];
             context.read(
-                offset + MEM_BLOCK_OVERHEAD_BYTES as Word + size_of::<Word>() as Word,
+                offset + MEM_BLOCK_OVERHEAD_BYTES as u64 + size_of::<u64>() as u64,
                 &mut next_buf,
             );
-            let next = Word::from_le_bytes(next_buf);
+            let next = u64::from_le_bytes(next_buf);
 
             Some(MemBlock {
                 offset,
@@ -298,7 +301,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
     // splits a block into two: of size=[size] and of size=[remainder]
     // should only be invoked for blocks which size remainder is bigger than MIN_MEM_BLOCK_SIZE
-    pub fn split_mem_block(self, size: usize, context: &mut T) -> (MemBlock<T>, MemBlock<T>) {
+    pub fn split_mem_block(self, size: u64, context: &mut T) -> (MemBlock<T>, MemBlock<T>) {
         let old_mem_block = MemBlock::write_free_at(
             self.offset,
             size,
@@ -308,10 +311,10 @@ impl<T: MemContext + Clone> MemBlock<T> {
         );
 
         let new_free_block = MemBlock::write_free_at(
-            self.offset + (MEM_BLOCK_OVERHEAD_BYTES * 2 + size) as Word,
-            self.size - size - MEM_BLOCK_OVERHEAD_BYTES * 2,
-            EMPTY_WORD,
-            EMPTY_WORD,
+            self.offset + size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+            self.size - size - (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+            EMPTY_PTR,
+            EMPTY_PTR,
             context,
         );
 
@@ -328,11 +331,11 @@ impl<T: MemContext + Clone> MemBlock<T> {
         };
 
         let new_offset = prev.offset;
-        let new_size = prev.size + next.size + MEM_BLOCK_OVERHEAD_BYTES * 2;
+        let new_size = prev.size + next.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64;
 
         prev.erase(context);
         next.erase(context);
 
-        MemBlock::write_free_at(new_offset, new_size, EMPTY_WORD, EMPTY_WORD, context)
+        MemBlock::write_free_at(new_offset, new_size, EMPTY_PTR, EMPTY_PTR, context)
     }
 }
