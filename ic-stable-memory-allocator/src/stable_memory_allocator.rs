@@ -6,7 +6,7 @@ use crate::types::{
     SMAError, SegregationClassPtr, CUSTOM_DATA_SIZE_PTRS, EMPTY_PTR, MAGIC,
     MAX_SEGREGATION_CLASSES, PAGE_SIZE_BYTES,
 };
-use crate::utils::{fast_log2_32, fast_log2_64};
+use crate::utils::fast_log2_64;
 use std::marker::PhantomData;
 use std::mem::size_of;
 
@@ -22,7 +22,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
         + CUSTOM_DATA_SIZE_PTRS * size_of::<u64>();
 
-    pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<u64, SMAError> {
+    pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<MemBlock<T>, SMAError> {
         let mut mem_block = if let Some((appropriate_mem_block, seg_class_idx)) =
             self.find_appropriate_free_mem_block(size, context)
         {
@@ -42,7 +42,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         mem_block.set_allocated(true, context);
 
-        Ok(mem_block.offset)
+        Ok(mem_block)
     }
 
     pub fn deallocate(&mut self, offset: u64, context: &mut T) {
@@ -61,17 +61,20 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         self.add_block_to_free_list(&mut mem_block, context);
     }
 
+    /*
+    Since this won't work well for large data on the IC, it now commented, until the solution is found
+
     pub fn reallocate(
         &mut self,
         offset: u64,
         wanted_size: u64,
         context: &mut T,
-    ) -> Result<u64, SMAError> {
+    ) -> Result<bool, SMAError> {
         let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
 
         if mem_block.size >= wanted_size {
-            return Ok(mem_block.offset);
+            return Ok(true);
         }
 
         mem_block.set_allocated(false, context);
@@ -82,41 +85,14 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             mem_block = self.split_if_needed(mem_block, wanted_size, context);
             mem_block.set_allocated(true, context);
 
-            return Ok(mem_block.offset);
+            return Ok(true);
         }
 
-        // if reallocating didn't work - add to free list and allocate a new one
-        self.add_block_to_free_list(&mut mem_block, context);
-        self.allocate(wanted_size, context)
+        mem_block.set_allocated(true, context);
+
+        Ok(false)
     }
-
-    pub fn read_at(ptr: u64, offset: u64, buf: &mut [u8], context: &T) -> Result<(), SMAError> {
-        let mem_block = MemBlock::read_at(ptr, MemBlockSide::Start, context)
-            .ok_or(SMAError::NoMemBlockAtAddress)?;
-
-        if !mem_block.read_content(offset, buf, context) {
-            return Err(SMAError::OutOfBounds);
-        }
-
-        Ok(())
-    }
-
-    pub fn is_allocated_at(ptr: u64, context: &T) -> Result<bool, SMAError> {
-        MemBlock::read_at(ptr, MemBlockSide::Start, context)
-            .ok_or(SMAError::NoMemBlockAtAddress)
-            .map(|it| it.allocated)
-    }
-
-    pub fn write_at(ptr: u64, offset: u64, buf: &[u8], context: &mut T) -> Result<(), SMAError> {
-        let mem_block = MemBlock::read_at(ptr, MemBlockSide::Start, context)
-            .ok_or(SMAError::NoMemBlockAtAddress)?;
-
-        if !mem_block.write_content(offset, buf, context) {
-            return Err(SMAError::OutOfBounds);
-        }
-
-        Ok(())
-    }
+    */
 
     pub fn init(offset: u64, context: &mut T) -> Result<Self, SMAError> {
         Self::init_grow_if_need(offset, context)?;
@@ -220,7 +196,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         match side {
             MemBlockSide::Start => {
                 if let Some(mut next_mem_block) = MemBlock::read_at(
-                    mem_block.offset + mem_block.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+                    mem_block.ptr + mem_block.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
                     MemBlockSide::Start,
                     context,
                 ) {
@@ -239,7 +215,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             }
             MemBlockSide::End => {
                 if let Some(mut prev_mem_block) =
-                    MemBlock::read_at(mem_block.offset, MemBlockSide::End, context)
+                    MemBlock::read_at(mem_block.ptr, MemBlockSide::End, context)
                 {
                     if !prev_mem_block.allocated {
                         prev_mem_block = self.try_merge(prev_mem_block, MemBlockSide::End, context);
@@ -315,7 +291,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             next.set_prev_free(EMPTY_PTR, context);
 
             // don't forget to make it the first of the class
-            self.set_segregation_class(mem_block_seg_class_idx, next.offset, context);
+            self.set_segregation_class(mem_block_seg_class_idx, next.ptr, context);
         } else {
             // appropriate is the only one in the class - delete the whole class
             self.set_segregation_class(mem_block_seg_class_idx, EMPTY_PTR, context);
@@ -327,7 +303,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         // if there are no blocks in this class - just insert
         if self.segregation_size_classes[seg_class_idx] == EMPTY_PTR {
-            self.set_segregation_class(seg_class_idx, new_mem_block.offset, context);
+            self.set_segregation_class(seg_class_idx, new_mem_block.ptr, context);
 
             return;
         }
@@ -346,18 +322,18 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
 
         // if the inserting block address is lesser than the first address in the free list - insert before
-        if new_mem_block.offset < cur_mem_block.offset {
-            self.set_segregation_class(seg_class_idx, new_mem_block.offset, context);
-            cur_mem_block.set_prev_free(new_mem_block.offset, context);
-            new_mem_block.set_next_free(cur_mem_block.offset, context);
+        if new_mem_block.ptr < cur_mem_block.ptr {
+            self.set_segregation_class(seg_class_idx, new_mem_block.ptr, context);
+            cur_mem_block.set_prev_free(new_mem_block.ptr, context);
+            new_mem_block.set_next_free(cur_mem_block.ptr, context);
 
             return;
         }
 
         // if there is only one mem block in the free list - insert after
         if cur_mem_block.get_next_free() == EMPTY_PTR {
-            cur_mem_block.set_next_free(new_mem_block.offset, context);
-            new_mem_block.set_prev_free(cur_mem_block.offset, context);
+            cur_mem_block.set_next_free(new_mem_block.ptr, context);
+            new_mem_block.set_prev_free(cur_mem_block.ptr, context);
 
             return;
         }
@@ -368,21 +344,19 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                 .unwrap_or_else(|| unreachable!());
 
         loop {
-            if new_mem_block.offset > cur_mem_block.offset
-                && new_mem_block.offset < next_mem_block.offset
-            {
-                cur_mem_block.set_next_free(new_mem_block.offset, context);
-                new_mem_block.set_prev_free(cur_mem_block.offset, context);
+            if new_mem_block.ptr > cur_mem_block.ptr && new_mem_block.ptr < next_mem_block.ptr {
+                cur_mem_block.set_next_free(new_mem_block.ptr, context);
+                new_mem_block.set_prev_free(cur_mem_block.ptr, context);
 
-                next_mem_block.set_prev_free(new_mem_block.offset, context);
-                new_mem_block.set_next_free(next_mem_block.offset, context);
+                next_mem_block.set_prev_free(new_mem_block.ptr, context);
+                new_mem_block.set_next_free(next_mem_block.ptr, context);
 
                 return;
             }
 
             if next_mem_block.get_next_free() == EMPTY_PTR {
-                next_mem_block.set_next_free(new_mem_block.offset, context);
-                new_mem_block.set_prev_free(next_mem_block.offset, context);
+                next_mem_block.set_next_free(new_mem_block.ptr, context);
+                new_mem_block.set_prev_free(next_mem_block.ptr, context);
 
                 return;
             }
@@ -593,7 +567,7 @@ mod tests {
 
         assert_eq!(allocator.offset, 0, "Allocator offset is invalid");
         assert_eq!(
-            initial_free_mem_block.offset,
+            initial_free_mem_block.ptr,
             StableMemoryAllocator::<TestMemContext>::SIZE as u64,
             "Initial free block offset is invalid"
         );
@@ -616,14 +590,14 @@ mod tests {
             "Initial mem block should contain no prev block"
         );
         assert_eq!(
-            initial_free_mem_block.offset
+            initial_free_mem_block.ptr
                 + initial_free_mem_block.size
                 + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
             context.size_pages() * PAGE_SIZE_BYTES as u64,
             "Invalid total size"
         );
         assert_eq!(
-            initial_free_mem_block.offset,
+            initial_free_mem_block.ptr,
             StableMemoryAllocator::<TestMemContext>::SIZE as u64,
             "Invalid SMA size"
         );
@@ -656,7 +630,7 @@ mod tests {
         let mut context = TestMemContext::default();
         let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
-        let ptr = sma.allocate(1000, &mut context).ok().unwrap();
+        let ptr = sma.allocate(1000, &mut context).ok().unwrap().ptr;
 
         let c = [b'k', b'e', b'k'];
 
@@ -673,7 +647,7 @@ mod tests {
         assert_eq!(content[0..3], c, "Invalid content");
 
         let mut content = [0u8; 100 * 1024];
-        let ptr = sma.allocate(100 * 1024, &mut context).ok().unwrap();
+        let ptr = sma.allocate(100 * 1024, &mut context).ok().unwrap().ptr;
         StableMemoryAllocator::read_at(ptr, 0, &mut content, &context)
             .ok()
             .unwrap();
@@ -685,63 +659,63 @@ mod tests {
         let mut context = TestMemContext::default();
         let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
-        let addr_1 = sma.allocate(1000, &mut context).ok().unwrap();
-        let addr_2 = sma.allocate(200, &mut context).ok().unwrap();
-        let addr_3 = sma.allocate(12345, &mut context).ok().unwrap();
-        let addr_4 = sma.allocate(65636, &mut context).ok().unwrap();
-        let addr_5 = sma.allocate(123, &mut context).ok().unwrap();
+        let ptr_1 = sma.allocate(1000, &mut context).ok().unwrap().ptr;
+        let ptr_2 = sma.allocate(200, &mut context).ok().unwrap().ptr;
+        let ptr_3 = sma.allocate(12345, &mut context).ok().unwrap().ptr;
+        let ptr_4 = sma.allocate(65636, &mut context).ok().unwrap().ptr;
+        let ptr_5 = sma.allocate(123, &mut context).ok().unwrap().ptr;
 
         assert!(
-            addr_1 != addr_2 && addr_2 != addr_3 && addr_3 != addr_4 && addr_4 != addr_5,
+            ptr_1 != ptr_2 && ptr_2 != ptr_3 && ptr_3 != ptr_4 && ptr_4 != ptr_5,
             "allocate worked wrong"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_1, 0, &mut [0; 1000], &context).is_ok(),
+            StableMemoryAllocator::read_at(ptr_1, 0, &mut [0; 1000], &context).is_ok(),
             "should be able to read first 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_2, 0, &mut [0; 200], &context).is_ok(),
+            StableMemoryAllocator::read_at(ptr_2, 0, &mut [0; 200], &context).is_ok(),
             "should be able to read second 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_3, 0, &mut [0; 12345], &context).is_ok(),
+            StableMemoryAllocator::read_at(ptr_3, 0, &mut [0; 12345], &context).is_ok(),
             "should be able to read third 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_4, 0, &mut [0; 65636], &context).is_ok(),
+            StableMemoryAllocator::read_at(ptr_4, 0, &mut [0; 65636], &context).is_ok(),
             "should be able to read forth 1"
         );
         assert!(
-            StableMemoryAllocator::read_at(addr_5, 0, &mut [0; 123], &context).is_ok(),
+            StableMemoryAllocator::read_at(ptr_5, 0, &mut [0; 123], &context).is_ok(),
             "should be able to read fifth 1"
         );
 
-        sma.deallocate(addr_3, &mut context);
-        sma.deallocate(addr_5, &mut context);
-        sma.deallocate(addr_1, &mut context);
-        sma.deallocate(addr_2, &mut context);
-        sma.deallocate(addr_4, &mut context);
+        sma.deallocate(ptr_3, &mut context);
+        sma.deallocate(ptr_5, &mut context);
+        sma.deallocate(ptr_1, &mut context);
+        sma.deallocate(ptr_2, &mut context);
+        sma.deallocate(ptr_4, &mut context);
 
         assert!(
-            !StableMemoryAllocator::is_allocated_at(addr_1, &context)
+            !StableMemoryAllocator::is_allocated_at(ptr_1, &context)
                 .ok()
                 .unwrap(),
             "first shouldn't be allocated"
         );
         assert!(
-            StableMemoryAllocator::is_allocated_at(addr_2, &context).is_err(),
+            StableMemoryAllocator::is_allocated_at(ptr_2, &context).is_err(),
             "second shouldn't exist"
         );
         assert!(
-            StableMemoryAllocator::is_allocated_at(addr_3, &context).is_err(),
+            StableMemoryAllocator::is_allocated_at(ptr_3, &context).is_err(),
             "third shouldn't exist"
         );
         assert!(
-            StableMemoryAllocator::is_allocated_at(addr_4, &context).is_err(),
+            StableMemoryAllocator::is_allocated_at(ptr_4, &context).is_err(),
             "forth shouldn't exist"
         );
         assert!(
-            StableMemoryAllocator::is_allocated_at(addr_5, &context).is_err(),
+            StableMemoryAllocator::is_allocated_at(ptr_5, &context).is_err(),
             "fifth shouldn't exist"
         );
 
@@ -755,20 +729,41 @@ mod tests {
         );
     }
 
-    #[test]
+    /*    #[test]
     fn reallocate_works_fine() {
         let mut context = TestMemContext::default();
         let mut sma = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
-        let addr_1 = sma.allocate(1000, &mut context).ok().unwrap();
-        let addr_2 = sma.allocate(200, &mut context).ok().unwrap();
-        let addr_3 = sma.allocate(2000, &mut context).ok().unwrap();
+        let ptr_1 = sma.allocate(1000, &mut context).ok().unwrap();
+        let ptr_2 = sma.allocate(200, &mut context).ok().unwrap();
+        let ptr_3 = sma.allocate(2000, &mut context).ok().unwrap();
 
-        sma.deallocate(addr_2, &mut context);
-        let addr_1_1 = sma.reallocate(addr_1, 1164, &mut context).ok().unwrap();
-        assert_eq!(addr_1, addr_1_1, "new address should be the same");
+        let data = [b't', b'e', b's', b't'];
+        StableMemoryAllocator::write_at(ptr_1, 0, &data, &mut context)
+            .ok()
+            .unwrap();
 
-        let addr_1_2 = sma.reallocate(addr_1, 2000, &mut context).ok().unwrap();
-        assert_ne!(addr_1, addr_1_2, "new address shouldn't be the same");
-    }
+        sma.deallocate(ptr_2, &mut context);
+
+        let success = sma.reallocate(ptr_1, 1164, &mut context).ok().unwrap();
+        assert!(success, "first reallocation should yield a success");
+
+        let mut data_1 = [0u8; 4];
+
+        StableMemoryAllocator::read_at(ptr_1, 0, &mut data_1, &context)
+            .ok()
+            .unwrap();
+
+        assert_eq!(data, data_1, "data changed across reallocations");
+
+        let success = sma.reallocate(ptr_1, 2000, &mut context).ok().unwrap();
+        assert!(!success, "second reallocation should yield a fail");
+
+        sma.deallocate(ptr_1, &mut context);
+        let ptr_1 = sma.allocate(2000, &mut context).ok().unwrap();
+
+        StableMemoryAllocator::write_at(ptr_1, 0, &data_1, &mut context)
+            .ok()
+            .unwrap();
+    }*/
 }

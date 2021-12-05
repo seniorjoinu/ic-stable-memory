@@ -1,5 +1,5 @@
 use crate::mem_context::MemContext;
-use crate::types::{EMPTY_PTR, PAGE_SIZE_BYTES};
+use crate::types::{SMAError, EMPTY_PTR, PAGE_SIZE_BYTES};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
@@ -12,7 +12,7 @@ pub const FREE: u8 = 227;
 
 #[derive(Clone, Copy)]
 pub struct MemBlock<T: MemContext + Clone> {
-    pub offset: u64,
+    pub ptr: u64,
     pub size: u64,
     pub allocated: bool,
     prev_free: u64,
@@ -26,36 +26,55 @@ pub enum MemBlockSide {
 }
 
 impl<T: MemContext + Clone> MemBlock<T> {
-    pub fn read_content(&self, mut offset: u64, buf: &mut [u8], context: &T) -> bool {
+    pub fn read_u64(&self, offset: u64, context: &T) -> Result<u64, SMAError> {
+        let mut buf = [0u8; size_of::<u64>()];
+
+        self.read_bytes(offset, &mut buf, context)?;
+
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    pub fn read_bytes(&self, mut offset: u64, buf: &mut [u8], context: &T) -> Result<(), SMAError> {
         if !self.allocated {
             unreachable!();
         }
 
         if offset + buf.len() as u64 > self.size {
-            return false;
+            return Err(SMAError::OutOfBounds);
         }
 
-        offset += self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64;
+        offset += self.ptr + MEM_BLOCK_OVERHEAD_BYTES as u64;
 
         context.read(offset, buf);
 
-        true
+        Ok(())
     }
 
-    pub fn write_content(&self, mut offset: u64, buf: &[u8], context: &mut T) -> bool {
+    pub fn write_u64(&mut self, offset: u64, value: u64, context: &mut T) -> Result<(), SMAError> {
+        let buf = value.to_le_bytes();
+
+        self.write_bytes(offset, &buf, context)
+    }
+
+    pub fn write_bytes(
+        &mut self,
+        mut offset: u64,
+        buf: &[u8],
+        context: &mut T,
+    ) -> Result<(), SMAError> {
         if !self.allocated {
             unreachable!();
         }
 
         if offset + buf.len() as u64 > self.size {
-            return false;
+            return Err(SMAError::OutOfBounds);
         }
 
-        offset += self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64;
+        offset += self.ptr + MEM_BLOCK_OVERHEAD_BYTES as u64;
 
         context.write(offset, buf);
 
-        true
+        Ok(())
     }
 
     pub fn set_allocated(&mut self, allocated: bool, context: &mut T) {
@@ -66,21 +85,18 @@ impl<T: MemContext + Clone> MemBlock<T> {
         self.allocated = allocated;
         let allocated_buf = if self.allocated { [ALLOCATED] } else { [FREE] };
 
-        context.write(self.offset + MEM_BLOCK_SIZE_BYTES as u64, &allocated_buf);
+        context.write(self.ptr + MEM_BLOCK_SIZE_BYTES as u64, &allocated_buf);
         context.write(
-            self.offset + self.size + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
+            self.ptr + self.size + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
             &allocated_buf,
         );
 
         if !allocated {
             let empty_u64_ptr = EMPTY_PTR.to_le_bytes();
 
+            context.write(self.ptr + MEM_BLOCK_OVERHEAD_BYTES as u64, &empty_u64_ptr);
             context.write(
-                self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64,
-                &empty_u64_ptr,
-            );
-            context.write(
-                self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
+                self.ptr + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
                 &empty_u64_ptr,
             );
         }
@@ -94,7 +110,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
         let cur_prev_free = self.prev_free;
         self.prev_free = prev_free;
         let buf = prev_free.to_le_bytes();
-        context.write(self.offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &buf);
+        context.write(self.ptr + MEM_BLOCK_OVERHEAD_BYTES as u64, &buf);
 
         cur_prev_free
     }
@@ -116,7 +132,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
         self.next_free = next_free;
         let buf = next_free.to_le_bytes();
         context.write(
-            self.offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
+            self.ptr + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
             &buf,
         );
 
@@ -134,15 +150,15 @@ impl<T: MemContext + Clone> MemBlock<T> {
     pub fn erase(self, context: &mut T) {
         let empty_overhead = [0; MEM_BLOCK_OVERHEAD_BYTES];
 
-        context.write(self.offset, &empty_overhead);
+        context.write(self.ptr, &empty_overhead);
         context.write(
-            self.offset + self.size + MEM_BLOCK_OVERHEAD_BYTES as u64,
+            self.ptr + self.size + MEM_BLOCK_OVERHEAD_BYTES as u64,
             &empty_overhead,
         );
     }
 
     pub fn write_free_at(
-        offset: u64,
+        ptr: u64,
         size: u64,
         prev: u64,
         next: u64,
@@ -158,18 +174,18 @@ impl<T: MemContext + Clone> MemBlock<T> {
         close.extend(size.to_le_bytes());
         close.push(FREE);
 
-        context.write(offset, &open);
-        context.write(offset + size + MEM_BLOCK_OVERHEAD_BYTES as u64, &close);
+        context.write(ptr, &open);
+        context.write(ptr + size + MEM_BLOCK_OVERHEAD_BYTES as u64, &close);
 
         let empty_u64_ptr = EMPTY_PTR.to_le_bytes();
-        context.write(offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &empty_u64_ptr);
+        context.write(ptr + MEM_BLOCK_OVERHEAD_BYTES as u64, &empty_u64_ptr);
         context.write(
-            offset + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
+            ptr + (MEM_BLOCK_OVERHEAD_BYTES + size_of::<u64>()) as u64,
             &empty_u64_ptr,
         );
 
         MemBlock {
-            offset,
+            ptr,
             size,
             prev_free: prev,
             next_free: next,
@@ -178,25 +194,25 @@ impl<T: MemContext + Clone> MemBlock<T> {
         }
     }
 
-    // offset should always point to boundary (use `side` param to specify):
+    // ptr should always point to boundary (use `side` param to specify):
     //
     //  v here
     // [size, used, data..., size, used]
     //
     //                                 v or here
     // [size, used, data..., size, used]
-    pub fn read_at(mut offset: u64, side: MemBlockSide, context: &T) -> Option<MemBlock<T>> {
-        if offset >= context.size_pages() * PAGE_SIZE_BYTES as u64 {
+    pub fn read_at(mut ptr: u64, side: MemBlockSide, context: &T) -> Option<MemBlock<T>> {
+        if ptr >= context.size_pages() * PAGE_SIZE_BYTES as u64 {
             return None;
         }
 
         if matches!(side, MemBlockSide::End) {
-            offset -= MEM_BLOCK_OVERHEAD_BYTES as u64;
+            ptr -= MEM_BLOCK_OVERHEAD_BYTES as u64;
         }
 
         // read data stored under the pointer
         let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
-        context.read(offset, &mut size_buf);
+        context.read(ptr, &mut size_buf);
         let size = u64::from_le_bytes(size_buf);
 
         if size == 0 {
@@ -204,7 +220,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
         }
 
         let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
-        context.read(offset + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
+        context.read(ptr + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
         let allocated = if allocated_buf[0] == FREE {
             false
         } else if allocated_buf[0] == ALLOCATED {
@@ -215,17 +231,17 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
         if matches!(side, MemBlockSide::End) {
             // if that data was at the end - read from the start and compare
-            offset -= size + MEM_BLOCK_OVERHEAD_BYTES as u64;
+            ptr -= size + MEM_BLOCK_OVERHEAD_BYTES as u64;
 
             let size_end = size;
             let allocated_end = allocated;
 
             let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
-            context.read(offset, &mut size_buf);
+            context.read(ptr, &mut size_buf);
             let size_start = u64::from_le_bytes(size_buf);
 
             let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
-            context.read(offset + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
+            context.read(ptr + MEM_BLOCK_SIZE_BYTES as u64, &mut allocated_buf);
             let allocated_start = if allocated_buf[0] == FREE {
                 false
             } else if allocated_buf[0] == ALLOCATED {
@@ -244,14 +260,14 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
             let mut size_buf = [0u8; MEM_BLOCK_SIZE_BYTES];
             context.read(
-                offset + size_start + MEM_BLOCK_OVERHEAD_BYTES as u64,
+                ptr + size_start + MEM_BLOCK_OVERHEAD_BYTES as u64,
                 &mut size_buf,
             );
             let size_end = u64::from_le_bytes(size_buf);
 
             let mut allocated_buf = [0u8; MEM_BLOCK_USED_SIZE_BYTES];
             context.read(
-                offset + size_start + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
+                ptr + size_start + (MEM_BLOCK_OVERHEAD_BYTES + MEM_BLOCK_SIZE_BYTES) as u64,
                 &mut allocated_buf,
             );
             let allocated_end = if allocated_buf[0] == FREE {
@@ -269,7 +285,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
 
         if allocated {
             Some(MemBlock {
-                offset,
+                ptr,
                 size,
                 allocated,
                 prev_free: EMPTY_PTR,
@@ -278,18 +294,18 @@ impl<T: MemContext + Clone> MemBlock<T> {
             })
         } else {
             let mut prev_buf = [0u8; size_of::<u64>()];
-            context.read(offset + MEM_BLOCK_OVERHEAD_BYTES as u64, &mut prev_buf);
+            context.read(ptr + MEM_BLOCK_OVERHEAD_BYTES as u64, &mut prev_buf);
             let prev = u64::from_le_bytes(prev_buf);
 
             let mut next_buf = [0u8; size_of::<u64>()];
             context.read(
-                offset + MEM_BLOCK_OVERHEAD_BYTES as u64 + size_of::<u64>() as u64,
+                ptr + MEM_BLOCK_OVERHEAD_BYTES as u64 + size_of::<u64>() as u64,
                 &mut next_buf,
             );
             let next = u64::from_le_bytes(next_buf);
 
             Some(MemBlock {
-                offset,
+                ptr,
                 size,
                 allocated,
                 prev_free: prev,
@@ -303,7 +319,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
     // should only be invoked for blocks which size remainder is bigger than MIN_MEM_BLOCK_SIZE
     pub fn split_mem_block(self, size: u64, context: &mut T) -> (MemBlock<T>, MemBlock<T>) {
         let old_mem_block = MemBlock::write_free_at(
-            self.offset,
+            self.ptr,
             size,
             self.get_prev_free(),
             self.get_next_free(),
@@ -311,7 +327,7 @@ impl<T: MemContext + Clone> MemBlock<T> {
         );
 
         let new_free_block = MemBlock::write_free_at(
-            self.offset + size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
+            self.ptr + size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
             self.size - size - (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
             EMPTY_PTR,
             EMPTY_PTR,
@@ -324,13 +340,13 @@ impl<T: MemContext + Clone> MemBlock<T> {
     // merges two free mem blocks together returning a new one
     // both blocks should be free!
     pub fn merge_with(self, other: MemBlock<T>, context: &mut T) -> MemBlock<T> {
-        let (prev, next) = if self.offset < other.offset {
+        let (prev, next) = if self.ptr < other.ptr {
             (self, other)
         } else {
             (other, self)
         };
 
-        let new_offset = prev.offset;
+        let new_offset = prev.ptr;
         let new_size = prev.size + next.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64;
 
         prev.erase(context);
