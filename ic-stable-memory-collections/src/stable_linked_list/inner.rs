@@ -1,4 +1,4 @@
-use crate::types::StableLinkedListError;
+use crate::types::{StableLinkedListError, STABLE_LINKED_LIST_MARKER};
 use ic_stable_memory_allocator::mem_block::{MemBlock, MemBlockSide};
 use ic_stable_memory_allocator::mem_context::MemContext;
 use ic_stable_memory_allocator::stable_memory_allocator::StableMemoryAllocator;
@@ -6,14 +6,14 @@ use ic_stable_memory_allocator::types::{SMAError, EMPTY_PTR};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
-pub const STABLE_LINKED_LIST_MARKER: [u8; 1] = [2];
-
 // TODO: убрать все поля из структур - заменить на геттеры-сеттеры
 
 pub struct StableLinkedListInner<T: MemContext + Clone> {
-    ptr: u64,
+    pub(crate) ptr: u64,
     marker: PhantomData<T>,
 }
+
+// TODO: add delete function
 
 impl<T: MemContext + Clone> StableLinkedListInner<T> {
     pub fn new(
