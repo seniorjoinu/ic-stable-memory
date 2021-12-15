@@ -25,4 +25,5 @@ pub enum SMAError {
     InvalidMagicSequence,
     NoMemBlockAtAddress,
     OutOfBounds,
+    ReallocationTooBig,
 }

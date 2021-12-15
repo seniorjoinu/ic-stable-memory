@@ -318,6 +318,10 @@ impl<T: MemContext + Clone> MemBlock<T> {
     // splits a block into two: of size=[size] and of size=[remainder]
     // should only be invoked for blocks which size remainder is bigger than MIN_MEM_BLOCK_SIZE
     pub fn split_mem_block(self, size: u64, context: &mut T) -> (MemBlock<T>, MemBlock<T>) {
+        if size >= self.size {
+            unreachable!();
+        }
+
         let old_mem_block = MemBlock::write_free_at(
             self.ptr,
             size,
