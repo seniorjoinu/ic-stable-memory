@@ -1,6 +1,6 @@
 use crate::types::{StableLinkedListError, STABLE_LINKED_LIST_MARKER};
-use ic_stable_memory_allocator::mem_block::{MemBlock, MemBlockSide};
 use ic_stable_memory_allocator::mem_context::MemContext;
+use ic_stable_memory_allocator::membox::{MemBlockSide, StableBox};
 use ic_stable_memory_allocator::stable_memory_allocator::StableMemoryAllocator;
 use ic_stable_memory_allocator::types::{SMAError, EMPTY_PTR};
 use std::marker::PhantomData;
@@ -42,7 +42,7 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     pub fn read_at(ptr: u64, context: &T) -> Result<Self, StableLinkedListError> {
-        let mem_block = MemBlock::read_at(ptr, MemBlockSide::Start, context).ok_or(
+        let mem_block = StableBox::read_at(ptr, MemBlockSide::Start, context).ok_or(
             StableLinkedListError::SMAError(SMAError::NoMemBlockAtAddress),
         )?;
 
@@ -62,7 +62,7 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     fn set_first(&mut self, new_first_opt: Option<u64>, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let new_first = if let Some(n) = new_first_opt {
             n
@@ -76,7 +76,7 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     pub fn get_first(&self, context: &T) -> Option<u64> {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let first = mem_block
             .read_u64(1 + size_of::<u64>() as u64, context)
@@ -90,7 +90,7 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     fn set_last(&mut self, new_last_opt: Option<u64>, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let new_last = if let Some(n) = new_last_opt {
             n
@@ -104,7 +104,7 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     pub fn get_last(&self, context: &T) -> Option<u64> {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let last = mem_block
             .read_u64(1 + size_of::<u64>() as u64 * 2, context)
@@ -118,13 +118,13 @@ impl<T: MemContext + Clone> StableLinkedListInner<T> {
     }
 
     fn set_len(&mut self, new_len: u64, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         mem_block.write_u64(1, new_len, context).unwrap();
     }
 
     pub fn get_len(&self, context: &T) -> u64 {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         mem_block.read_u64(1, context).unwrap()
     }
@@ -286,7 +286,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub(crate) fn read_at(ptr: u64, context: &T) -> Result<Self, StableLinkedListError> {
-        MemBlock::read_at(ptr, MemBlockSide::Start, context).ok_or(
+        StableBox::read_at(ptr, MemBlockSide::Start, context).ok_or(
             StableLinkedListError::SMAError(SMAError::NoMemBlockAtAddress),
         )?;
 
@@ -301,7 +301,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub fn get_size(&self, context: &T) -> usize {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         mem_block.size as usize - size_of::<u64>() * 2
     }
@@ -312,7 +312,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
         buf: &mut [u8],
         context: &T,
     ) -> Result<(), StableLinkedListError> {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         if size_of::<u64>() * 2 + offset + buf.len() > mem_block.size as usize {
             return Err(StableLinkedListError::SMAError(SMAError::OutOfBounds));
@@ -329,7 +329,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
         buf: &[u8],
         context: &mut T,
     ) -> Result<(), StableLinkedListError> {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         if size_of::<u64>() * 2 + offset + buf.len() > mem_block.size as usize {
             return Err(StableLinkedListError::SMAError(SMAError::OutOfBounds));
@@ -353,7 +353,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub(crate) fn get_prev(&self, context: &T) -> Option<u64> {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let prev = mem_block.read_u64(0, context).unwrap();
 
@@ -365,7 +365,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub(crate) fn set_prev(&mut self, new_prev_opt: Option<u64>, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let new_prev = if let Some(n) = new_prev_opt {
             n
@@ -377,7 +377,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub(crate) fn get_next(&self, context: &T) -> Option<u64> {
-        let mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let next = mem_block
             .read_u64(size_of::<u64>() as u64, context)
@@ -391,7 +391,7 @@ impl<T: MemContext + Clone> StableLinkedListInnerItem<T> {
     }
 
     pub(crate) fn set_next(&mut self, new_next_opt: Option<u64>, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
+        let mut mem_block = StableBox::read_at(self.ptr, MemBlockSide::Start, context).unwrap();
 
         let new_next = if let Some(n) = new_next_opt {
             n

@@ -1,13 +1,13 @@
-use crate::mem_context::StableMemContext;
+/*use crate::mem_context::StableMemContext;
 use crate::stable_memory_allocator::StableMemoryAllocator;
-use ic_cdk::trap;
+use ic_cdk::trap;*/
 
-pub mod mem_block;
 pub mod mem_context;
+pub mod membox;
 pub mod stable_memory_allocator;
 pub mod types;
 pub mod utils;
-
+/*
 pub static mut STABLE_MEMORY_ALLOCATOR: Option<StableMemoryAllocator<StableMemContext>> = None;
 
 pub fn init_allocator(offset: u64) {
@@ -35,3 +35,4 @@ pub fn get_allocator() -> &'static mut StableMemoryAllocator<StableMemContext> {
         }
     }
 }
+*/

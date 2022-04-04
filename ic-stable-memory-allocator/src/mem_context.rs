@@ -1,6 +1,7 @@
 use crate::types::PAGE_SIZE_BYTES;
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 
+#[derive(Debug, Copy, Clone)]
 pub struct OutOfMemory;
 
 pub trait MemContext {
@@ -65,5 +66,59 @@ impl MemContext for TestMemContext {
             (offset as usize)..(offset as usize + buf.len()),
             Vec::from(buf),
         );
+    }
+}
+
+#[cfg(target_family = "wasm")]
+pub mod stable {
+    use crate::mem_context::{OutOfMemory, StableMemContext};
+
+    pub fn size_pages() -> u64 {
+        StableMemContext::size_pages()
+    }
+
+    pub fn grow(new_pages: u64) -> Result<(), OutOfMemory> {
+        StableMemContext::grow(new_pages)
+    }
+
+    pub fn read(offset: u64, buf: &mut [u8]) {
+        StableMemContext::read(offset, buf)
+    }
+
+    pub fn write(offset: u64, buf: &[u8]) {
+        StableMemContext::write(offset, buf)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub mod stable {
+    use crate::mem_context::{MemContext, OutOfMemory, TestMemContext};
+
+    static mut CONTEXT: TestMemContext = TestMemContext { data: vec![] };
+
+    pub fn clear() {
+        unsafe {
+            CONTEXT = TestMemContext { data: vec![] };
+        }
+    }
+
+    pub fn _get_context() -> &'static mut TestMemContext {
+        unsafe { &mut CONTEXT }
+    }
+
+    pub fn size_pages() -> u64 {
+        unsafe { CONTEXT.size_pages() }
+    }
+
+    pub fn grow(new_pages: u64) -> Result<(), OutOfMemory> {
+        unsafe { CONTEXT.grow(new_pages) }
+    }
+
+    pub fn read(offset: u64, buf: &mut [u8]) {
+        unsafe { CONTEXT.read(offset, buf) }
+    }
+
+    pub fn write(offset: u64, buf: &[u8]) {
+        unsafe { CONTEXT.write(offset, buf) }
     }
 }

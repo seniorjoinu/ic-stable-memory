@@ -1,5 +1,5 @@
-use crate::mem_block::{
-    MemBlock, MemBlockSide, MEM_BLOCK_OVERHEAD_BYTES, MIN_MEM_BLOCK_SIZE_BYTES,
+/*use crate::mem_block::{
+    MemBlockSide, StableBox, MEM_BLOCK_OVERHEAD_BYTES, MIN_MEM_BLOCK_SIZE_BYTES,
 };
 use crate::mem_context::MemContext;
 use crate::types::{
@@ -22,7 +22,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
         + CUSTOM_DATA_SIZE_PTRS * size_of::<u64>();
 
-    pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<MemBlock<T>, SMAError> {
+    pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<StableBox<T>, SMAError> {
         let mut mem_block = if let Some((appropriate_mem_block, seg_class_idx)) =
             self.find_appropriate_free_mem_block(size, context)
         {
@@ -46,7 +46,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     }
 
     pub fn deallocate(&mut self, offset: u64, context: &mut T) {
-        let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context)
+        let mut mem_block = StableBox::read_at(offset, MemBlockSide::Start, context)
             .unwrap_or_else(|| unreachable!());
 
         if !mem_block.allocated {
@@ -66,8 +66,8 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         offset: u64,
         wanted_size: u64,
         context: &mut T,
-    ) -> Result<MemBlock<T>, SMAError> {
-        let mut mem_block = MemBlock::read_at(offset, MemBlockSide::Start, context).unwrap();
+    ) -> Result<StableBox<T>, SMAError> {
+        let mut mem_block = StableBox::read_at(offset, MemBlockSide::Start, context).unwrap();
 
         if mem_block.size >= wanted_size {
             return Ok(mem_block);
@@ -197,13 +197,13 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
     fn try_merge(
         &mut self,
-        mut mem_block: MemBlock<T>,
+        mut mem_block: StableBox<T>,
         side: MemBlockSide,
         context: &mut T,
-    ) -> MemBlock<T> {
+    ) -> StableBox<T> {
         match side {
             MemBlockSide::Start => {
-                if let Some(mut next_mem_block) = MemBlock::read_at(
+                if let Some(mut next_mem_block) = StableBox::read_at(
                     mem_block.ptr + mem_block.size + (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
                     MemBlockSide::Start,
                     context,
@@ -223,7 +223,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             }
             MemBlockSide::End => {
                 if let Some(mut prev_mem_block) =
-                    MemBlock::read_at(mem_block.ptr, MemBlockSide::End, context)
+                    StableBox::read_at(mem_block.ptr, MemBlockSide::End, context)
                 {
                     if !prev_mem_block.allocated {
                         prev_mem_block = self.try_merge(prev_mem_block, MemBlockSide::End, context);
@@ -246,7 +246,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         &mut self,
         size: u64,
         context: &mut T,
-    ) -> Result<MemBlock<T>, SMAError> {
+    ) -> Result<StableBox<T>, SMAError> {
         let offset = context.size_pages() * PAGE_SIZE_BYTES as u64;
 
         let mut size_need_pages = size / PAGE_SIZE_BYTES as u64;
@@ -258,7 +258,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             .grow(size_need_pages as u64)
             .map_err(|_| SMAError::OutOfMemory)?;
 
-        let mem_block = MemBlock::write_free_at(
+        let mem_block = StableBox::write_free_at(
             offset,
             size_need_pages * PAGE_SIZE_BYTES as u64 - (MEM_BLOCK_OVERHEAD_BYTES * 2) as u64,
             EMPTY_PTR,
@@ -271,7 +271,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
     fn remove_block_from_free_list(
         &mut self,
-        mem_block: &MemBlock<T>,
+        mem_block: &StableBox<T>,
         mem_block_seg_class_idx: usize,
         context: &mut T,
     ) {
@@ -279,21 +279,21 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         let next_offset = mem_block.get_next_free();
 
         if prev_offset != EMPTY_PTR && next_offset != EMPTY_PTR {
-            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
+            let mut prev = StableBox::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
-            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
+            let mut next = StableBox::read_at(next_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
             prev.set_next_free(next_offset, context);
             next.set_prev_free(prev_offset, context);
         } else if prev_offset != EMPTY_PTR {
-            let mut prev = MemBlock::read_at(prev_offset, MemBlockSide::Start, context)
+            let mut prev = StableBox::read_at(prev_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
             prev.set_next_free(EMPTY_PTR, context);
         } else if next_offset != EMPTY_PTR {
-            let mut next = MemBlock::read_at(next_offset, MemBlockSide::Start, context)
+            let mut next = StableBox::read_at(next_offset, MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
             next.set_prev_free(EMPTY_PTR, context);
@@ -306,7 +306,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
     }
 
-    fn add_block_to_free_list(&mut self, new_mem_block: &mut MemBlock<T>, context: &mut T) {
+    fn add_block_to_free_list(&mut self, new_mem_block: &mut StableBox<T>, context: &mut T) {
         let seg_class_idx = self.find_seg_class_idx(new_mem_block.size);
 
         // if there are no blocks in this class - just insert
@@ -317,7 +317,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
 
         // if there are some blocks - find a place for it, such as addr(prev) < addr(new) < addr(next)
-        let mut cur_mem_block = MemBlock::read_at(
+        let mut cur_mem_block = StableBox::read_at(
             self.segregation_size_classes[seg_class_idx],
             MemBlockSide::Start,
             context,
@@ -348,7 +348,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         // otherwise - try to find a place in between or at the end of the free list
         let mut next_mem_block =
-            MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
+            StableBox::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
                 .unwrap_or_else(|| unreachable!());
 
         loop {
@@ -371,7 +371,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
             cur_mem_block = next_mem_block;
             next_mem_block =
-                MemBlock::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
+                StableBox::read_at(cur_mem_block.get_next_free(), MemBlockSide::Start, context)
                     .unwrap_or_else(|| unreachable!());
         }
     }
@@ -382,9 +382,9 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         &self,
         size: u64,
         context: &mut T,
-    ) -> Option<(MemBlock<T>, usize)> {
+    ) -> Option<(StableBox<T>, usize)> {
         let initial_seg_class_idx = self.find_seg_class_idx(size);
-        let mut result: Option<(MemBlock<T>, usize)> = None;
+        let mut result: Option<(StableBox<T>, usize)> = None;
 
         // for each segregation class, starting from the most appropriate (closer)
         for seg_class_idx in initial_seg_class_idx..MAX_SEGREGATION_CLASSES {
@@ -395,7 +395,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
             // try to find at least one appropriate (size is bigger) free block
             let mut appropriate_found = false;
-            let mut appropriate_free_mem_block = MemBlock::read_at(
+            let mut appropriate_free_mem_block = StableBox::read_at(
                 self.segregation_size_classes[seg_class_idx],
                 MemBlockSide::Start,
                 context,
@@ -410,7 +410,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                     }
 
                     appropriate_free_mem_block =
-                        MemBlock::read_at(next_free, MemBlockSide::Start, context)
+                        StableBox::read_at(next_free, MemBlockSide::Start, context)
                             .unwrap_or_else(|| unreachable!());
                     next_free = appropriate_free_mem_block.get_next_free();
                 } else {
@@ -430,7 +430,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
                 }
 
                 let mut next_free_mem_block =
-                    MemBlock::read_at(next_free, MemBlockSide::Start, context)
+                    StableBox::read_at(next_free, MemBlockSide::Start, context)
                         .unwrap_or_else(|| unreachable!());
 
                 if next_free_mem_block.size < size {
@@ -466,7 +466,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         &mut self,
         offset: u64,
         context: &mut T,
-    ) -> Result<MemBlock<T>, SMAError> {
+    ) -> Result<StableBox<T>, SMAError> {
         let grown_bytes = context.size_pages() * PAGE_SIZE_BYTES as u64;
 
         if offset > grown_bytes {
@@ -479,7 +479,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         }
 
         let seg_idx = self.find_seg_class_idx(mem_block_size_bytes);
-        let mem_block = MemBlock::write_free_at(offset, mem_block_size_bytes, 0, 0, context);
+        let mem_block = StableBox::write_free_at(offset, mem_block_size_bytes, 0, 0, context);
 
         self.set_segregation_class(seg_idx, offset, context);
 
@@ -538,10 +538,10 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
     fn split_if_needed(
         &mut self,
-        mem_block: MemBlock<T>,
+        mem_block: StableBox<T>,
         size: u64,
         context: &mut T,
-    ) -> MemBlock<T> {
+    ) -> StableBox<T> {
         if mem_block.size - size >= MIN_MEM_BLOCK_SIZE_BYTES as u64 {
             let (old_mem_block, mut new_free_block) = mem_block.split_mem_block(size, context);
 
@@ -556,7 +556,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mem_block::{MemBlock, MemBlockSide, MEM_BLOCK_OVERHEAD_BYTES};
+    use crate::mem_block::{MemBlockSide, StableBox, MEM_BLOCK_OVERHEAD_BYTES};
     use crate::mem_context::{MemContext, TestMemContext};
     use crate::stable_memory_allocator::StableMemoryAllocator;
     use crate::types::{EMPTY_PTR, PAGE_SIZE_BYTES};
@@ -566,7 +566,7 @@ mod tests {
         let mut context = TestMemContext::default();
         let mut allocator = StableMemoryAllocator::init(0, &mut context).ok().unwrap();
 
-        let initial_free_mem_block = MemBlock::read_at(
+        let initial_free_mem_block = StableBox::read_at(
             StableMemoryAllocator::<TestMemContext>::SIZE as u64,
             MemBlockSide::Start,
             &context,
@@ -762,3 +762,4 @@ mod tests {
         assert_eq!(data, data_1, "data changed across reallocations");
     }
 }
+*/
