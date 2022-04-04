@@ -6,7 +6,7 @@ pub struct OutOfMemory;
 
 pub trait MemContext {
     fn size_pages(&self) -> u64;
-    fn grow(&mut self, new_pages: u64) -> Result<(), OutOfMemory>;
+    fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory>;
     fn read(&self, offset: u64, buf: &mut [u8]);
     fn write(&mut self, offset: u64, buf: &[u8]);
 
@@ -23,10 +23,8 @@ impl MemContext for StableMemContext {
         stable64_size()
     }
 
-    fn grow(&mut self, new_pages: u64) -> Result<(), OutOfMemory> {
-        stable64_grow(new_pages)
-            .map_err(|_| OutOfMemory)
-            .map(|_| ())
+    fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory> {
+        stable64_grow(new_pages).map_err(|_| OutOfMemory)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
@@ -48,11 +46,12 @@ impl MemContext for TestMemContext {
         self.data.len() as u64 / PAGE_SIZE_BYTES as u64
     }
 
-    fn grow(&mut self, new_pages: u64) -> Result<(), OutOfMemory> {
+    fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory> {
+        let prev_pages = self.size_pages();
         self.data
             .extend(vec![0; PAGE_SIZE_BYTES * new_pages as usize]);
 
-        Ok(())
+        Ok(prev_pages)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
@@ -71,22 +70,22 @@ impl MemContext for TestMemContext {
 
 #[cfg(target_family = "wasm")]
 pub mod stable {
-    use crate::mem_context::{OutOfMemory, StableMemContext};
+    use crate::mem_context::{MemContext, OutOfMemory, StableMemContext};
 
     pub fn size_pages() -> u64 {
-        StableMemContext::size_pages()
+        MemContext::size_pages(&StableMemContext)
     }
 
-    pub fn grow(new_pages: u64) -> Result<(), OutOfMemory> {
-        StableMemContext::grow(new_pages)
+    pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
+        MemContext::grow(&mut StableMemContext, new_pages)
     }
 
     pub fn read(offset: u64, buf: &mut [u8]) {
-        StableMemContext::read(offset, buf)
+        MemContext::read(&StableMemContext, offset, buf)
     }
 
     pub fn write(offset: u64, buf: &[u8]) {
-        StableMemContext::write(offset, buf)
+        MemContext::write(&mut StableMemContext, offset, buf)
     }
 }
 
@@ -110,7 +109,7 @@ pub mod stable {
         unsafe { CONTEXT.size_pages() }
     }
 
-    pub fn grow(new_pages: u64) -> Result<(), OutOfMemory> {
+    pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
         unsafe { CONTEXT.grow(new_pages) }
     }
 

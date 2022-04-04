@@ -1,30 +1,51 @@
 use crate::mem_context::stable;
+use std::marker::PhantomData;
 use std::mem::size_of;
 
 pub type Word = u64;
-pub type Size = u32;
+pub type Size = usize;
 
-pub const ALLOCATED: Size = 2u32.pow(Size::BITS - 1); // first biggest bit set to 1, other set to 0
-pub const FREE: Size = 2u32.pow(Size::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
+pub const ALLOCATED: Size = 2usize.pow(Size::BITS - 1); // first biggest bit set to 1, other set to 0
+pub const FREE: Size = 2usize.pow(Size::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
 pub const MEM_BOX_META_SIZE: Size = size_of::<Size>() as Size;
+pub const MEM_BOX_MIN_SIZE: Size = size_of::<Word>() as Size * 2;
 
 pub enum Side {
     Start,
     End,
 }
 
+/// A smart-pointer for stable memory.
 #[derive(Debug, Clone, Copy)]
-pub struct MemBox(Word);
+pub struct MemBox<T> {
+    ptr: Word,
+    data: PhantomData<T>,
+}
 
-impl MemBox {
+impl<T> MemBox<T> {
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox`, before creating.
     pub unsafe fn new(ptr: Word, size: Size, allocated: bool) -> Self {
-        assert_ne!(size, 0, "Zero size is forbidden");
+        assert!(
+            size >= MEM_BOX_MIN_SIZE,
+            "Size lesser than {} ({})",
+            MEM_BOX_MIN_SIZE,
+            size
+        );
+        assert!(size < ALLOCATED, "Size is bigger than {} ({})", FREE, size);
 
         Self::write_meta(ptr, size, allocated);
 
-        Self(ptr)
+        Self {
+            ptr,
+            data: PhantomData::default(),
+        }
+    }
+
+    /// # Safety
+    /// Make sure there no diplicates of this `MemBox`, before creation.
+    pub unsafe fn new_total_size(ptr: Word, total_size: Size, allocated: bool) -> Self {
+        Self::new(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
     }
 
     /// # Safety
@@ -34,18 +55,18 @@ impl MemBox {
         let (size_1, size_2) = match side {
             Side::Start => {
                 let (size_1, _) = Self::read_meta(ptr);
-                if size_1 == 0 {
+                if size_1 < MEM_BOX_MIN_SIZE {
                     return None;
                 }
 
-                let (size_2, _) = Self::read_meta(ptr + MEM_BOX_META_SIZE as Word + size_1 as Word);
+                let (size_2, _) = Self::read_meta(ptr + (MEM_BOX_META_SIZE + size_1) as Word);
 
                 (size_1, size_2)
             }
             Side::End => {
                 ptr -= MEM_BOX_META_SIZE as Word;
                 let (size_2, _) = Self::read_meta(ptr);
-                if size_2 == 0 {
+                if size_2 < MEM_BOX_MIN_SIZE {
                     return None;
                 }
 
@@ -63,16 +84,19 @@ impl MemBox {
         if size_1 != size_2 {
             None
         } else {
-            Some(Self(ptr))
+            Some(Self {
+                ptr,
+                data: PhantomData::default(),
+            })
         }
     }
 
     pub fn get_ptr(&self) -> Word {
-        self.0
+        self.ptr
     }
 
     pub fn get_meta(&self) -> (Size, bool) {
-        Self::read_meta(self.0)
+        Self::read_meta(self.get_ptr())
     }
 
     pub(crate) fn set_allocated(&mut self, allocated: bool) {
@@ -82,7 +106,7 @@ impl MemBox {
 
     pub fn write(&mut self, offset: Size, data: &[u8]) {
         let (size, allocated) = self.get_meta();
-        assert!(allocated, "Unable to write to free a MemBox");
+        self.assert_allocated(true, Some(allocated));
 
         assert!(
             offset + data.len() as Size <= size,
@@ -91,15 +115,18 @@ impl MemBox {
             offset + data.len() as Size
         );
 
-        stable::write(
-            self.get_ptr() + MEM_BOX_META_SIZE as Word + offset as Word,
-            data,
-        );
+        stable::write(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
+    }
+
+    pub fn write_word(&mut self, offset: Size, word: Word) {
+        let num = word.to_le_bytes();
+        self.write(offset, &num);
     }
 
     pub fn read(&self, offset: Size, data: &mut [u8]) {
         let (size, allocated) = self.get_meta();
-        assert!(allocated, "Unable to read data from a free MemBox");
+        self.assert_allocated(true, Some(allocated));
+
         assert!(
             data.len() as Size + offset <= size,
             "MemBox overflow (max {}, provided {})",
@@ -107,10 +134,14 @@ impl MemBox {
             data.len() as Size + offset
         );
 
-        stable::read(
-            self.get_ptr() + MEM_BOX_META_SIZE as Word + offset as Word,
-            data,
-        );
+        stable::read(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
+    }
+
+    pub fn read_word(&self, offset: Size) -> Word {
+        let mut num = [0u8; size_of::<Word>()];
+        self.read(offset, &mut num);
+
+        Word::from_le_bytes(num)
     }
 
     /// Splits this free `MemBox` into two new ones, if possible. The first one will have the provided size, the second
@@ -119,23 +150,26 @@ impl MemBox {
     ///
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox` left before splitting.
-    pub unsafe fn split(
-        self,
-        size_first: Size,
-        min_size_second: Size,
-    ) -> Result<(Self, Self), Self> {
-        let (size, allocated) = self.get_meta();
-        assert!(!allocated, "Unable to split an allocated MemBox");
+    pub unsafe fn split(self, size_first: Size) -> Result<(Self, Self), Self> {
+        assert!(
+            size_first >= MEM_BOX_MIN_SIZE,
+            "Size lesser than {} ({})",
+            MEM_BOX_MIN_SIZE,
+            size_first
+        );
 
-        if size < size_first + min_size_second + MEM_BOX_META_SIZE * 2 {
+        let (size, allocated) = self.get_meta();
+        self.assert_allocated(false, Some(allocated));
+
+        if size < size_first + MEM_BOX_MIN_SIZE + MEM_BOX_META_SIZE * 2 {
             return Err(self);
         }
 
-        let size_second = size - size_first - MEM_BOX_META_SIZE * 2;
-        let ptr_second = self.get_ptr() + (MEM_BOX_META_SIZE * 2 + size_first) as Word;
-
         let first = Self::new(self.get_ptr(), size_first, false);
-        let second = Self::new(ptr_second, size_second, false);
+
+        let size_second = size - size_first - MEM_BOX_META_SIZE * 2;
+
+        let second = Self::new(first.get_next_neighbor_ptr(), size_second, false);
 
         Ok((first, second))
     }
@@ -144,10 +178,10 @@ impl MemBox {
     /// Make sure this MemBox and its neighbor are both have no duplicates, before merging.
     pub unsafe fn merge_with_neighbor(self, neighbor: Self) -> Self {
         let (self_size, self_allocated) = self.get_meta();
-        assert!(!self_allocated, "Unable to merge allocated MemBox");
+        self.assert_allocated(false, Some(self_allocated));
 
         let (neighbor_size, neighbor_allocated) = neighbor.get_meta();
-        assert!(!neighbor_allocated, "Unable to merge with allocated MemBox");
+        neighbor.assert_allocated(false, Some(neighbor_allocated));
 
         let self_ptr = self.get_ptr();
         let neighbor_ptr = neighbor.get_ptr();
@@ -184,6 +218,22 @@ impl MemBox {
         self.get_ptr() + (MEM_BOX_META_SIZE * 2 + self.get_meta().0) as Word
     }
 
+    pub fn assert_allocated(&self, expected: bool, val: Option<bool>) {
+        let actual = match val {
+            Some(v) => v,
+            None => {
+                let (_, is_allocated) = self.get_meta();
+                is_allocated
+            }
+        };
+
+        assert_eq!(
+            actual, expected,
+            "Allocated assertion (expected {}, actual {})",
+            expected, actual
+        );
+    }
+
     fn read_meta(ptr: Word) -> (Size, bool) {
         let mut meta = [0u8; MEM_BOX_META_SIZE as usize];
         stable::read(ptr, &mut meta);
@@ -209,7 +259,7 @@ impl MemBox {
         let meta = encoded_size.to_le_bytes();
 
         stable::write(ptr, &meta);
-        stable::write(ptr + MEM_BOX_META_SIZE as Word + size as Word, &meta);
+        stable::write(ptr + (MEM_BOX_META_SIZE + size) as Word, &meta);
     }
 }
 
@@ -218,7 +268,6 @@ impl MemBox {
 mod tests {
     use crate::mem_context::stable;
     use crate::membox::{MemBox, Side, Size, Word, MEM_BOX_META_SIZE};
-    use std::mem::size_of;
 
     #[test]
     fn creation_works_fine() {
@@ -230,63 +279,63 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::new(0, m1_size, false);
+            let m1 = MemBox::<()>::new(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 (0 + m1_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m2 = MemBox::new(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m3 = MemBox::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m1 = MemBox::from_ptr(0, Side::Start).unwrap();
+            let m1 = MemBox::<()>::from_ptr(0, Side::Start).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m1 = MemBox::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m1 = MemBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m2 = MemBox::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m2 = MemBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m2 = MemBox::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m2 = MemBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m3 = MemBox::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m3 = MemBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m3 = MemBox::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m3 = MemBox::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
@@ -305,15 +354,13 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::new(0, m1_size, false);
-            let m2 = MemBox::new(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = MemBox::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = MemBox::<()>::new(0, m1_size, false);
+            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
-            let (m3, m4) = m3
-                .split(100, size_of::<Size>() as Size)
-                .expect("Unable to split m3");
+            let (m3, m4) = m3.split(100).expect("Unable to split m3");
             assert_eq!(m3.get_meta(), (100, false));
             assert_eq!(m3.get_next_neighbor_ptr(), m4.get_ptr());
 
@@ -341,7 +388,7 @@ mod tests {
             );
             assert_eq!(m1.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
-            let (m1, m2) = m1.split(m1_size, 0).expect("Unable to split m1");
+            let (m1, m2) = m1.split(m1_size).expect("Unable to split m1");
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m2.get_meta(),
@@ -350,7 +397,7 @@ mod tests {
             assert_eq!(m1.get_next_neighbor_ptr(), m2.get_ptr());
             assert_eq!(m2.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
-            let (m2, m3) = m2.split(m2_size, 0).expect("Unable to split m2");
+            let (m2, m3) = m2.split(m2_size).expect("Unable to split m2");
             assert_eq!(m2.get_meta(), (m2_size, false));
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(m2.get_next_neighbor_ptr(), m3.get_ptr());
@@ -364,7 +411,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let mut m1 = MemBox::new(0, 100, true);
+            let mut m1 = MemBox::<()>::new(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];

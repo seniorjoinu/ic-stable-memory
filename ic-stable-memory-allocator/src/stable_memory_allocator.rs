@@ -1,26 +1,284 @@
-/*use crate::mem_block::{
-    MemBlockSide, StableBox, MEM_BLOCK_OVERHEAD_BYTES, MIN_MEM_BLOCK_SIZE_BYTES,
-};
-use crate::mem_context::MemContext;
-use crate::types::{
-    SMAError, SegregationClassPtr, CUSTOM_DATA_SIZE_PTRS, EMPTY_PTR, MAGIC,
-    MAX_SEGREGATION_CLASSES, PAGE_SIZE_BYTES,
-};
-use crate::utils::fast_log2_64;
-use std::marker::PhantomData;
+use crate::mem_context::{stable, OutOfMemory};
+use crate::membox::{MemBox, Side, Size, Word, MEM_BOX_MIN_SIZE};
+use crate::types::{EMPTY_PTR, PAGE_SIZE_BYTES};
+use crate::utils::fast_log2;
 use std::mem::size_of;
 
-pub struct StableMemoryAllocator<T: MemContext> {
-    pub segregation_size_classes: [SegregationClassPtr; MAX_SEGREGATION_CLASSES],
-    pub custom_data: [u64; CUSTOM_DATA_SIZE_PTRS],
-    pub(crate) marker: PhantomData<T>,
+pub const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
+pub const SEG_CLASS_PTRS_COUNT: Size = Size::BITS as Size - 4;
+pub const CUSTOM_DATA_PTRS_COUNT: Size = 4;
+
+pub type SegClassId = u32;
+pub type CustomDataId = Size;
+
+fn get_seg_class_id(size: Size) -> SegClassId {
+    let mut log = fast_log2(size);
+
+    if 2usize.pow(log) < size {
+        log += 1;
+    }
+
+    if log > 3 {
+        (log - 4) as SegClassId
+    } else {
+        0
+    }
+}
+
+fn align_size(seg_class_id: SegClassId) -> Size {
+    if seg_class_id == 0 {
+        size_of::<Word>() * 2
+    } else {
+        2usize.pow(seg_class_id + 4)
+    }
+}
+
+fn factorize_size(mut size: Size) -> Vec<Size> {
+    let mut result = vec![];
+
+    while size > 0 {
+        let log = fast_log2(size);
+        let factorized = 2usize.pow(log);
+
+        result.push(factorized);
+        size -= factorized;
+    }
+
+    result
+}
+
+#[derive(Debug)]
+pub struct Free;
+
+impl MemBox<Free> {
+    pub fn set_prev_free_ptr(&mut self, prev_ptr: Word) {
+        self.assert_allocated(false, None);
+
+        self.write_word(0, prev_ptr);
+    }
+
+    pub fn get_prev_free_ptr(&self) -> Word {
+        self.assert_allocated(false, None);
+
+        self.read_word(0)
+    }
+
+    pub fn set_next_free_ptr(&mut self, next_ptr: Word) {
+        self.assert_allocated(false, None);
+
+        self.write_word(size_of::<Word>(), next_ptr);
+    }
+
+    pub fn get_next_free_ptr(&self) -> Word {
+        self.assert_allocated(false, None);
+
+        self.read_word(size_of::<Word>())
+    }
+}
+
+#[derive(Debug)]
+pub struct StableMemoryAllocator;
+
+impl MemBox<StableMemoryAllocator> {
+    const SIZE: Size = MAGIC.len()
+        + SEG_CLASS_PTRS_COUNT * size_of::<Word>()
+        + CUSTOM_DATA_PTRS_COUNT * size_of::<Word>();
+
+    const _EMPTY: [u8; Self::SIZE - MAGIC.len()] = [0u8; Self::SIZE - MAGIC.len()];
+
+    /// # Safety
+    pub unsafe fn init(offset: Word) -> Self {
+        let mut allocator = MemBox::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
+
+        allocator.write(0, &MAGIC);
+        allocator.write(MAGIC.len(), &Self::_EMPTY);
+
+        let total_free_size =
+            stable::size_pages() * PAGE_SIZE_BYTES as Word - allocator.get_next_neighbor_ptr();
+
+        if total_free_size > 0 {
+            let mut ptr = allocator.get_next_neighbor_ptr();
+
+            let free_mem_box = MemBox::<Free>::new_total_size(ptr, total_free_size as Size, false);
+            allocator.push_free_membox(free_mem_box);
+        }
+
+        allocator
+    }
+
+    /// # Safety
+    pub unsafe fn reinit(offset: Word) -> Option<Self> {
+        let membox = MemBox::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
+        let (size, allocated) = membox.get_meta();
+        if !allocated || size != Self::SIZE {
+            return None;
+        }
+
+        let mut magic = [0u8; MAGIC.len()];
+        membox.read(0, &mut magic);
+        if magic != MAGIC {
+            return None;
+        }
+
+        Some(membox)
+    }
+
+    fn push_free_membox(&mut self, mut membox: MemBox<Free>) {
+        let (size, allocated) = membox.get_meta();
+        membox.assert_allocated(false, Some(allocated));
+
+        let seg_class_id = get_seg_class_id(size);
+
+        let head_opt = unsafe { self.get_seg_class_head(seg_class_id) };
+
+        self.set_seg_class_head(seg_class_id, membox.get_ptr());
+        membox.set_prev_free_ptr(EMPTY_PTR);
+
+        // TODO: check if neighbors are also here and merge if needed
+
+        match head_opt {
+            None => {
+                membox.set_next_free_ptr(EMPTY_PTR);
+            }
+            Some(mut head) => {
+                membox.set_next_free_ptr(head.get_ptr());
+
+                head.set_prev_free_ptr(membox.get_ptr());
+            }
+        }
+    }
+
+    fn find_free_membox(&mut self, size: Size) -> Result<MemBox<Free>, OutOfMemory> {
+        let mut seg_class_id = get_seg_class_id(size);
+        let free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
+
+        // iterate over this seg class, until big enough membox found or til it ends
+        if let Some(mut free_membox) = free_membox_opt {
+            let mut first_iteration = true;
+
+            loop {
+                let (membox_size, _) = free_membox.get_meta();
+
+                // if valid membox found,
+                if membox_size >= size {
+                    if first_iteration {
+                        self.set_seg_class_head(seg_class_id, free_membox.get_next_free_ptr());
+                    } else {
+                        let mut prev = unsafe {
+                            MemBox::<Free>::from_ptr(free_membox.get_prev_free_ptr(), Side::Start)
+                                .unwrap()
+                        };
+                        let mut next = unsafe {
+                            MemBox::<Free>::from_ptr(free_membox.get_next_free_ptr(), Side::Start)
+                                .unwrap()
+                        };
+
+                        prev.set_next_free_ptr(next.get_ptr());
+                        next.set_prev_free_ptr(prev.get_ptr());
+                    }
+
+                    free_membox.set_prev_free_ptr(EMPTY_PTR);
+                    free_membox.set_next_free_ptr(EMPTY_PTR);
+
+                    return Ok(free_membox);
+                }
+
+                let next_ptr = free_membox.get_next_free_ptr();
+                if next_ptr == EMPTY_PTR {
+                    break;
+                }
+
+                first_iteration = false;
+                free_membox = unsafe { MemBox::<Free>::from_ptr(next_ptr, Side::Start).unwrap() };
+            }
+        }
+
+        // if no appropriate membox was found previously, try to find any of larger size
+        let mut free_membox_opt = None;
+        seg_class_id += 1;
+
+        while seg_class_id < SEG_CLASS_PTRS_COUNT as u32 {
+            free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
+
+            if free_membox_opt.is_some() {
+                break;
+            }
+
+            seg_class_id += 1;
+        }
+
+        match free_membox_opt {
+            // if at least one such a big membox found, pop it, split in two, take first, push second
+            Some(free_membox) => {
+                self.set_seg_class_head(seg_class_id, free_membox.get_next_free_ptr());
+
+                let (result, additional) = unsafe { free_membox.split(size).unwrap() };
+                self.push_free_membox(additional);
+
+                Ok(result)
+            }
+            // otherwise, grow and if grown successfully, split in two, take first, push second
+            None => {
+                let pages_to_grow = size / PAGE_SIZE_BYTES + 1;
+                let prev_total_free_size =
+                    stable::grow(pages_to_grow as u64)? * PAGE_SIZE_BYTES as Word;
+
+                let total_free_size =
+                    stable::size_pages() * PAGE_SIZE_BYTES as Word - prev_total_free_size;
+
+                let ptr = prev_total_free_size;
+
+                let new_free_membox =
+                    unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as Size, false) };
+
+                match unsafe { new_free_membox.split(size) } {
+                    Ok((result, additional)) => {
+                        self.push_free_membox(additional);
+
+                        Ok(result)
+                    }
+                    Err(new_free_membox) => Ok(new_free_membox),
+                }
+            }
+        }
+    }
+
+    unsafe fn get_seg_class_head(&self, id: SegClassId) -> Option<MemBox<Free>> {
+        let ptr = self.read_word(Self::get_seg_class_head_offset(id));
+        if ptr == EMPTY_PTR {
+            return None;
+        }
+
+        Some(MemBox::<Free>::from_ptr(ptr, Side::Start).unwrap())
+    }
+
+    fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: Word) {
+        self.write_word(Self::get_seg_class_head_offset(id), head_ptr);
+    }
+
+    fn get_seg_class_head_offset(seg_class_id: SegClassId) -> Size {
+        assert!(seg_class_id < SEG_CLASS_PTRS_COUNT as SegClassId);
+
+        MAGIC.len() + seg_class_id as Size * size_of::<Word>()
+    }
+
+    fn get_custom_data_offset(id: CustomDataId) -> Size {
+        assert!(id < CUSTOM_DATA_PTRS_COUNT);
+
+        MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>() + id * size_of::<Word>()
+    }
+}
+/*
+pub struct StableMemoryAllocator {
+    pub segregation_size_classes: [SegregationClassPtr; SEG_CLASS_PTRS_COUNT],
+    pub custom_data: [u64; CUSTOM_DATA_PTRS_COUNT],
     pub offset: u64,
 }
 
 impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     const SIZE: usize = MAGIC.len()
-        + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
-        + CUSTOM_DATA_SIZE_PTRS * size_of::<u64>();
+        + SEG_CLASS_PTRS_COUNT * size_of::<SegregationClassPtr>()
+        + CUSTOM_DATA_PTRS_COUNT * size_of::<u64>();
 
     pub fn allocate(&mut self, size: u64, context: &mut T) -> Result<StableBox<T>, SMAError> {
         let mut mem_block = if let Some((appropriate_mem_block, seg_class_idx)) =
@@ -108,8 +366,8 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         context.write(offset, &MAGIC);
 
         let mut this = StableMemoryAllocator {
-            segregation_size_classes: [SegregationClassPtr::default(); MAX_SEGREGATION_CLASSES],
-            custom_data: [u64::default(); CUSTOM_DATA_SIZE_PTRS],
+            segregation_size_classes: [SegregationClassPtr::default(); SEG_CLASS_PTRS_COUNT],
+            custom_data: [u64::default(); CUSTOM_DATA_PTRS_COUNT],
             marker: PhantomData,
             offset,
         };
@@ -130,11 +388,11 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
 
         // reading segregation classes
         let mut segregation_classes_buf =
-            [0u8; MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()];
+            [0u8; SEG_CLASS_PTRS_COUNT * size_of::<SegregationClassPtr>()];
         context.read(offset + MAGIC.len() as u64, &mut segregation_classes_buf);
 
         let mut segregation_size_classes =
-            [SegregationClassPtr::default(); MAX_SEGREGATION_CLASSES];
+            [SegregationClassPtr::default(); SEG_CLASS_PTRS_COUNT];
 
         segregation_classes_buf
             .chunks_exact(size_of::<SegregationClassPtr>())
@@ -147,14 +405,14 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
             });
 
         // reading custom data
-        let mut custom_data_buf = [0u8; CUSTOM_DATA_SIZE_PTRS * size_of::<u64>()];
+        let mut custom_data_buf = [0u8; CUSTOM_DATA_PTRS_COUNT * size_of::<u64>()];
         context.read(
             offset
-                + (MAGIC.len() + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()) as u64,
+                + (MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<SegregationClassPtr>()) as u64,
             &mut custom_data_buf,
         );
 
-        let mut custom_data = [u64::default(); CUSTOM_DATA_SIZE_PTRS];
+        let mut custom_data = [u64::default(); CUSTOM_DATA_PTRS_COUNT];
         custom_data_buf
             .chunks_exact(size_of::<u64>())
             .enumerate()
@@ -175,7 +433,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     }
 
     pub fn set_custom_data(&mut self, idx: usize, ptr: u64, context: &mut T) -> bool {
-        if idx >= CUSTOM_DATA_SIZE_PTRS {
+        if idx >= CUSTOM_DATA_PTRS_COUNT {
             return false;
         }
 
@@ -183,7 +441,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         context.write(
             self.offset
                 + (MAGIC.len()
-                    + MAX_SEGREGATION_CLASSES * size_of::<SegregationClassPtr>()
+                    + SEG_CLASS_PTRS_COUNT * size_of::<SegregationClassPtr>()
                     + idx * size_of::<u64>()) as u64,
             &ptr.to_le_bytes(),
         );
@@ -387,7 +645,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         let mut result: Option<(StableBox<T>, usize)> = None;
 
         // for each segregation class, starting from the most appropriate (closer)
-        for seg_class_idx in initial_seg_class_idx..MAX_SEGREGATION_CLASSES {
+        for seg_class_idx in initial_seg_class_idx..SEG_CLASS_PTRS_COUNT {
             // skip if there is no free blocks at all
             if self.segregation_size_classes[seg_class_idx] == EMPTY_PTR {
                 continue;
@@ -502,7 +760,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
         ptr: SegregationClassPtr,
         context: &mut T,
     ) {
-        if seg_class_idx >= MAX_SEGREGATION_CLASSES {
+        if seg_class_idx >= SEG_CLASS_PTRS_COUNT {
             unreachable!();
         }
 
@@ -518,7 +776,7 @@ impl<T: MemContext + Clone> StableMemoryAllocator<T> {
     fn init_grow_if_need(offset: u64, context: &mut T) -> Result<(), SMAError> {
         let size_need_bytes = offset
             + MAGIC.len() as u64
-            + MAX_SEGREGATION_CLASSES as u64 * size_of::<SegregationClassPtr>() as u64;
+            + SEG_CLASS_PTRS_COUNT as u64 * size_of::<SegregationClassPtr>() as u64;
 
         let mut size_need_pages = size_need_bytes / PAGE_SIZE_BYTES as u64;
         if size_need_bytes % PAGE_SIZE_BYTES as u64 > 0 {
