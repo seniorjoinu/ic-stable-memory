@@ -1,38 +1,64 @@
-/*use crate::mem_context::StableMemContext;
+use crate::mem_context::OutOfMemory;
+use crate::membox::MemBox;
 use crate::stable_memory_allocator::StableMemoryAllocator;
-use ic_cdk::trap;*/
 
-pub mod mem_context;
-pub mod membox;
-pub mod stable_memory_allocator;
-pub mod types;
-pub mod utils;
-/*
-pub static mut STABLE_MEMORY_ALLOCATOR: Option<StableMemoryAllocator<StableMemContext>> = None;
+mod mem_context;
+mod membox;
+mod stable_memory_allocator;
+mod types;
+mod utils;
+
+static mut STABLE_MEMORY_ALLOCATOR: Option<MemBox<StableMemoryAllocator>> = None;
 
 pub fn init_allocator(offset: u64) {
-    let allocator =
-        StableMemoryAllocator::init(offset, &mut StableMemContext).unwrap_or_else(|e| {
-            trap(format!("Unable to init StableMemoryAllocator: {:?}", e).as_str())
-        });
-
-    unsafe { STABLE_MEMORY_ALLOCATOR = Some(allocator) }
-}
-
-pub fn reinit_allocator(offset: u64) {
-    let allocator = StableMemoryAllocator::reinit(offset, &StableMemContext).unwrap_or_else(|e| {
-        trap(format!("Unable to reinit StableMemoryAllocator: {:?}", e).as_str())
-    });
-
-    unsafe { STABLE_MEMORY_ALLOCATOR = Some(allocator) }
-}
-
-pub fn get_allocator() -> &'static mut StableMemoryAllocator<StableMemContext> {
     unsafe {
-        match STABLE_MEMORY_ALLOCATOR.as_mut() {
-            Some(sma) => sma,
-            None => trap("StableMemoryAllocator is not initialized"),
+        if STABLE_MEMORY_ALLOCATOR.is_none() {
+            let allocator = MemBox::<StableMemoryAllocator>::init(offset);
+
+            STABLE_MEMORY_ALLOCATOR = Some(allocator)
+        } else {
+            unreachable!("StableMemoryAllocator can only be initialized once");
         }
     }
 }
-*/
+
+pub fn reinit_allocator(offset: u64) {
+    unsafe {
+        if STABLE_MEMORY_ALLOCATOR.is_none() {
+            let allocator = MemBox::<StableMemoryAllocator>::reinit(offset)
+                .expect("Unable to reinit StableMemoryAllocator");
+
+            STABLE_MEMORY_ALLOCATOR = Some(allocator)
+        } else {
+            unreachable!("StableMemoryAllocator can only be initialized once")
+        }
+    }
+}
+
+fn get_allocator() -> MemBox<StableMemoryAllocator> {
+    unsafe { *STABLE_MEMORY_ALLOCATOR.as_ref().unwrap() }
+}
+
+pub fn allocate<T>(size: usize) -> Result<MemBox<T>, OutOfMemory> {
+    get_allocator().allocate(size)
+}
+
+pub fn deallocate<T>(membox: MemBox<T>) {
+    get_allocator().deallocate(membox)
+}
+
+pub fn reallocate<T>(membox: MemBox<T>, new_size: usize) -> Result<MemBox<T>, OutOfMemory> {
+    get_allocator().reallocate(membox, new_size)
+}
+
+pub fn reset() {
+    get_allocator().reset()
+}
+
+pub fn get_allocated_size() -> u64 {
+    get_allocator().get_allocated_size()
+}
+
+pub fn get_free_size() -> u64 {
+    get_allocator().get_free_size()
+}

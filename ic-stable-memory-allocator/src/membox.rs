@@ -1,16 +1,22 @@
 use crate::mem_context::stable;
+use crate::types::PAGE_SIZE_BYTES;
+use candid::parser::value::{IDLValue, IDLValueVisitor};
+use candid::types::{Serializer, Type};
+use candid::{decode_one, encode_one, CandidType};
+use serde::de::{DeserializeOwned, Error};
+use serde::{Deserialize, Deserializer};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
-pub type Word = u64;
-pub type Size = usize;
+pub(crate) type Word = u64;
+pub(crate) type Size = usize;
 
-pub const ALLOCATED: Size = 2usize.pow(Size::BITS - 1); // first biggest bit set to 1, other set to 0
-pub const FREE: Size = 2usize.pow(Size::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
-pub const MEM_BOX_META_SIZE: Size = size_of::<Size>() as Size;
-pub const MEM_BOX_MIN_SIZE: Size = size_of::<Word>() as Size * 2;
+pub(crate) const ALLOCATED: Size = 2usize.pow(Size::BITS - 1); // first biggest bit set to 1, other set to 0
+pub(crate) const FREE: Size = 2usize.pow(Size::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
+pub(crate) const MEM_BOX_META_SIZE: Size = size_of::<Size>() as Size;
+pub(crate) const MEM_BOX_MIN_SIZE: Size = size_of::<Word>() as Size * 2;
 
-pub enum Side {
+pub(crate) enum Side {
     Start,
     End,
 }
@@ -22,10 +28,107 @@ pub struct MemBox<T> {
     data: PhantomData<T>,
 }
 
+impl<T> CandidType for MemBox<T> {
+    fn _ty() -> Type {
+        Type::Nat64
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self.get_ptr().idl_serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for MemBox<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
+        match idl_value {
+            IDLValue::Nat64(ptr) => Ok(MemBox {
+                ptr,
+                data: PhantomData::default(),
+            }),
+            _ => Err(D::Error::custom("Unable to deserialize a Membox")),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CandidMemBoxError {
+    CandidError(candid::Error),
+    MemBoxOverflow(Vec<u8>),
+}
+
+impl<T: DeserializeOwned + CandidType> MemBox<T> {
+    pub fn get_cloned(&self) -> Result<T, CandidMemBoxError> {
+        let mut bytes = vec![0u8; self.get_size_bytes()];
+        self._read_bytes(0, &mut bytes);
+
+        decode_one(&bytes).map_err(CandidMemBoxError::CandidError)
+    }
+
+    pub fn set(&mut self, it: T) -> Result<(), CandidMemBoxError> {
+        let bytes = encode_one(it).map_err(CandidMemBoxError::CandidError)?;
+        if self.get_size_bytes() < bytes.len() {
+            return Err(CandidMemBoxError::MemBoxOverflow(bytes));
+        }
+
+        self._write_bytes(0, &bytes);
+
+        Ok(())
+    }
+}
+
 impl<T> MemBox<T> {
+    pub fn get_size_bytes(&self) -> usize {
+        self.get_meta().0
+    }
+
+    pub fn _write_bytes(&mut self, offset: usize, data: &[u8]) {
+        let (size, _) = self.get_meta();
+
+        assert!(
+            offset + data.len() as Size <= size,
+            "MemBox overflow (max {}, provided {})",
+            size,
+            offset + data.len() as Size
+        );
+
+        stable::write(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
+    }
+
+    pub fn _write_word(&mut self, offset: usize, word: u64) {
+        let num = word.to_le_bytes();
+        self._write_bytes(offset, &num);
+    }
+
+    pub fn _read_bytes(&self, offset: usize, data: &mut [u8]) {
+        let (size, _) = self.get_meta();
+
+        assert!(
+            data.len() as Size + offset <= size,
+            "MemBox overflow (max {}, provided {})",
+            size,
+            data.len() as Size + offset
+        );
+
+        stable::read(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
+    }
+
+    pub fn _read_word(&self, offset: usize) -> u64 {
+        let mut num = [0u8; size_of::<Word>()];
+        self._read_bytes(offset, &mut num);
+
+        Word::from_le_bytes(num)
+    }
+
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox`, before creating.
-    pub unsafe fn new(ptr: Word, size: Size, allocated: bool) -> Self {
+    pub(crate) unsafe fn new(ptr: Word, size: Size, allocated: bool) -> Self {
         assert!(
             size >= MEM_BOX_MIN_SIZE,
             "Size lesser than {} ({})",
@@ -33,6 +136,7 @@ impl<T> MemBox<T> {
             size
         );
         assert!(size < ALLOCATED, "Size is bigger than {} ({})", FREE, size);
+        assert!(ptr < stable::size_pages() * PAGE_SIZE_BYTES as Word);
 
         Self::write_meta(ptr, size, allocated);
 
@@ -44,14 +148,18 @@ impl<T> MemBox<T> {
 
     /// # Safety
     /// Make sure there no diplicates of this `MemBox`, before creation.
-    pub unsafe fn new_total_size(ptr: Word, total_size: Size, allocated: bool) -> Self {
+    pub(crate) unsafe fn new_total_size(ptr: Word, total_size: Size, allocated: bool) -> Self {
         Self::new(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
     }
 
     /// # Safety
     /// This method may create a duplicate of the same unredlying memory slice. Make sure, your logic
     /// doesn't do that.
-    pub unsafe fn from_ptr(mut ptr: Word, side: Side) -> Option<Self> {
+    pub(crate) unsafe fn from_ptr(mut ptr: Word, side: Side) -> Option<Self> {
+        if ptr >= stable::size_pages() * PAGE_SIZE_BYTES as Word {
+            return None;
+        }
+
         let (size_1, size_2) = match side {
             Side::Start => {
                 let (size_1, _) = Self::read_meta(ptr);
@@ -91,11 +199,11 @@ impl<T> MemBox<T> {
         }
     }
 
-    pub fn get_ptr(&self) -> Word {
+    pub(crate) fn get_ptr(&self) -> Word {
         self.ptr
     }
 
-    pub fn get_meta(&self) -> (Size, bool) {
+    pub(crate) fn get_meta(&self) -> (Size, bool) {
         Self::read_meta(self.get_ptr())
     }
 
@@ -104,53 +212,13 @@ impl<T> MemBox<T> {
         Self::write_meta(self.get_ptr(), size, allocated);
     }
 
-    pub fn write(&mut self, offset: Size, data: &[u8]) {
-        let (size, allocated) = self.get_meta();
-        self.assert_allocated(true, Some(allocated));
-
-        assert!(
-            offset + data.len() as Size <= size,
-            "MemBox overflow (max {}, provided {})",
-            size,
-            offset + data.len() as Size
-        );
-
-        stable::write(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
-    }
-
-    pub fn write_word(&mut self, offset: Size, word: Word) {
-        let num = word.to_le_bytes();
-        self.write(offset, &num);
-    }
-
-    pub fn read(&self, offset: Size, data: &mut [u8]) {
-        let (size, allocated) = self.get_meta();
-        self.assert_allocated(true, Some(allocated));
-
-        assert!(
-            data.len() as Size + offset <= size,
-            "MemBox overflow (max {}, provided {})",
-            size,
-            data.len() as Size + offset
-        );
-
-        stable::read(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as Word, data);
-    }
-
-    pub fn read_word(&self, offset: Size) -> Word {
-        let mut num = [0u8; size_of::<Word>()];
-        self.read(offset, &mut num);
-
-        Word::from_le_bytes(num)
-    }
-
     /// Splits this free `MemBox` into two new ones, if possible. The first one will have the provided size, the second
     /// one will have the rest (but not less than `min_size_second`. If size is not enough, returns
     /// `Err(self)`. Both new `MemBox`-es are free.
     ///
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox` left before splitting.
-    pub unsafe fn split(self, size_first: Size) -> Result<(Self, Self), Self> {
+    pub(crate) unsafe fn split(self, size_first: Size) -> Result<(Self, Self), Self> {
         assert!(
             size_first >= MEM_BOX_MIN_SIZE,
             "Size lesser than {} ({})",
@@ -176,7 +244,7 @@ impl<T> MemBox<T> {
 
     /// # Safety
     /// Make sure this MemBox and its neighbor are both have no duplicates, before merging.
-    pub unsafe fn merge_with_neighbor(self, neighbor: Self) -> Self {
+    pub(crate) unsafe fn merge_with_neighbor(self, neighbor: Self) -> Self {
         let (self_size, self_allocated) = self.get_meta();
         self.assert_allocated(false, Some(self_allocated));
 
@@ -207,18 +275,18 @@ impl<T> MemBox<T> {
     /// # Safety
     /// This method uses `MemBox::from_ptr()` under the hood. Follow its safety directions in order
     /// to do this right.
-    pub unsafe fn get_neighbor(&self, side: Side) -> Option<Self> {
+    pub(crate) unsafe fn get_neighbor(&self, side: Side) -> Option<Self> {
         match side {
             Side::Start => Self::from_ptr(self.get_ptr(), Side::End),
             Side::End => Self::from_ptr(self.get_next_neighbor_ptr(), Side::Start),
         }
     }
 
-    pub fn get_next_neighbor_ptr(&self) -> Word {
+    pub(crate) fn get_next_neighbor_ptr(&self) -> Word {
         self.get_ptr() + (MEM_BOX_META_SIZE * 2 + self.get_meta().0) as Word
     }
 
-    pub fn assert_allocated(&self, expected: bool, val: Option<bool>) {
+    pub(crate) fn assert_allocated(&self, expected: bool, val: Option<bool>) {
         let actual = match val {
             Some(v) => v,
             None => {
@@ -238,8 +306,10 @@ impl<T> MemBox<T> {
         let mut meta = [0u8; MEM_BOX_META_SIZE as usize];
         stable::read(ptr, &mut meta);
 
-        let mut size = Size::from_le_bytes(meta);
-        let allocated = if size & ALLOCATED == ALLOCATED {
+        let encoded_size = Size::from_le_bytes(meta);
+        let mut size = encoded_size;
+
+        let allocated = if encoded_size & ALLOCATED == ALLOCATED {
             size &= FREE;
             true
         } else {
@@ -267,7 +337,8 @@ impl<T> MemBox<T> {
 #[cfg(test)]
 mod tests {
     use crate::mem_context::stable;
-    use crate::membox::{MemBox, Side, Size, Word, MEM_BOX_META_SIZE};
+    use crate::membox::{CandidMemBoxError, MemBox, Side, Size, Word, MEM_BOX_META_SIZE};
+    use candid::Nat;
 
     #[test]
     fn creation_works_fine() {
@@ -417,21 +488,54 @@ mod tests {
             let b = vec![1u8, 3, 3, 7];
             let c = vec![9u8, 8, 7, 6, 5, 4, 3, 2, 1];
 
-            m1.write(0, &a);
-            m1.write(8, &b);
-            m1.write(90, &c);
+            m1._write_bytes(0, &a);
+            m1._write_bytes(8, &b);
+            m1._write_bytes(90, &c);
 
             let mut a1 = [0u8; 8];
             let mut b1 = [0u8; 4];
             let mut c1 = [0u8; 9];
 
-            m1.read(0, &mut a1);
-            m1.read(8, &mut b1);
-            m1.read(90, &mut c1);
+            m1._read_bytes(0, &mut a1);
+            m1._read_bytes(8, &mut b1);
+            m1._read_bytes(90, &mut c1);
 
             assert_eq!(&a, &a1);
             assert_eq!(&b, &b1);
             assert_eq!(&c, &c1);
         }
+    }
+
+    use ic_cdk::export::candid::{CandidType, Deserialize};
+
+    #[derive(CandidType, Deserialize, Debug, PartialEq, Eq, Clone)]
+    struct Test {
+        pub a: Nat,
+        pub b: String,
+    }
+
+    #[test]
+    fn candid_membox_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+
+        let mut tiny_membox = unsafe { MemBox::<Test>::new(0, 20, true) };
+        let obj = Test {
+            a: Nat::from(12341231231u64),
+            b: String::from("The string that sure never fits into 20 bytes"),
+        };
+
+        let res = tiny_membox.set(obj.clone()).expect_err("It should fail");
+        match res {
+            CandidMemBoxError::MemBoxOverflow(encoded_obj) => {
+                let mut membox = unsafe { MemBox::<Test>::new(0, encoded_obj.len(), true) };
+                membox._write_bytes(0, &encoded_obj);
+
+                let obj1 = membox.get_cloned().unwrap();
+
+                assert_eq!(obj, obj1);
+            }
+            _ => unreachable!("It should encode just fine"),
+        };
     }
 }

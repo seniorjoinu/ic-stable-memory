@@ -1,5 +1,3 @@
-use ic_cdk::api::stable::StableMemoryError;
-use ic_cdk::export::candid::{CandidType, Deserialize, Error as CandidError};
 use crate::membox::Word;
 
 pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
@@ -14,7 +12,7 @@ For example: given the array of length = 4, 1st item would contain a pointer to 
  */
 pub type SegregationClassPtr = u64;
 
-pub const EMPTY_PTR: Word = 0;
+pub const EMPTY_PTR: Word = Word::MAX;
 
 #[derive(Debug)]
 pub enum SMAError {
