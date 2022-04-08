@@ -1,8 +1,8 @@
-use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
-use std::mem::size_of;
-use crate::mem::membox::common::{MEM_BOX_MIN_SIZE, Side, Size, Word};
-use crate::MemBox;
+use crate::mem::membox::common::{Side, Size, Word, MEM_BOX_MIN_SIZE};
 use crate::utils::math::fast_log2;
+use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
+use crate::MemBox;
+use std::mem::size_of;
 
 pub(crate) const EMPTY_PTR: Word = Word::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
@@ -48,7 +48,7 @@ impl MemBox<StableMemoryAllocator> {
 
     /// # Safety
     pub(crate) unsafe fn init(offset: Word) -> Self {
-        let mut allocator = MemBox::<StableMemoryAllocator>::init(offset, Self::SIZE, true);
+        let mut allocator = MemBox::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
 
         allocator._write_bytes(0, &MAGIC);
         allocator.reset();
@@ -391,9 +391,9 @@ fn get_seg_class_id(size: Size) -> SegClassId {
 
 #[cfg(test)]
 mod tests {
-    use crate::{MemBox, StableMemoryAllocator};
     use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
     use crate::utils::mem_context::stable;
+    use crate::{MemBox, StableMemoryAllocator};
 
     #[test]
     fn initialization_works_fine() {

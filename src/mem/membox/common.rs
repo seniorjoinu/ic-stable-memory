@@ -1,4 +1,4 @@
-use crate::utils::mem_context::{PAGE_SIZE_BYTES, stable};
+use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
@@ -67,7 +67,7 @@ impl<T> MemBox<T> {
 
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox`, before creating.
-    pub(crate) unsafe fn init(ptr: Word, size: Size, allocated: bool) -> Self {
+    pub(crate) unsafe fn new(ptr: Word, size: Size, allocated: bool) -> Self {
         assert!(
             size >= MEM_BOX_MIN_SIZE,
             "Size lesser than {} ({})",
@@ -88,7 +88,7 @@ impl<T> MemBox<T> {
     /// # Safety
     /// Make sure there no diplicates of this `MemBox`, before creation.
     pub(crate) unsafe fn new_total_size(ptr: Word, total_size: Size, allocated: bool) -> Self {
-        Self::init(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
+        Self::new(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
     }
 
     /// # Safety
@@ -172,11 +172,11 @@ impl<T> MemBox<T> {
             return Err(self);
         }
 
-        let first = Self::init(self.get_ptr(), size_first, false);
+        let first = Self::new(self.get_ptr(), size_first, false);
 
         let size_second = size - size_first - MEM_BOX_META_SIZE * 2;
 
-        let second = Self::init(first.get_next_neighbor_ptr(), size_second, false);
+        let second = Self::new(first.get_next_neighbor_ptr(), size_second, false);
 
         Ok((first, second))
     }
@@ -208,7 +208,7 @@ impl<T> MemBox<T> {
 
         let size = self_size + neighbor_size + MEM_BOX_META_SIZE * 2;
 
-        Self::init(ptr, size, false)
+        Self::new(ptr, size, false)
     }
 
     /// # Safety
@@ -275,9 +275,9 @@ impl<T> MemBox<T> {
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::mem::membox::common::{MEM_BOX_META_SIZE, Side, Size, Word};
-    use crate::MemBox;
+    use crate::mem::membox::common::{Side, Size, Word, MEM_BOX_META_SIZE};
     use crate::utils::mem_context::stable;
+    use crate::MemBox;
 
     #[test]
     fn creation_works_fine() {
@@ -289,21 +289,21 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::<()>::init(0, m1_size, false);
+            let m1 = MemBox::<()>::new(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 (0 + m1_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m2 = MemBox::<()>::init(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m3 = MemBox::<()>::init(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
@@ -364,9 +364,9 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::<()>::init(0, m1_size, false);
-            let m2 = MemBox::<()>::init(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = MemBox::<()>::init(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = MemBox::<()>::new(0, m1_size, false);
+            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
@@ -421,7 +421,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let mut m1 = MemBox::<()>::init(0, 100, true);
+            let mut m1 = MemBox::<()>::new(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];
