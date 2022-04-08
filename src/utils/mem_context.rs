@@ -1,10 +1,11 @@
-use crate::types::PAGE_SIZE_BYTES;
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
+
+pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Copy, Clone)]
 pub struct OutOfMemory;
 
-pub trait MemContext {
+pub(crate) trait MemContext {
     fn size_pages(&self) -> u64;
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory>;
     fn read(&self, offset: u64, buf: &mut [u8]);
@@ -16,7 +17,7 @@ pub trait MemContext {
 }
 
 #[derive(Clone)]
-pub struct StableMemContext;
+pub(crate) struct StableMemContext;
 
 impl MemContext for StableMemContext {
     fn size_pages(&self) -> u64 {
@@ -37,7 +38,7 @@ impl MemContext for StableMemContext {
 }
 
 #[derive(Default, Clone)]
-pub struct TestMemContext {
+pub(crate) struct TestMemContext {
     pub data: Vec<u8>,
 }
 
@@ -70,7 +71,7 @@ impl MemContext for TestMemContext {
 
 #[cfg(target_family = "wasm")]
 pub mod stable {
-    use crate::mem_context::{MemContext, OutOfMemory, StableMemContext};
+    use crate::utils::mem_context::{MemContext, OutOfMemory, StableMemContext};
 
     pub fn size_pages() -> u64 {
         MemContext::size_pages(&StableMemContext)
@@ -91,7 +92,7 @@ pub mod stable {
 
 #[cfg(not(target_family = "wasm"))]
 pub mod stable {
-    use crate::mem_context::{MemContext, OutOfMemory, TestMemContext};
+    use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
 
     static mut CONTEXT: TestMemContext = TestMemContext { data: vec![] };
 
@@ -101,7 +102,7 @@ pub mod stable {
         }
     }
 
-    pub fn _get_context() -> &'static mut TestMemContext {
+    pub(crate) fn _get_context() -> &'static mut TestMemContext {
         unsafe { &mut CONTEXT }
     }
 

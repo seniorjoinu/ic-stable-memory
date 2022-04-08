@@ -1,10 +1,4 @@
-use crate::mem_context::stable;
-use crate::types::PAGE_SIZE_BYTES;
-use candid::parser::value::{IDLValue, IDLValueVisitor};
-use candid::types::{Serializer, Type};
-use candid::{decode_one, encode_one, CandidType};
-use serde::de::{DeserializeOwned, Error};
-use serde::{Deserialize, Deserializer};
+use crate::utils::mem_context::{PAGE_SIZE_BYTES, stable};
 use std::marker::PhantomData;
 use std::mem::size_of;
 
@@ -24,63 +18,8 @@ pub(crate) enum Side {
 /// A smart-pointer for stable memory.
 #[derive(Debug, Clone, Copy)]
 pub struct MemBox<T> {
-    ptr: Word,
-    data: PhantomData<T>,
-}
-
-impl<T> CandidType for MemBox<T> {
-    fn _ty() -> Type {
-        Type::Nat64
-    }
-
-    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
-    where
-        S: Serializer,
-    {
-        self.get_ptr().idl_serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for MemBox<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
-        match idl_value {
-            IDLValue::Nat64(ptr) => Ok(MemBox {
-                ptr,
-                data: PhantomData::default(),
-            }),
-            _ => Err(D::Error::custom("Unable to deserialize a Membox")),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum CandidMemBoxError {
-    CandidError(candid::Error),
-    MemBoxOverflow(Vec<u8>),
-}
-
-impl<T: DeserializeOwned + CandidType> MemBox<T> {
-    pub fn get_cloned(&self) -> Result<T, CandidMemBoxError> {
-        let mut bytes = vec![0u8; self.get_size_bytes()];
-        self._read_bytes(0, &mut bytes);
-
-        decode_one(&bytes).map_err(CandidMemBoxError::CandidError)
-    }
-
-    pub fn set(&mut self, it: T) -> Result<(), CandidMemBoxError> {
-        let bytes = encode_one(it).map_err(CandidMemBoxError::CandidError)?;
-        if self.get_size_bytes() < bytes.len() {
-            return Err(CandidMemBoxError::MemBoxOverflow(bytes));
-        }
-
-        self._write_bytes(0, &bytes);
-
-        Ok(())
-    }
+    pub(crate) ptr: Word,
+    pub(crate) data: PhantomData<T>,
 }
 
 impl<T> MemBox<T> {
@@ -128,7 +67,7 @@ impl<T> MemBox<T> {
 
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox`, before creating.
-    pub(crate) unsafe fn new(ptr: Word, size: Size, allocated: bool) -> Self {
+    pub(crate) unsafe fn init(ptr: Word, size: Size, allocated: bool) -> Self {
         assert!(
             size >= MEM_BOX_MIN_SIZE,
             "Size lesser than {} ({})",
@@ -149,7 +88,7 @@ impl<T> MemBox<T> {
     /// # Safety
     /// Make sure there no diplicates of this `MemBox`, before creation.
     pub(crate) unsafe fn new_total_size(ptr: Word, total_size: Size, allocated: bool) -> Self {
-        Self::new(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
+        Self::init(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
     }
 
     /// # Safety
@@ -233,11 +172,11 @@ impl<T> MemBox<T> {
             return Err(self);
         }
 
-        let first = Self::new(self.get_ptr(), size_first, false);
+        let first = Self::init(self.get_ptr(), size_first, false);
 
         let size_second = size - size_first - MEM_BOX_META_SIZE * 2;
 
-        let second = Self::new(first.get_next_neighbor_ptr(), size_second, false);
+        let second = Self::init(first.get_next_neighbor_ptr(), size_second, false);
 
         Ok((first, second))
     }
@@ -269,7 +208,7 @@ impl<T> MemBox<T> {
 
         let size = self_size + neighbor_size + MEM_BOX_META_SIZE * 2;
 
-        Self::new(ptr, size, false)
+        Self::init(ptr, size, false)
     }
 
     /// # Safety
@@ -336,9 +275,9 @@ impl<T> MemBox<T> {
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::mem_context::stable;
-    use crate::membox::{CandidMemBoxError, MemBox, Side, Size, Word, MEM_BOX_META_SIZE};
-    use candid::Nat;
+    use crate::mem::membox::common::{MEM_BOX_META_SIZE, Side, Size, Word};
+    use crate::MemBox;
+    use crate::utils::mem_context::stable;
 
     #[test]
     fn creation_works_fine() {
@@ -350,21 +289,21 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::<()>::new(0, m1_size, false);
+            let m1 = MemBox::<()>::init(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 (0 + m1_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = MemBox::<()>::init(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as Word
             );
 
-            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = MemBox::<()>::init(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
@@ -425,9 +364,9 @@ mod tests {
             let m2_size: Size = 200;
             let m3_size: Size = 300;
 
-            let m1 = MemBox::<()>::new(0, m1_size, false);
-            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = MemBox::<()>::init(0, m1_size, false);
+            let m2 = MemBox::<()>::init(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = MemBox::<()>::init(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
@@ -482,7 +421,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let mut m1 = MemBox::<()>::new(0, 100, true);
+            let mut m1 = MemBox::<()>::init(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];
@@ -504,38 +443,5 @@ mod tests {
             assert_eq!(&b, &b1);
             assert_eq!(&c, &c1);
         }
-    }
-
-    use ic_cdk::export::candid::{CandidType, Deserialize};
-
-    #[derive(CandidType, Deserialize, Debug, PartialEq, Eq, Clone)]
-    struct Test {
-        pub a: Nat,
-        pub b: String,
-    }
-
-    #[test]
-    fn candid_membox_works_fine() {
-        stable::clear();
-        stable::grow(1).unwrap();
-
-        let mut tiny_membox = unsafe { MemBox::<Test>::new(0, 20, true) };
-        let obj = Test {
-            a: Nat::from(12341231231u64),
-            b: String::from("The string that sure never fits into 20 bytes"),
-        };
-
-        let res = tiny_membox.set(obj.clone()).expect_err("It should fail");
-        match res {
-            CandidMemBoxError::MemBoxOverflow(encoded_obj) => {
-                let mut membox = unsafe { MemBox::<Test>::new(0, encoded_obj.len(), true) };
-                membox._write_bytes(0, &encoded_obj);
-
-                let obj1 = membox.get_cloned().unwrap();
-
-                assert_eq!(obj, obj1);
-            }
-            _ => unreachable!("It should encode just fine"),
-        };
     }
 }
