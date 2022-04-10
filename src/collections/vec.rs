@@ -1,17 +1,15 @@
 use crate::mem::membox::candid::CandidMemBoxError;
-use crate::mem::membox::common::Side;
+use crate::mem::membox::common::{PTR_SIZE, Side};
 use crate::{allocate, deallocate, reallocate, MemBox};
 use candid::types::{Serializer, Type};
-use candid::{decode_one, encode_one, CandidType, Deserialize, Error as CandidError};
+use candid::{encode_one, CandidType, Deserialize, Error as CandidError};
 use serde::de::DeserializeOwned;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::size_of;
 
-pub const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
-pub const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
-pub const PTR_SIZE: u64 = size_of::<u64>() as u64;
+const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
+const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
 
 #[derive(Debug)]
 pub enum StableVecError {
@@ -113,21 +111,11 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             sectors: sectors.clone(),
         };
 
-        let info_encoded_res = encode_one(info).map_err(StableVecError::CandidError);
-        if let Err(e) = info_encoded_res {
-            for sector in sectors {
-                deallocate(sector);
-            }
-
-            return Err(e);
-        }
-
-        let info_encoded = info_encoded_res?;
-
-        let vec_info_res = allocate::<StableVecInfo<T>>(info_encoded.len())
+        let info_encoded = encode_one(info).map_err(StableVecError::CandidError).unwrap();
+        let info_membox_res = allocate::<StableVecInfo<T>>(info_encoded.len())
             .map_err(|_| StableVecError::OutOfMemory);
 
-        if let Err(e) = vec_info_res {
+        if let Err(e) = info_membox_res {
             for sector in sectors {
                 deallocate(sector);
             }
@@ -135,11 +123,12 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             return Err(e);
         }
 
-        let mut vec_info = vec_info_res?;
+        let mut info_membox = info_membox_res?;
+        info_membox.set_encoded(info_encoded).unwrap();
 
-        vec_info._write_bytes(0, &info_encoded);
-
-        Ok(Self { membox: vec_info })
+        Ok(Self {
+            membox: info_membox,
+        })
     }
 
     pub fn from_ptr(ptr: u64) -> Result<Self, StableVecError> {
@@ -147,19 +136,20 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             MemBox::<StableVecInfo<T>>::from_ptr(ptr, Side::Start)
                 .ok_or(StableVecError::NoVecAtPtr)?
         };
-        membox.get_cloned().map_err(|e| match e {
-            CandidMemBoxError::CandidError(e) => StableVecError::CandidError(e),
-            _ => unreachable!(),
-        })?;
+
+        membox
+            .get_cloned()
+            .map_err(|e| StableVecError::CandidError(e.unwrap_candid()))?;
 
         Ok(Self { membox })
     }
 
     pub fn push(&mut self, element: T) -> Result<(), StableVecError> {
         let encoded_element = encode_one(element).map_err(StableVecError::CandidError)?;
+
         let mut membox =
             allocate::<T>(encoded_element.len()).map_err(|_| StableVecError::OutOfMemory)?;
-        membox._write_bytes(0, &encoded_element);
+        membox.set_encoded(encoded_element).unwrap();
 
         match self.grow_if_needed() {
             Ok(new_sector_opt) => {
@@ -200,10 +190,9 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         assert_ne!(element_ptr, 0);
 
         let membox = unsafe { MemBox::<T>::from_ptr(element_ptr, Side::Start).unwrap() };
-        let element = membox.get_cloned().map_err(|e| match e {
-            CandidMemBoxError::CandidError(e) => StableVecError::CandidError(e),
-            _ => unreachable!(),
-        })?;
+        let element = membox
+            .get_cloned()
+            .map_err(|e| StableVecError::CandidError(e.unwrap_candid()))?;
 
         self.set_len(idx);
         sector._write_word(offset, 0);
@@ -218,15 +207,12 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
 
         let (sector, offset) = self.calculate_inner_index(idx);
         let element_ptr = sector._read_word(offset);
-        if element_ptr == 0 {
-            unreachable!("It can't be empty");
-        }
+        assert_ne!(element_ptr, 0);
 
         let membox = unsafe { MemBox::<T>::from_ptr(element_ptr, Side::Start).unwrap() };
-        let element = membox.get_cloned().map_err(|e| match e {
-            CandidMemBoxError::CandidError(e) => StableVecError::CandidError(e),
-            _ => unreachable!(),
-        })?;
+        let element = membox
+            .get_cloned()
+            .map_err(|e| StableVecError::CandidError(e.unwrap_candid()))?;
 
         Ok(element)
     }
@@ -246,7 +232,8 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
                 CandidMemBoxError::MemBoxOverflow(encoded_element) => {
                     membox = reallocate(membox, encoded_element.len())
                         .map_err(|_| StableVecError::OutOfMemory)?;
-                    membox._write_bytes(0, &encoded_element);
+
+                    membox.set_encoded(encoded_element).unwrap();
 
                     sector._write_word(offset, membox.get_ptr());
 
@@ -373,7 +360,8 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
                 CandidMemBoxError::MemBoxOverflow(encoded_info) => {
                     self.membox = reallocate(self.membox.clone(), encoded_info.len())
                         .map_err(|_| StableVecError::OutOfMemory)?;
-                    self.membox._write_bytes(0, &encoded_info);
+
+                    self.membox.set_encoded(encoded_info).unwrap();
 
                     Ok(())
                 }

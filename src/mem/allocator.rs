@@ -1,14 +1,14 @@
-use crate::mem::membox::common::{Side, Size, Word, MEM_BOX_MIN_SIZE};
+use crate::mem::membox::common::{Side, MEM_BOX_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::MemBox;
-use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
+use std::usize;
 
-pub(crate) const EMPTY_PTR: Word = Word::MAX;
+pub(crate) const EMPTY_PTR: u64 = u64::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
-pub(crate) const SEG_CLASS_PTRS_COUNT: Size = Size::BITS as Size - 4;
+pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
 
 pub(crate) type SegClassId = u32;
 
@@ -16,28 +16,28 @@ pub(crate) type SegClassId = u32;
 pub(crate) struct Free;
 
 impl MemBox<Free> {
-    pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: Word) {
+    pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {
         self.assert_allocated(false, None);
 
         self._write_word(0, prev_ptr);
     }
 
-    pub(crate) fn get_prev_free_ptr(&self) -> Word {
+    pub(crate) fn get_prev_free_ptr(&self) -> u64 {
         self.assert_allocated(false, None);
 
         self._read_word(0)
     }
 
-    pub(crate) fn set_next_free_ptr(&mut self, next_ptr: Word) {
+    pub(crate) fn set_next_free_ptr(&mut self, next_ptr: u64) {
         self.assert_allocated(false, None);
 
-        self._write_word(size_of::<Word>(), next_ptr);
+        self._write_word(PTR_SIZE, next_ptr);
     }
 
-    pub(crate) fn get_next_free_ptr(&self) -> Word {
+    pub(crate) fn get_next_free_ptr(&self) -> u64 {
         self.assert_allocated(false, None);
 
-        self._read_word(size_of::<Word>())
+        self._read_word(PTR_SIZE)
     }
 }
 
@@ -73,11 +73,11 @@ impl Debug for MemBox<Free> {
 pub(crate) struct StableMemoryAllocator;
 
 impl MemBox<StableMemoryAllocator> {
-    const SIZE: Size =
-        MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>() + size_of::<Word>() * 2;
+    const SIZE: usize =
+        MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2;
 
     /// # Safety
-    pub(crate) unsafe fn init(offset: Word) -> Self {
+    pub(crate) unsafe fn init(offset: u64) -> Self {
         let mut allocator = MemBox::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
 
         allocator._write_bytes(0, &MAGIC);
@@ -87,7 +87,7 @@ impl MemBox<StableMemoryAllocator> {
     }
 
     /// # Safety
-    pub(crate) unsafe fn reinit(offset: Word) -> Option<Self> {
+    pub(crate) unsafe fn reinit(offset: u64) -> Option<Self> {
         let membox = MemBox::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
         let (size, allocated) = membox.get_meta();
         if !allocated || size != Self::SIZE {
@@ -103,7 +103,7 @@ impl MemBox<StableMemoryAllocator> {
         Some(membox)
     }
 
-    pub(crate) fn allocate<T>(&mut self, mut size: Size) -> Result<MemBox<T>, OutOfMemory> {
+    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> Result<MemBox<T>, OutOfMemory> {
         if size < MEM_BOX_MIN_SIZE {
             size = MEM_BOX_MIN_SIZE
         }
@@ -113,10 +113,10 @@ impl MemBox<StableMemoryAllocator> {
         let membox_size = membox.get_meta().0;
 
         let total_free = self.get_free_size();
-        self.set_free_size(total_free - membox_size as Word);
+        self.set_free_size(total_free - membox_size as u64);
 
         let total_allocated = self.get_allocated_size();
-        self.set_allocated_size(total_allocated + membox_size as Word);
+        self.set_allocated_size(total_allocated + membox_size as u64);
 
         Ok(membox)
     }
@@ -127,10 +127,10 @@ impl MemBox<StableMemoryAllocator> {
         membox.set_allocated(false);
 
         let total_free = self.get_free_size();
-        self.set_free_size(total_free + size as Word);
+        self.set_free_size(total_free + size as u64);
 
         let total_allocated = self.get_allocated_size();
-        self.set_allocated_size(total_allocated - size as Word);
+        self.set_allocated_size(total_allocated - size as u64);
 
         let membox = unsafe { MemBox::<Free>::from_ptr(membox.get_ptr(), Side::Start).unwrap() };
         self.push_free_membox(membox);
@@ -139,7 +139,7 @@ impl MemBox<StableMemoryAllocator> {
     pub(crate) fn reallocate<T>(
         &mut self,
         membox: MemBox<T>,
-        new_size: Size,
+        new_size: usize,
     ) -> Result<MemBox<T>, OutOfMemory> {
         let mut data = vec![0u8; membox.get_meta().0];
         membox._read_bytes(0, &mut data);
@@ -155,22 +155,22 @@ impl MemBox<StableMemoryAllocator> {
         let empty_ptr_bytes = EMPTY_PTR.to_le_bytes();
 
         for i in 0..SEG_CLASS_PTRS_COUNT {
-            self._write_bytes(MAGIC.len() + i * size_of::<Word>(), &empty_ptr_bytes)
+            self._write_bytes(MAGIC.len() + i as usize * PTR_SIZE, &empty_ptr_bytes)
         }
 
         self.set_allocated_size(0);
         self.set_free_size(0);
 
         let total_free_size =
-            stable::size_pages() * PAGE_SIZE_BYTES as Word - self.get_next_neighbor_ptr();
+            stable::size_pages() * PAGE_SIZE_BYTES as u64 - self.get_next_neighbor_ptr();
 
         if total_free_size > 0 {
             let ptr = self.get_next_neighbor_ptr();
 
             let free_mem_box =
-                unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as Size, false) };
+                unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as usize, false) };
 
-            self.set_free_size(free_mem_box.get_meta().0 as Word);
+            self.set_free_size(free_mem_box.get_meta().0 as u64);
 
             self.push_free_membox(free_mem_box);
         }
@@ -202,7 +202,7 @@ impl MemBox<StableMemoryAllocator> {
     }
 
     /// returns ALLOCATED membox
-    fn pop_allocated_membox(&mut self, size: Size) -> Result<MemBox<Free>, OutOfMemory> {
+    fn pop_allocated_membox(&mut self, size: usize) -> Result<MemBox<Free>, OutOfMemory> {
         let mut seg_class_id = get_seg_class_id(size);
         let free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
 
@@ -268,19 +268,19 @@ impl MemBox<StableMemoryAllocator> {
             // otherwise, grow and if grown successfully, split in two, take first, push second
             None => {
                 let pages_to_grow = size / PAGE_SIZE_BYTES + 1;
-                let prev_total_size = stable::grow(pages_to_grow as u64)? * PAGE_SIZE_BYTES as Word;
+                let prev_total_size = stable::grow(pages_to_grow as u64)? * PAGE_SIZE_BYTES as u64;
 
                 let total_free_size =
-                    stable::size_pages() * PAGE_SIZE_BYTES as Word - prev_total_size;
+                    stable::size_pages() * PAGE_SIZE_BYTES as u64 - prev_total_size;
 
                 let ptr = prev_total_size;
 
                 let new_free_membox =
-                    unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as Size, false) };
+                    unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as usize, false) };
 
                 let new_free_membox_size = new_free_membox.get_meta().0;
                 let total_free_size = self.get_free_size();
-                self.set_free_size(total_free_size + new_free_membox_size as Word);
+                self.set_free_size(total_free_size + new_free_membox_size as u64);
 
                 match unsafe { new_free_membox.split(size) } {
                     Ok((mut result, additional)) => {
@@ -300,21 +300,21 @@ impl MemBox<StableMemoryAllocator> {
         }
     }
 
-    pub(crate) fn get_allocated_size(&self) -> Word {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>())
+    pub(crate) fn get_allocated_size(&self) -> u64 {
+        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE)
     }
 
-    fn set_allocated_size(&mut self, size: Word) {
-        self._write_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>(), size);
+    fn set_allocated_size(&mut self, size: u64) {
+        self._write_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE, size);
     }
 
-    pub(crate) fn get_free_size(&self) -> Word {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>() + size_of::<Word>())
+    pub(crate) fn get_free_size(&self) -> u64 {
+        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE)
     }
 
-    fn set_free_size(&mut self, size: Word) {
+    fn set_free_size(&mut self, size: u64) {
         self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT * size_of::<Word>() + size_of::<Word>(),
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE,
             size,
         );
     }
@@ -394,18 +394,18 @@ impl MemBox<StableMemoryAllocator> {
         membox
     }
 
-    fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: Word) {
+    fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: u64) {
         self._write_word(Self::get_seg_class_head_offset(id), head_ptr);
     }
 
-    fn get_seg_class_head_offset(seg_class_id: SegClassId) -> Size {
+    fn get_seg_class_head_offset(seg_class_id: SegClassId) -> usize {
         assert!(seg_class_id < SEG_CLASS_PTRS_COUNT as SegClassId);
 
-        MAGIC.len() + seg_class_id as Size * size_of::<Word>()
+        MAGIC.len() + seg_class_id as usize * PTR_SIZE
     }
 }
 
-fn get_seg_class_id(size: Size) -> SegClassId {
+fn get_seg_class_id(size: usize) -> SegClassId {
     let mut log = fast_log2(size);
 
     if 2usize.pow(log) < size {

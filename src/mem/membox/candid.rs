@@ -43,6 +43,22 @@ pub enum CandidMemBoxError {
     MemBoxOverflow(Vec<u8>),
 }
 
+impl CandidMemBoxError {
+    pub fn unwrap_candid(self) -> candid::Error {
+        match self {
+            CandidMemBoxError::CandidError(e) => e,
+            _ => unreachable!()
+        }
+    }
+    
+    pub fn unwrap_overflow(self) -> Vec<u8> {
+        match self {
+            CandidMemBoxError::MemBoxOverflow(v) => v,
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl<'de, T: DeserializeOwned + CandidType> MemBox<T> {
     pub fn get_cloned(&self) -> Result<T, CandidMemBoxError> {
         let mut bytes = vec![0u8; self.get_size_bytes()];
@@ -53,8 +69,19 @@ impl<'de, T: DeserializeOwned + CandidType> MemBox<T> {
 
     pub fn set(&mut self, it: T) -> Result<(), CandidMemBoxError> {
         let bytes = encode_one(it).map_err(CandidMemBoxError::CandidError)?;
-        if self.get_size_bytes() < bytes.len() {
+        
+        self.set_encoded(bytes)
+    }
+    
+    pub fn set_encoded(&mut self, mut bytes: Vec<u8>) -> Result<(), CandidMemBoxError> {
+        let size = self.get_size_bytes();
+        
+        if size < bytes.len() {
             return Err(CandidMemBoxError::MemBoxOverflow(bytes));
+        }
+        
+        if size > bytes.len() {
+            bytes.extend(vec![0u8; size - bytes.len()]);
         }
 
         self._write_bytes(0, &bytes);
