@@ -16,10 +16,19 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-#[derive(Debug, Clone, Copy)]
+#[derive(Copy)]
 pub struct MemBox<T> {
     pub(crate) ptr: Word,
     pub(crate) data: PhantomData<T>,
+}
+
+impl<T> Clone for MemBox<T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            data: PhantomData::default(),
+        }
+    }
 }
 
 impl<T> MemBox<T> {
@@ -370,7 +379,7 @@ mod tests {
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
-            let (m3, m4) = m3.split(100).expect("Unable to split m3");
+            let (m3, m4) = m3.split(100).ok().unwrap();
             assert_eq!(m3.get_meta(), (100, false));
             assert_eq!(m3.get_next_neighbor_ptr(), m4.get_ptr());
 
@@ -398,7 +407,7 @@ mod tests {
             );
             assert_eq!(m1.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
-            let (m1, m2) = m1.split(m1_size).expect("Unable to split m1");
+            let (m1, m2) = m1.split(m1_size).ok().unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m2.get_meta(),
@@ -407,7 +416,7 @@ mod tests {
             assert_eq!(m1.get_next_neighbor_ptr(), m2.get_ptr());
             assert_eq!(m2.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
-            let (m2, m3) = m2.split(m2_size).expect("Unable to split m2");
+            let (m2, m3) = m2.split(m2_size).ok().unwrap();
             assert_eq!(m2.get_meta(), (m2_size, false));
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(m2.get_next_neighbor_ptr(), m3.get_ptr());

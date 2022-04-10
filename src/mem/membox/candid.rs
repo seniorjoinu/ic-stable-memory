@@ -1,11 +1,11 @@
-use std::marker::PhantomData;
-use candid::{decode_one, encode_one};
+use crate::MemBox;
 use candid::parser::value::{IDLValue, IDLValueVisitor};
 use candid::types::{Serializer, Type};
+use candid::{decode_one, encode_one};
 use ic_cdk::export::candid::{CandidType, Deserialize};
 use serde::de::{DeserializeOwned, Error};
 use serde::Deserializer;
-use crate::MemBox;
+use std::marker::PhantomData;
 
 impl<T> CandidType for MemBox<T> {
     fn _ty() -> Type {
@@ -42,7 +42,7 @@ pub enum CandidMemBoxError {
     MemBoxOverflow(Vec<u8>),
 }
 
-impl<T: DeserializeOwned + CandidType> MemBox<T> {
+impl<'de, T: DeserializeOwned + CandidType> MemBox<T> {
     pub fn get_cloned(&self) -> Result<T, CandidMemBoxError> {
         let mut bytes = vec![0u8; self.get_size_bytes()];
         self._read_bytes(0, &mut bytes);
@@ -64,11 +64,11 @@ impl<T: DeserializeOwned + CandidType> MemBox<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::mem::membox::candid::CandidMemBoxError;
+    use crate::utils::mem_context::stable;
+    use crate::MemBox;
     use candid::Nat;
     use ic_cdk::export::candid::{CandidType, Deserialize};
-    use crate::mem::membox::candid::CandidMemBoxError;
-    use crate::MemBox;
-    use crate::utils::mem_context::stable;
 
     #[derive(CandidType, Deserialize, Debug, PartialEq, Eq, Clone)]
     struct Test {
@@ -81,7 +81,7 @@ mod tests {
         stable::clear();
         stable::grow(1).unwrap();
 
-        let mut tiny_membox = unsafe { MemBox::<Test>::init(0, 20, true) };
+        let mut tiny_membox = unsafe { MemBox::<Test>::new(0, 20, true) };
         let obj = Test {
             a: Nat::from(12341231231u64),
             b: String::from("The string that sure never fits into 20 bytes"),
@@ -90,7 +90,7 @@ mod tests {
         let res = tiny_membox.set(obj.clone()).expect_err("It should fail");
         match res {
             CandidMemBoxError::MemBoxOverflow(encoded_obj) => {
-                let mut membox = unsafe { MemBox::<Test>::init(0, encoded_obj.len(), true) };
+                let mut membox = unsafe { MemBox::<Test>::new(0, encoded_obj.len(), true) };
                 membox._write_bytes(0, &encoded_obj);
 
                 let obj1 = membox.get_cloned().unwrap();

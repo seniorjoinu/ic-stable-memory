@@ -2,6 +2,8 @@ use crate::mem::membox::common::{Side, Size, Word, MEM_BOX_MIN_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::MemBox;
+use std::collections::BTreeMap;
+use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 
 pub(crate) const EMPTY_PTR: Word = Word::MAX;
@@ -36,6 +38,34 @@ impl MemBox<Free> {
         self.assert_allocated(false, None);
 
         self._read_word(size_of::<Word>())
+    }
+}
+
+impl Debug for MemBox<Free> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let (size, allocated) = self.get_meta();
+
+        let prev_ptr = self.get_next_free_ptr();
+        let prev = if prev_ptr == EMPTY_PTR {
+            String::from("EMPTY")
+        } else {
+            prev_ptr.to_string()
+        };
+
+        let next_ptr = self.get_next_free_ptr();
+        let next = if next_ptr == EMPTY_PTR {
+            String::from("EMPTY")
+        } else {
+            next_ptr.to_string()
+        };
+
+        f.debug_struct("FreeMemBox")
+            .field("ptr", &self.get_ptr())
+            .field("size", &size)
+            .field("is_allocated", &allocated)
+            .field("prev_free", &prev)
+            .field("next_free", &next)
+            .finish()
     }
 }
 
@@ -386,6 +416,40 @@ fn get_seg_class_id(size: Size) -> SegClassId {
         (log - 4) as SegClassId
     } else {
         0
+    }
+}
+
+impl Debug for MemBox<StableMemoryAllocator> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("StableMemoryAllocator");
+
+        d.field("total_allocated", &self.get_allocated_size())
+            .field("total_free", &self.get_free_size());
+
+        for id in 0..SEG_CLASS_PTRS_COUNT as u32 {
+            let head = unsafe { self.get_seg_class_head(id) };
+            let mut seg_class = vec![];
+
+            match head {
+                None => seg_class.push(String::from("EMPTY")),
+                Some(mut membox) => {
+                    seg_class.push(format!("{:?}", membox));
+
+                    let mut next_ptr = membox.get_next_free_ptr();
+                    while next_ptr != EMPTY_PTR {
+                        membox = unsafe {
+                            MemBox::from_ptr(membox.get_next_free_ptr(), Side::Start).unwrap()
+                        };
+                        seg_class.push(format!("{:?}", membox));
+                        next_ptr = membox.get_next_free_ptr();
+                    }
+                }
+            }
+
+            d.field(format!("up to 2**{}", id + 4).as_str(), &seg_class);
+        }
+
+        d.finish()
     }
 }
 
