@@ -2,8 +2,7 @@ use crate::mem::membox::candid::CandidMemBoxError;
 use crate::mem::membox::common::Side;
 use crate::{allocate, deallocate, reallocate, MemBox};
 use candid::types::{Serializer, Type};
-use candid::{decode_one, encode_one};
-use ic_cdk::export::candid::{CandidType, Deserialize, Error as CandidError};
+use candid::{decode_one, encode_one, CandidType, Deserialize, Error as CandidError};
 use serde::de::DeserializeOwned;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
@@ -19,6 +18,8 @@ pub enum StableVecError {
     CandidError(CandidError),
     OutOfMemory,
     OutOfBounds,
+    NoVecAtPtr,
+    IsEmpty,
 }
 
 #[derive(Clone)]
@@ -123,10 +124,10 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
 
         let info_encoded = info_encoded_res?;
 
-        let stack_info_res = allocate::<StableVecInfo<T>>(info_encoded.len())
+        let vec_info_res = allocate::<StableVecInfo<T>>(info_encoded.len())
             .map_err(|_| StableVecError::OutOfMemory);
 
-        if let Err(e) = stack_info_res {
+        if let Err(e) = vec_info_res {
             for sector in sectors {
                 deallocate(sector);
             }
@@ -134,11 +135,24 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             return Err(e);
         }
 
-        let mut stack_info = stack_info_res?;
+        let mut vec_info = vec_info_res?;
 
-        stack_info._write_bytes(0, &info_encoded);
+        vec_info._write_bytes(0, &info_encoded);
 
-        Ok(Self { membox: stack_info })
+        Ok(Self { membox: vec_info })
+    }
+
+    pub fn from_ptr(ptr: u64) -> Result<Self, StableVecError> {
+        let membox = unsafe {
+            MemBox::<StableVecInfo<T>>::from_ptr(ptr, Side::Start)
+                .ok_or(StableVecError::NoVecAtPtr)?
+        };
+        membox.get_cloned().map_err(|e| match e {
+            CandidMemBoxError::CandidError(e) => StableVecError::CandidError(e),
+            _ => unreachable!(),
+        })?;
+
+        Ok(Self { membox })
     }
 
     pub fn push(&mut self, element: T) -> Result<(), StableVecError> {
@@ -146,13 +160,6 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         let mut membox =
             allocate::<T>(encoded_element.len()).map_err(|_| StableVecError::OutOfMemory)?;
         membox._write_bytes(0, &encoded_element);
-
-        println!(
-            "idx: {}; ptr: {}; size: {}",
-            self.len(),
-            membox.get_ptr(),
-            membox.get_size_bytes()
-        );
 
         match self.grow_if_needed() {
             Ok(new_sector_opt) => {
@@ -180,10 +187,10 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         }
     }
 
-    pub fn pop(&mut self) -> Option<T> {
+    pub fn pop(&mut self) -> Result<T, StableVecError> {
         let len = self.len();
         if len == 0 {
-            return None;
+            return Err(StableVecError::IsEmpty);
         }
 
         let idx = len - 1;
@@ -192,19 +199,16 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         let element_ptr = sector._read_word(offset);
         assert_ne!(element_ptr, 0);
 
-        let membox = unsafe { MemBox::<T>::from_ptr(element_ptr, Side::Start)? };
-        let elem = membox.get_cloned();
-        let mut bytes = vec![0u8; membox.get_size_bytes()];
-        membox._read_bytes(0, &mut bytes);
-
-        let el: candid::Result<T> = decode_one(&bytes);
-
-        let element = elem.ok()?;
+        let membox = unsafe { MemBox::<T>::from_ptr(element_ptr, Side::Start).unwrap() };
+        let element = membox.get_cloned().map_err(|e| match e {
+            CandidMemBoxError::CandidError(e) => StableVecError::CandidError(e),
+            _ => unreachable!(),
+        })?;
 
         self.set_len(idx);
         sector._write_word(offset, 0);
 
-        Some(element)
+        Ok(element)
     }
 
     fn get_cloned(&self, idx: u64) -> Result<T, StableVecError> {
@@ -232,11 +236,9 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             return Err(StableVecError::OutOfBounds);
         }
 
-        let (sector, offset) = self.calculate_inner_index(idx);
+        let (mut sector, offset) = self.calculate_inner_index(idx);
         let element_ptr = sector._read_word(offset);
-        if element_ptr == 0 {
-            unreachable!("It can't be empty");
-        }
+        assert_ne!(element_ptr, 0);
 
         let mut membox = unsafe { MemBox::<T>::from_ptr(element_ptr, Side::Start).unwrap() };
         match membox.set(element) {
@@ -246,6 +248,8 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
                         .map_err(|_| StableVecError::OutOfMemory)?;
                     membox._write_bytes(0, &encoded_element);
 
+                    sector._write_word(offset, membox.get_ptr());
+
                     Ok(())
                 }
                 CandidMemBoxError::CandidError(e) => Err(StableVecError::CandidError(e)),
@@ -254,12 +258,36 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         }
     }
 
+    pub fn destroy(self) {
+        let info = self.get_info();
+
+        for i in 0..info.len {
+            let (sector, offset) = self.calculate_inner_index(i);
+
+            let ptr = sector._read_word(offset);
+            if ptr != 0 {
+                let membox = unsafe { MemBox::<T>::from_ptr(ptr, Side::Start).unwrap() };
+                deallocate(membox);
+            }
+        }
+
+        for sector in info.sectors {
+            deallocate(sector);
+        }
+
+        deallocate(self.membox);
+    }
+
     pub fn capacity(&self) -> u64 {
         self.get_info().capacity
     }
 
     pub fn len(&self) -> u64 {
         self.get_info().len
+    }
+
+    pub fn get_ptr(&self) -> u64 {
+        self.membox.get_ptr()
     }
 
     fn set_len(&mut self, new_len: u64) {
@@ -403,7 +431,7 @@ impl<T: CandidType + DeserializeOwned + Debug> Display for StableVec<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::vec::StableVec;
+    use crate::collections::vec::{StableVec, STABLE_VEC_DEFAULT_CAPACITY};
     use crate::utils::mem_context::stable;
     use crate::{get_allocator, init_allocator};
     use candid::{CandidType, Deserialize, Nat};
@@ -415,15 +443,48 @@ mod tests {
     }
 
     #[test]
-    fn creation_works_fine() {
+    fn create_destroy_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+
+        init_allocator(0);
+
+        let mut stable_vec = StableVec::<Test>::new().unwrap();
+        assert_eq!(stable_vec.capacity(), STABLE_VEC_DEFAULT_CAPACITY);
+        assert_eq!(stable_vec.len(), 0);
+
+        stable_vec = StableVec::<Test>::from_ptr(stable_vec.get_ptr())
+            .ok()
+            .unwrap();
+        assert_eq!(stable_vec.capacity(), STABLE_VEC_DEFAULT_CAPACITY);
+        assert_eq!(stable_vec.len(), 0);
+
+        stable_vec.destroy();
+
+        stable_vec = StableVec::<Test>::new_with_capacity(10_000).unwrap();
+        assert_eq!(stable_vec.capacity(), 10_000);
+        assert_eq!(stable_vec.len(), 0);
+
+        stable_vec = StableVec::<Test>::from_ptr(stable_vec.get_ptr())
+            .ok()
+            .unwrap();
+        assert_eq!(stable_vec.capacity(), 10_000);
+        assert_eq!(stable_vec.len(), 0);
+
+        stable_vec.destroy();
+    }
+
+    #[test]
+    fn push_pop_work_fine() {
         stable::clear();
         stable::grow(1).unwrap();
 
         init_allocator(0);
 
         let mut stable_vec = StableVec::new().unwrap();
+        let count = 1000u64;
 
-        for i in 0..10 {
+        for i in 0..count {
             stable_vec
                 .push(Test {
                     a: Nat::from(i),
@@ -432,19 +493,38 @@ mod tests {
                 .unwrap_or_else(|e| panic!("Unable to push at step {}: {:?}", i, e));
         }
 
-        println!("{:#?}", get_allocator());
-        println!("{:#?}", stable_vec);
-        println!("{}", stable_vec);
+        assert_eq!(stable_vec.len(), count, "Invalid len after push");
 
-        assert_eq!(stable_vec.len(), 10, "Invalid len after push");
+        for i in 0..count {
+            stable_vec
+                .set(
+                    i,
+                    Test {
+                        a: Nat::from(i),
+                        b: format!(
+                            "Much bigger str that should cause reallocation of the element {}",
+                            i
+                        ),
+                    },
+                )
+                .unwrap_or_else(|e| panic!("Unable to set at step {}: {:?}", i, e));
+        }
 
-        for i in 0..10 {
+        assert_eq!(stable_vec.len(), count, "Invalid len after push");
+
+        for i in 0..count {
             let it = stable_vec
                 .pop()
-                .unwrap_or_else(|| panic!("Unable to pop at step {}", i));
+                .unwrap_or_else(|e| panic!("Unable to pop at step {}: {:?}", i, e));
 
-            assert_eq!(it.a, Nat::from(9 - i));
-            assert_eq!(it.b, format!("Str {}", 9 - i));
+            assert_eq!(it.a, Nat::from(count - 1 - i));
+            assert_eq!(
+                it.b,
+                format!(
+                    "Much bigger str that should cause reallocation of the element {}",
+                    count - 1 - i
+                )
+            );
         }
 
         assert_eq!(stable_vec.len(), 0, "Invalid len after pop");

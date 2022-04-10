@@ -1,6 +1,6 @@
-use utils::mem_context::OutOfMemory;
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::mem::membox::common::MemBox;
+use utils::mem_context::OutOfMemory;
 
 mod collections;
 mod mem;

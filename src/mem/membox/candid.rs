@@ -1,6 +1,7 @@
 use crate::MemBox;
 use candid::parser::value::{IDLValue, IDLValueVisitor};
 use candid::types::{Serializer, Type};
+use candid::utils::decode_one_allow_trailing;
 use candid::{decode_one, encode_one};
 use ic_cdk::export::candid::{CandidType, Deserialize};
 use serde::de::{DeserializeOwned, Error};
@@ -47,7 +48,7 @@ impl<'de, T: DeserializeOwned + CandidType> MemBox<T> {
         let mut bytes = vec![0u8; self.get_size_bytes()];
         self._read_bytes(0, &mut bytes);
 
-        decode_one(&bytes).map_err(CandidMemBoxError::CandidError)
+        decode_one_allow_trailing(&bytes).map_err(CandidMemBoxError::CandidError)
     }
 
     pub fn set(&mut self, it: T) -> Result<(), CandidMemBoxError> {
