@@ -1,5 +1,5 @@
 use crate::mem::membox::candid::CandidMemBoxError;
-use crate::mem::membox::common::{PTR_SIZE, Side};
+use crate::mem::membox::common::{Side, PTR_SIZE};
 use crate::{allocate, deallocate, reallocate, MemBox};
 use candid::types::{Serializer, Type};
 use candid::{encode_one, CandidType, Deserialize, Error as CandidError};
@@ -66,7 +66,7 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
 
     pub fn new_with_capacity(capacity: u64) -> Result<Self, StableVecError> {
         let mut sectors = vec![];
-        let mut capacity_size = capacity * PTR_SIZE;
+        let mut capacity_size = capacity * PTR_SIZE as u64;
 
         while capacity_size > MAX_SECTOR_SIZE as u64 {
             let sector_res = allocate::<StableVecSector<T>>(MAX_SECTOR_SIZE)
@@ -111,7 +111,9 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
             sectors: sectors.clone(),
         };
 
-        let info_encoded = encode_one(info).map_err(StableVecError::CandidError).unwrap();
+        let info_encoded = encode_one(info)
+            .map_err(StableVecError::CandidError)
+            .unwrap();
         let info_membox_res = allocate::<StableVecInfo<T>>(info_encoded.len())
             .map_err(|_| StableVecError::OutOfMemory);
 
@@ -306,7 +308,7 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
 
             let sector = allocate(new_sector_size).map_err(|_| StableVecError::OutOfMemory)?;
 
-            info.capacity += new_sector_size as u64 / PTR_SIZE;
+            info.capacity += (new_sector_size / PTR_SIZE) as u64;
             info.sectors.push(sector.clone());
 
             if let Err(e) = self.set_info(info) {
@@ -328,7 +330,7 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
         let mut idx_counter: u64 = 0;
 
         for sector in info.sectors {
-            let ptrs_in_sector = sector.get_size_bytes() as u64 / PTR_SIZE;
+            let ptrs_in_sector = (sector.get_size_bytes() / PTR_SIZE) as u64;
             idx_counter += ptrs_in_sector;
 
             if idx_counter > idx {
@@ -339,7 +341,7 @@ impl<'de, T: CandidType + DeserializeOwned> StableVec<T> {
                 // usize cast guaranteed by the fact that a single sector can only hold usize of
                 // bytes and we iterate over them one by one
 
-                let offset = ((ptrs_in_sector - (idx_counter - idx)) * PTR_SIZE) as usize;
+                let offset = ((ptrs_in_sector - (idx_counter - idx)) as usize * PTR_SIZE);
 
                 return (sector, offset);
             }

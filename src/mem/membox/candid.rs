@@ -1,9 +1,8 @@
+use crate::utils::candid::decode_one_allow_trailing;
 use crate::MemBox;
 use candid::parser::value::{IDLValue, IDLValueVisitor};
 use candid::types::{Serializer, Type};
-use candid::utils::decode_one_allow_trailing;
-use candid::{decode_one, encode_one};
-use ic_cdk::export::candid::{CandidType, Deserialize};
+use candid::{encode_one, CandidType, Deserialize};
 use serde::de::{DeserializeOwned, Error};
 use serde::Deserializer;
 use std::marker::PhantomData;
@@ -47,10 +46,10 @@ impl CandidMemBoxError {
     pub fn unwrap_candid(self) -> candid::Error {
         match self {
             CandidMemBoxError::CandidError(e) => e,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
-    
+
     pub fn unwrap_overflow(self) -> Vec<u8> {
         match self {
             CandidMemBoxError::MemBoxOverflow(v) => v,
@@ -69,17 +68,17 @@ impl<'de, T: DeserializeOwned + CandidType> MemBox<T> {
 
     pub fn set(&mut self, it: T) -> Result<(), CandidMemBoxError> {
         let bytes = encode_one(it).map_err(CandidMemBoxError::CandidError)?;
-        
+
         self.set_encoded(bytes)
     }
-    
+
     pub fn set_encoded(&mut self, mut bytes: Vec<u8>) -> Result<(), CandidMemBoxError> {
         let size = self.get_size_bytes();
-        
+
         if size < bytes.len() {
             return Err(CandidMemBoxError::MemBoxOverflow(bytes));
         }
-        
+
         if size > bytes.len() {
             bytes.extend(vec![0u8; size - bytes.len()]);
         }

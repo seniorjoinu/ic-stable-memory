@@ -2,9 +2,9 @@ use crate::mem::allocator::StableMemoryAllocator;
 use crate::mem::membox::common::MemBox;
 use utils::mem_context::OutOfMemory;
 
-mod collections;
-mod mem;
-mod utils;
+pub mod collections;
+pub mod mem;
+pub mod utils;
 
 static mut STABLE_MEMORY_ALLOCATOR: Option<MemBox<StableMemoryAllocator>> = None;
 

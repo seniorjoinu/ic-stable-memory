@@ -3,12 +3,12 @@ use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::MemBox;
 use std::fmt::{Debug, Formatter};
-use std::mem::size_of;
 use std::usize;
 
 pub(crate) const EMPTY_PTR: u64 = u64::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
 pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
+pub(crate) const CUSTOM_DATA_PTRS_COUNT: usize = 4;
 
 pub(crate) type SegClassId = u32;
 
@@ -73,8 +73,10 @@ impl Debug for MemBox<Free> {
 pub(crate) struct StableMemoryAllocator;
 
 impl MemBox<StableMemoryAllocator> {
-    const SIZE: usize =
-        MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2;
+    const SIZE: usize = MAGIC.len()
+        + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
+        + PTR_SIZE * 2
+        + CUSTOM_DATA_PTRS_COUNT * PTR_SIZE;
 
     /// # Safety
     pub(crate) unsafe fn init(offset: u64) -> Self {
@@ -154,8 +156,8 @@ impl MemBox<StableMemoryAllocator> {
     pub(crate) fn reset(&mut self) {
         let empty_ptr_bytes = EMPTY_PTR.to_le_bytes();
 
-        for i in 0..SEG_CLASS_PTRS_COUNT {
-            self._write_bytes(MAGIC.len() + i as usize * PTR_SIZE, &empty_ptr_bytes)
+        for i in 0..(SEG_CLASS_PTRS_COUNT as usize + CUSTOM_DATA_PTRS_COUNT) {
+            self._write_bytes(MAGIC.len() + i * PTR_SIZE, &empty_ptr_bytes)
         }
 
         self.set_allocated_size(0);
@@ -310,6 +312,23 @@ impl MemBox<StableMemoryAllocator> {
 
     pub(crate) fn get_free_size(&self) -> u64 {
         self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE)
+    }
+
+    pub fn set_custom_data_ptr(&mut self, idx: usize, ptr: u64) {
+        assert!(idx < CUSTOM_DATA_PTRS_COUNT);
+
+        self._write_word(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + idx * PTR_SIZE,
+            ptr,
+        );
+    }
+
+    pub fn get_custom_data_ptr(&mut self, idx: usize) -> u64 {
+        assert!(idx < CUSTOM_DATA_PTRS_COUNT);
+
+        self._read_word(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + idx * PTR_SIZE,
+        )
     }
 
     fn set_free_size(&mut self, size: u64) {
