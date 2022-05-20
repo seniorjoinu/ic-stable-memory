@@ -12,6 +12,6 @@ keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "memory", "co
 path = "./src/lib.rs"
 
 [dependencies]
-ic-cdk = "0.5.0"
+ic-cdk = "0.5.1"
 candid = "0.7.14"
-serde = "1.0.136"
+serde = "1.0.137"

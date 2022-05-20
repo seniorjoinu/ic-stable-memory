@@ -1,4 +1,9 @@
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
+use candid::parser::value::{IDLValue, IDLValueVisitor};
+use candid::types::{Serializer, Type};
+use candid::{CandidType, Deserialize};
+use serde::de::Error;
+use serde::Deserializer;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::usize;
@@ -15,13 +20,14 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-#[derive(Copy)]
-pub struct MemBox<T> {
+pub struct RawSBox<T> {
     pub(crate) ptr: u64,
     pub(crate) data: PhantomData<T>,
 }
 
-impl<T> Clone for MemBox<T> {
+impl<T> Copy for RawSBox<T> {}
+
+impl<T> Clone for RawSBox<T> {
     fn clone(&self) -> Self {
         Self {
             ptr: self.ptr,
@@ -30,7 +36,36 @@ impl<T> Clone for MemBox<T> {
     }
 }
 
-impl<T> MemBox<T> {
+impl<T> CandidType for RawSBox<T> {
+    fn _ty() -> Type {
+        Type::Nat64
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self.get_ptr().idl_serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for RawSBox<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
+        match idl_value {
+            IDLValue::Nat64(ptr) => Ok(RawSBox {
+                ptr,
+                data: PhantomData::default(),
+            }),
+            _ => Err(D::Error::custom("Unable to deserialize a Membox")),
+        }
+    }
+}
+
+impl<T> RawSBox<T> {
     pub fn get_size_bytes(&self) -> usize {
         self.get_meta().0
     }
@@ -283,9 +318,9 @@ impl<T> MemBox<T> {
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::mem::membox::common::{Side, MEM_BOX_META_SIZE};
+    use crate::mem::membox::raw::{Side, MEM_BOX_META_SIZE};
     use crate::utils::mem_context::stable;
-    use crate::MemBox;
+    use crate::RawSBox;
 
     #[test]
     fn creation_works_fine() {
@@ -297,63 +332,63 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = MemBox::<()>::new(0, m1_size, false);
+            let m1 = RawSBox::<()>::new(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 (0 + m1_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = RawSBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = RawSBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m1 = MemBox::<()>::from_ptr(0, Side::Start).unwrap();
+            let m1 = RawSBox::<()>::from_ptr(0, Side::Start).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m1 = MemBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m1 = RawSBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m2 = MemBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m2 = RawSBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m2 = MemBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m2 = RawSBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m3 = MemBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m3 = RawSBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as u64
             );
 
-            let m3 = MemBox::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m3 = RawSBox::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
@@ -372,9 +407,9 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = MemBox::<()>::new(0, m1_size, false);
-            let m2 = MemBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = MemBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = RawSBox::<()>::new(0, m1_size, false);
+            let m2 = RawSBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = RawSBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
@@ -429,7 +464,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let mut m1 = MemBox::<()>::new(0, 100, true);
+            let mut m1 = RawSBox::<()>::new(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];

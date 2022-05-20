@@ -1,7 +1,7 @@
-use crate::mem::membox::common::{Side, MEM_BOX_MIN_SIZE, PTR_SIZE};
+use crate::mem::membox::raw::{Side, MEM_BOX_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
-use crate::MemBox;
+use crate::RawSBox;
 use std::fmt::{Debug, Formatter};
 use std::usize;
 
@@ -15,7 +15,7 @@ pub(crate) type SegClassId = u32;
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Free;
 
-impl MemBox<Free> {
+impl RawSBox<Free> {
     pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {
         self.assert_allocated(false, None);
 
@@ -41,7 +41,7 @@ impl MemBox<Free> {
     }
 }
 
-impl Debug for MemBox<Free> {
+impl Debug for RawSBox<Free> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let (size, allocated) = self.get_meta();
 
@@ -72,7 +72,7 @@ impl Debug for MemBox<Free> {
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct StableMemoryAllocator;
 
-impl MemBox<StableMemoryAllocator> {
+impl RawSBox<StableMemoryAllocator> {
     const SIZE: usize = MAGIC.len()
         + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
         + PTR_SIZE * 2
@@ -80,7 +80,7 @@ impl MemBox<StableMemoryAllocator> {
 
     /// # Safety
     pub(crate) unsafe fn init(offset: u64) -> Self {
-        let mut allocator = MemBox::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
+        let mut allocator = RawSBox::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
 
         allocator._write_bytes(0, &MAGIC);
         allocator.reset();
@@ -90,7 +90,7 @@ impl MemBox<StableMemoryAllocator> {
 
     /// # Safety
     pub(crate) unsafe fn reinit(offset: u64) -> Option<Self> {
-        let membox = MemBox::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
+        let membox = RawSBox::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
         let (size, allocated) = membox.get_meta();
         if !allocated || size != Self::SIZE {
             return None;
@@ -105,13 +105,13 @@ impl MemBox<StableMemoryAllocator> {
         Some(membox)
     }
 
-    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> Result<MemBox<T>, OutOfMemory> {
+    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> Result<RawSBox<T>, OutOfMemory> {
         if size < MEM_BOX_MIN_SIZE {
             size = MEM_BOX_MIN_SIZE
         }
 
         let free_membox = self.pop_allocated_membox(size)?;
-        let membox = unsafe { MemBox::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap() };
+        let membox = unsafe { RawSBox::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap() };
         let membox_size = membox.get_meta().0;
 
         let total_free = self.get_free_size();
@@ -123,7 +123,7 @@ impl MemBox<StableMemoryAllocator> {
         Ok(membox)
     }
 
-    pub(crate) fn deallocate<T>(&mut self, mut membox: MemBox<T>) {
+    pub(crate) fn deallocate<T>(&mut self, mut membox: RawSBox<T>) {
         let (size, allocated) = membox.get_meta();
         membox.assert_allocated(true, Some(allocated));
         membox.set_allocated(false);
@@ -134,15 +134,15 @@ impl MemBox<StableMemoryAllocator> {
         let total_allocated = self.get_allocated_size();
         self.set_allocated_size(total_allocated - size as u64);
 
-        let membox = unsafe { MemBox::<Free>::from_ptr(membox.get_ptr(), Side::Start).unwrap() };
+        let membox = unsafe { RawSBox::<Free>::from_ptr(membox.get_ptr(), Side::Start).unwrap() };
         self.push_free_membox(membox);
     }
 
     pub(crate) fn reallocate<T>(
         &mut self,
-        membox: MemBox<T>,
+        membox: RawSBox<T>,
         new_size: usize,
-    ) -> Result<MemBox<T>, OutOfMemory> {
+    ) -> Result<RawSBox<T>, OutOfMemory> {
         let mut data = vec![0u8; membox.get_meta().0];
         membox._read_bytes(0, &mut data);
 
@@ -170,7 +170,7 @@ impl MemBox<StableMemoryAllocator> {
             let ptr = self.get_next_neighbor_ptr();
 
             let free_mem_box =
-                unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as usize, false) };
+                unsafe { RawSBox::<Free>::new_total_size(ptr, total_free_size as usize, false) };
 
             self.set_free_size(free_mem_box.get_meta().0 as u64);
 
@@ -178,7 +178,7 @@ impl MemBox<StableMemoryAllocator> {
         }
     }
 
-    fn push_free_membox(&mut self, mut membox: MemBox<Free>) {
+    fn push_free_membox(&mut self, mut membox: RawSBox<Free>) {
         membox.assert_allocated(false, None);
 
         membox = self.maybe_merge_with_free_neighbors(membox);
@@ -204,7 +204,7 @@ impl MemBox<StableMemoryAllocator> {
     }
 
     /// returns ALLOCATED membox
-    fn pop_allocated_membox(&mut self, size: usize) -> Result<MemBox<Free>, OutOfMemory> {
+    fn pop_allocated_membox(&mut self, size: usize) -> Result<RawSBox<Free>, OutOfMemory> {
         let mut seg_class_id = get_seg_class_id(size);
         let free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
 
@@ -227,7 +227,7 @@ impl MemBox<StableMemoryAllocator> {
                     break;
                 }
 
-                free_membox = unsafe { MemBox::<Free>::from_ptr(next_ptr, Side::Start).unwrap() };
+                free_membox = unsafe { RawSBox::<Free>::from_ptr(next_ptr, Side::Start).unwrap() };
             }
         }
 
@@ -277,8 +277,9 @@ impl MemBox<StableMemoryAllocator> {
 
                 let ptr = prev_total_size;
 
-                let new_free_membox =
-                    unsafe { MemBox::<Free>::new_total_size(ptr, total_free_size as usize, false) };
+                let new_free_membox = unsafe {
+                    RawSBox::<Free>::new_total_size(ptr, total_free_size as usize, false)
+                };
 
                 let new_free_membox_size = new_free_membox.get_meta().0;
                 let total_free_size = self.get_free_size();
@@ -338,32 +339,32 @@ impl MemBox<StableMemoryAllocator> {
         );
     }
 
-    unsafe fn get_seg_class_head(&self, id: SegClassId) -> Option<MemBox<Free>> {
+    unsafe fn get_seg_class_head(&self, id: SegClassId) -> Option<RawSBox<Free>> {
         let ptr = self._read_word(Self::get_seg_class_head_offset(id));
         if ptr == EMPTY_PTR {
             return None;
         }
 
-        Some(MemBox::<Free>::from_ptr(ptr, Side::Start).unwrap())
+        Some(RawSBox::<Free>::from_ptr(ptr, Side::Start).unwrap())
     }
 
-    fn eject_from_freelist(&mut self, seg_class_id: SegClassId, membox: &mut MemBox<Free>) {
+    fn eject_from_freelist(&mut self, seg_class_id: SegClassId, membox: &mut RawSBox<Free>) {
         // if membox is the head of it's seg class
         if membox.get_prev_free_ptr() == self.get_ptr() {
             self.set_seg_class_head(seg_class_id, membox.get_next_free_ptr());
 
             let next_opt =
-                unsafe { MemBox::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
+                unsafe { RawSBox::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
 
             if let Some(mut next) = next_opt {
                 next.set_prev_free_ptr(self.get_ptr());
             }
         } else {
             let mut prev = unsafe {
-                MemBox::<Free>::from_ptr(membox.get_prev_free_ptr(), Side::Start).unwrap()
+                RawSBox::<Free>::from_ptr(membox.get_prev_free_ptr(), Side::Start).unwrap()
             };
             let next_opt =
-                unsafe { MemBox::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
+                unsafe { RawSBox::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
 
             if let Some(mut next) = next_opt {
                 prev.set_next_free_ptr(next.get_ptr());
@@ -377,7 +378,7 @@ impl MemBox<StableMemoryAllocator> {
         membox.set_next_free_ptr(EMPTY_PTR);
     }
 
-    fn maybe_merge_with_free_neighbors(&mut self, mut membox: MemBox<Free>) -> MemBox<Free> {
+    fn maybe_merge_with_free_neighbors(&mut self, mut membox: RawSBox<Free>) -> RawSBox<Free> {
         let prev_neighbor_opt = unsafe { membox.get_neighbor(Side::Start) };
         membox = if let Some(mut prev_neighbor) = prev_neighbor_opt {
             let (neighbor_size, neighbor_allocated) = prev_neighbor.get_meta();
@@ -438,7 +439,7 @@ fn get_seg_class_id(size: usize) -> SegClassId {
     }
 }
 
-impl Debug for MemBox<StableMemoryAllocator> {
+impl Debug for RawSBox<StableMemoryAllocator> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut d = f.debug_struct("StableMemoryAllocator");
 
@@ -457,7 +458,7 @@ impl Debug for MemBox<StableMemoryAllocator> {
                     let mut next_ptr = membox.get_next_free_ptr();
                     while next_ptr != EMPTY_PTR {
                         membox = unsafe {
-                            MemBox::from_ptr(membox.get_next_free_ptr(), Side::Start).unwrap()
+                            RawSBox::from_ptr(membox.get_next_free_ptr(), Side::Start).unwrap()
                         };
                         seg_class.push(format!("{:?}", membox));
                         next_ptr = membox.get_next_free_ptr();
@@ -476,7 +477,7 @@ impl Debug for MemBox<StableMemoryAllocator> {
 mod tests {
     use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
     use crate::utils::mem_context::stable;
-    use crate::{MemBox, StableMemoryAllocator};
+    use crate::{RawSBox, StableMemoryAllocator};
 
     #[test]
     fn initialization_works_fine() {
@@ -484,7 +485,7 @@ mod tests {
         stable::grow(1).expect("Unable to grow");
 
         unsafe {
-            let sma = MemBox::<StableMemoryAllocator>::init(0);
+            let sma = RawSBox::<StableMemoryAllocator>::init(0);
             let free_memboxes: Vec<_> = (0..SEG_CLASS_PTRS_COUNT)
                 .filter_map(|it| sma.get_seg_class_head(it as u32))
                 .collect();
@@ -493,7 +494,7 @@ mod tests {
             let free_membox1 = free_memboxes[0];
             let (size1, allocated1) = free_membox1.get_meta();
 
-            let sma = MemBox::<StableMemoryAllocator>::reinit(0).unwrap();
+            let sma = RawSBox::<StableMemoryAllocator>::reinit(0).unwrap();
             let free_memboxes: Vec<_> = (0..SEG_CLASS_PTRS_COUNT)
                 .filter_map(|it| sma.get_seg_class_head(it as u32))
                 .collect();
@@ -513,7 +514,7 @@ mod tests {
         stable::grow(1).expect("Unable to grow");
 
         unsafe {
-            let mut sma = MemBox::<StableMemoryAllocator>::init(0);
+            let mut sma = RawSBox::<StableMemoryAllocator>::init(0);
             let mut memboxes = vec![];
 
             // try to allocate 1000 MB

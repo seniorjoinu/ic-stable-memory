@@ -1,5 +1,5 @@
-use crate::mem::membox::common::{Side, PTR_SIZE};
-use crate::{allocate, deallocate, MemBox};
+/*use crate::mem::membox::raw::{Side, PTR_SIZE};
+use crate::{allocate, deallocate, RawMemBox};
 use candid::types::{Serializer, Type};
 use candid::{encode_one, CandidType, Error as CandidError};
 use serde::de::DeserializeOwned;
@@ -24,11 +24,11 @@ struct BTreeNode<K, V> {
 #[derive(CandidType, Deserialize)]
 struct BTreeInfo<K, V> {
     class: u16,
-    head: MemBox<BTreeNode<K, V>>,
+    head: RawMemBox<BTreeNode<K, V>>,
 }
 
 pub struct StableBTreeMap<K, V> {
-    membox: MemBox<BTreeInfo<K, V>>,
+    membox: RawMemBox<BTreeInfo<K, V>>,
     key: PhantomData<K>,
     value: PhantomData<V>,
 }
@@ -87,7 +87,7 @@ where
 
     pub fn from_ptr(ptr: u64) -> Result<Self, StableBTreeMapError> {
         let membox = unsafe {
-            MemBox::<BTreeInfo<K, V>>::from_ptr(ptr, Side::Start)
+            RawMemBox::<BTreeInfo<K, V>>::from_ptr(ptr, Side::Start)
                 .ok_or(StableBTreeMapError::NoBTreeMapAt)?
         };
         membox
@@ -102,7 +102,9 @@ where
     }
 }
 
-fn create_node_of_class<K, V>(class: u16) -> Result<MemBox<BTreeNode<K, V>>, StableBTreeMapError> {
+fn create_node_of_class<K, V>(
+    class: u16,
+) -> Result<RawMemBox<BTreeNode<K, V>>, StableBTreeMapError> {
     let node_size = (class as usize * 2 - 1) * PTR_SIZE;
     let mut membox =
         allocate::<BTreeNode<K, V>>(node_size).map_err(|_| StableBTreeMapError::OutOfMemory)?;
@@ -113,7 +115,7 @@ fn create_node_of_class<K, V>(class: u16) -> Result<MemBox<BTreeNode<K, V>>, Sta
     Ok(membox)
 }
 
-impl<K, V> MemBox<BTreeNode<K, V>> {
+impl<K, V> RawMemBox<BTreeNode<K, V>> {
     pub(crate) fn get_value_ptr(&self, idx: u16, class: u16) -> u64 {
         assert!(idx < class - 1);
         self._read_word(idx as usize * PTR_SIZE)
@@ -134,3 +136,4 @@ impl<K, V> MemBox<BTreeNode<K, V>> {
         self._write_word((class - 1 + idx) as usize * PTR_SIZE, child_ptr);
     }
 }
+*/
