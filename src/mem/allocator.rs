@@ -138,12 +138,14 @@ impl RawSBox<StableMemoryAllocator> {
         self.push_free_membox(membox);
     }
 
+    // TODO: allocate inplace
+    
     pub(crate) fn reallocate<T>(
         &mut self,
         membox: RawSBox<T>,
         new_size: usize,
     ) -> Result<RawSBox<T>, OutOfMemory> {
-        let mut data = vec![0u8; membox.get_meta().0];
+        let mut data = vec![0u8; membox.get_size_bytes()];
         membox._read_bytes(0, &mut data);
 
         self.deallocate(membox);

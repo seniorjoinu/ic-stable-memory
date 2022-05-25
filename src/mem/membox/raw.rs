@@ -277,11 +277,7 @@ impl<T> RawSBox<T> {
             }
         };
 
-        assert_eq!(
-            actual, expected,
-            "Allocated assertion (expected {}, actual {})",
-            expected, actual
-        );
+        assert_eq!(actual, expected);
     }
 
     fn read_meta(ptr: u64) -> (usize, bool) {

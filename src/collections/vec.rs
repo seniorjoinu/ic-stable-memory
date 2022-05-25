@@ -32,9 +32,6 @@ impl SVecError {
 #[derive(Copy, Clone)]
 pub struct SVec<T: Copy>(SBox<StableVecInfo>, PhantomData<T>);
 
-#[derive(Copy, Clone)]
-struct SVecSector;
-
 // TODO: optimize - separate len and capacity from sectors
 #[derive(CandidType, Deserialize, Clone)]
 struct StableVecInfo {
@@ -43,6 +40,9 @@ struct StableVecInfo {
     // TODO: optimize - replace with struct {ptr; size}
     sectors: Vec<RawSBox<SVecSector>>,
 }
+
+#[derive(Copy, Clone)]
+struct SVecSector;
 
 impl<T: Copy> SVec<T> {
     pub fn new() -> Result<Self, SVecError> {
@@ -107,8 +107,8 @@ impl<T: Copy> SVec<T> {
         Ok(Self(info_sbox, PhantomData::default()))
     }
 
-    pub fn push(&mut self, element: &T) -> Result<(), SVecError> {
-        let new_sector_opt = self.grow_if_needed()?;
+    pub unsafe fn push(&mut self, element: &T) -> Result<bool, SVecError> {
+        let (res, new_sector_opt) = self.grow_if_needed()?;
 
         self.set_len(self.len() + 1);
 
@@ -122,7 +122,7 @@ impl<T: Copy> SVec<T> {
         let bytes_element = element.as_bytes();
         sector._write_bytes(offset, &bytes_element);
 
-        Ok(())
+        Ok(res)
     }
 
     pub fn pop(&mut self) -> Result<T, SVecError> {
@@ -134,8 +134,6 @@ impl<T: Copy> SVec<T> {
         let idx = len - 1;
 
         let (sector, offset) = self.calculate_inner_index(idx);
-
-        println!("{}", offset / size_of::<T>());
 
         let mut element_bytes = vec![0u8; size_of::<T>()];
         sector._read_bytes(offset, &mut element_bytes);
@@ -209,7 +207,7 @@ impl<T: Copy> SVec<T> {
         let mut info = self.get_info();
         info.len = new_len;
 
-        self.set_info(info).unwrap();
+        unsafe { self.set_info(&info).unwrap() };
     }
 
     pub fn is_about_to_grow(&self) -> bool {
@@ -218,7 +216,7 @@ impl<T: Copy> SVec<T> {
         info.len == info.capacity
     }
 
-    fn grow_if_needed(&mut self) -> Result<Option<RawSBox<SVecSector>>, SVecError> {
+    unsafe fn grow_if_needed(&mut self) -> Result<(bool, Option<RawSBox<SVecSector>>), SVecError> {
         let mut info = self.get_info();
 
         if info.len == info.capacity {
@@ -237,15 +235,16 @@ impl<T: Copy> SVec<T> {
             info.capacity += (new_sector_size / size_of::<T>()) as u64;
             info.sectors.push(sector);
 
-            if let Err(e) = self.set_info(info) {
-                deallocate(sector);
+            match self.set_info(&info) { 
+                Err(e) => {
+                    deallocate(sector);
 
-                Err(e)
-            } else {
-                Ok(Some(sector))
+                    Err(e)    
+                },
+                Ok(res) => Ok((res, Some(sector)))
             }
         } else {
-            Ok(None)
+            Ok((false, None))
         }
     }
 
@@ -280,7 +279,7 @@ impl<T: Copy> SVec<T> {
         self.0.get_cloned().unwrap()
     }
 
-    fn set_info(&mut self, new_info: StableVecInfo) -> Result<(), SVecError> {
+    unsafe fn set_info(&mut self, new_info: &StableVecInfo) -> Result<bool, SVecError> {
         self.0.set(new_info).map_err(SVecError::from_sbox_err)
     }
 }
@@ -372,8 +371,7 @@ mod tests {
         for i in 0..count {
             let it = Test { a: i, b: count - i };
 
-            stable_vec
-                .push(&it)
+            unsafe { stable_vec.push(&it) }
                 .unwrap_or_else(|e| panic!("Unable to push at step {}: {:?}", i, e));
         }
 
@@ -442,8 +440,7 @@ mod tests {
             })
             .unwrap();
 
-            stable_vec
-                .push(&it)
+            unsafe { stable_vec.push(&it) }
                 .unwrap_or_else(|e| panic!("Unable to push at step {}: {:?}", i, e));
         }
 

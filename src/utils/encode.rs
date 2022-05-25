@@ -38,6 +38,7 @@ impl<T: Copy> AsBytes for T {
     }
 
     fn from_bytes(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), size_of::<T>());
         unsafe { (bytes.as_ptr() as *const T).read() }
     }
 }

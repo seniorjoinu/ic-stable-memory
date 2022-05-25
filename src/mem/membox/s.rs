@@ -1,5 +1,5 @@
 use crate::utils::encode::decode_one_allow_trailing;
-use crate::{allocate, reallocate, RawSBox, deallocate};
+use crate::{allocate, deallocate, reallocate, OutOfMemory, RawSBox};
 use candid::{encode_one, CandidType};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
@@ -10,16 +10,25 @@ pub enum SBoxError {
     OutOfMemory,
 }
 
-#[derive(CandidType)]
-pub struct SBox<T: CandidType>(RawSBox<T>);
-
-impl<T: CandidType> Clone for SBox<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl SBoxError {
+    pub fn unwrap_oom(self) -> OutOfMemory {
+        match self {
+            SBoxError::OutOfMemory => OutOfMemory,
+            _ => unreachable!(),
+        }
     }
 }
 
-impl<T: CandidType> Copy for SBox<T> {}
+#[derive(CandidType)]
+pub struct SBox<T>(RawSBox<T>);
+
+impl<T> Clone for SBox<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<T> Copy for SBox<T> {}
 
 impl<'de, T: CandidType + Deserialize<'de>> Deserialize<'de> for SBox<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -47,18 +56,24 @@ impl<'de, T: DeserializeOwned + CandidType> SBox<T> {
         decode_one_allow_trailing(&bytes).map_err(SBoxError::CandidError)
     }
 
-    pub fn set(&mut self, it: T) -> Result<(), SBoxError> {
+    /// # Safety
+    /// Make sure you update all references pointing to this sbox after setting a new value to it.
+    /// Set can cause a reallocation that will change the location of the data.
+    /// Use the return bool value to determine if the location is changed (true = you need to update).
+    pub unsafe fn set(&mut self, it: &T) -> Result<bool, SBoxError> {
         let bytes = encode_one(it).map_err(SBoxError::CandidError)?;
+        let mut res = false;
 
         if self.0.get_size_bytes() < bytes.len() {
             self.0 = reallocate(self.as_raw(), bytes.len()).map_err(|_| SBoxError::OutOfMemory)?;
+            res = true;
         }
 
         self.0._write_bytes(0, &bytes);
 
-        Ok(())
+        Ok(res)
     }
-    
+
     pub fn destroy(self) {
         deallocate(self.0)
     }
