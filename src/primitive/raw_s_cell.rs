@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Formatter};
+use crate::utils::encode::AsBytes;
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
 use candid::parser::value::{IDLValue, IDLValueVisitor};
 use candid::types::{Serializer, Type};
@@ -7,12 +9,13 @@ use serde::Deserializer;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::usize;
+use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
 
 pub(crate) const ALLOCATED: usize = 2usize.pow(usize::BITS - 1); // first biggest bit set to 1, other set to 0
 pub(crate) const FREE: usize = 2usize.pow(usize::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
-pub(crate) const MEM_BOX_META_SIZE: usize = size_of::<usize>() as usize;
+pub(crate) const CELL_META_SIZE: usize = size_of::<usize>() as usize;
 pub(crate) const PTR_SIZE: usize = size_of::<u64>();
-pub(crate) const MEM_BOX_MIN_SIZE: usize = PTR_SIZE * 2;
+pub(crate) const CELL_MIN_SIZE: usize = PTR_SIZE * 2;
 
 pub(crate) enum Side {
     Start,
@@ -20,23 +23,18 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-pub struct RawSBox<T> {
+pub struct RawSCell<T> {
     pub(crate) ptr: u64,
     pub(crate) data: PhantomData<T>,
 }
 
-impl<T> Copy for RawSBox<T> {}
-
-impl<T> Clone for RawSBox<T> {
-    fn clone(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            data: PhantomData::default(),
-        }
+impl<T: NotFree + NotStableMemoryAllocator> Debug for RawSCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(format!("S_PTR({})", self.ptr).as_str())
     }
 }
 
-impl<T> CandidType for RawSBox<T> {
+impl<T> CandidType for RawSCell<T> {
     fn _ty() -> Type {
         Type::Nat64
     }
@@ -49,14 +47,14 @@ impl<T> CandidType for RawSBox<T> {
     }
 }
 
-impl<'de, T> Deserialize<'de> for RawSBox<T> {
+impl<'de, T> Deserialize<'de> for RawSCell<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
         match idl_value {
-            IDLValue::Nat64(ptr) => Ok(RawSBox {
+            IDLValue::Nat64(ptr) => Ok(RawSCell {
                 ptr,
                 data: PhantomData::default(),
             }),
@@ -65,12 +63,12 @@ impl<'de, T> Deserialize<'de> for RawSBox<T> {
     }
 }
 
-impl<T> RawSBox<T> {
+impl<T> RawSCell<T> {
     pub fn get_size_bytes(&self) -> usize {
         self.get_meta().0
     }
 
-    pub fn _write_bytes(&mut self, offset: usize, data: &[u8]) {
+    pub fn _write_bytes(&self, offset: usize, data: &[u8]) {
         let (size, _) = self.get_meta();
 
         assert!(
@@ -80,7 +78,7 @@ impl<T> RawSBox<T> {
             offset + data.len()
         );
 
-        stable::write(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as u64, data);
+        stable::write(self.get_ptr() + (CELL_META_SIZE + offset) as u64, data);
     }
 
     pub fn _write_word(&mut self, offset: usize, word: u64) {
@@ -98,7 +96,7 @@ impl<T> RawSBox<T> {
             data.len() + offset
         );
 
-        stable::read(self.get_ptr() + (MEM_BOX_META_SIZE + offset) as u64, data);
+        stable::read(self.get_ptr() + (CELL_META_SIZE + offset) as u64, data);
     }
 
     pub fn _read_word(&self, offset: usize) -> u64 {
@@ -112,9 +110,9 @@ impl<T> RawSBox<T> {
     /// Make sure there are no duplicates of this `MemBox`, before creating.
     pub(crate) unsafe fn new(ptr: u64, size: usize, allocated: bool) -> Self {
         assert!(
-            size >= MEM_BOX_MIN_SIZE,
+            size >= CELL_MIN_SIZE,
             "Size lesser than {} ({})",
-            MEM_BOX_MIN_SIZE,
+            CELL_MIN_SIZE,
             size
         );
         assert!(size < ALLOCATED, "Size is bigger than {} ({})", FREE, size);
@@ -131,7 +129,7 @@ impl<T> RawSBox<T> {
     /// # Safety
     /// Make sure there no duplicates of this `MemBox`, before creation.
     pub(crate) unsafe fn new_total_size(ptr: u64, total_size: usize, allocated: bool) -> Self {
-        Self::new(ptr, total_size - MEM_BOX_META_SIZE * 2, allocated)
+        Self::new(ptr, total_size - CELL_META_SIZE * 2, allocated)
     }
 
     /// # Safety
@@ -145,26 +143,26 @@ impl<T> RawSBox<T> {
         let (size_1, size_2) = match side {
             Side::Start => {
                 let (size_1, _) = Self::read_meta(ptr);
-                if size_1 < MEM_BOX_MIN_SIZE {
+                if size_1 < CELL_MIN_SIZE {
                     return None;
                 }
 
-                let (size_2, _) = Self::read_meta(ptr + (MEM_BOX_META_SIZE + size_1) as u64);
+                let (size_2, _) = Self::read_meta(ptr + (CELL_META_SIZE + size_1) as u64);
 
                 (size_1, size_2)
             }
             Side::End => {
-                ptr -= MEM_BOX_META_SIZE as u64;
+                ptr -= CELL_META_SIZE as u64;
                 let (size_2, _) = Self::read_meta(ptr);
-                if size_2 < MEM_BOX_MIN_SIZE {
+                if size_2 < CELL_MIN_SIZE {
                     return None;
                 }
 
-                if ptr < (size_2 + MEM_BOX_META_SIZE) as u64 {
+                if ptr < (size_2 + CELL_META_SIZE) as u64 {
                     return None;
                 }
 
-                ptr -= (size_2 + MEM_BOX_META_SIZE) as u64;
+                ptr -= (size_2 + CELL_META_SIZE) as u64;
                 let (size_1, _) = Self::read_meta(ptr);
 
                 (size_1, size_2)
@@ -194,6 +192,10 @@ impl<T> RawSBox<T> {
         Self::write_meta(self.get_ptr(), size, allocated);
     }
 
+    pub unsafe fn clone(&self) -> Self {
+        Self::from_ptr(self.ptr, Side::Start).unwrap()
+    }
+
     /// Splits this free `MemBox` into two new ones, if possible. The first one will have the provided size, the second
     /// one will have the rest (but not less than `min_size_second`. If size is not enough, returns
     /// `Err(self)`. Both new `MemBox`-es are free.
@@ -202,22 +204,22 @@ impl<T> RawSBox<T> {
     /// Make sure there are no duplicates of this `MemBox` left before splitting.
     pub(crate) unsafe fn split(self, size_first: usize) -> Result<(Self, Self), Self> {
         assert!(
-            size_first >= MEM_BOX_MIN_SIZE,
+            size_first >= CELL_MIN_SIZE,
             "Size lesser than {} ({})",
-            MEM_BOX_MIN_SIZE,
+            CELL_MIN_SIZE,
             size_first
         );
 
         let (size, allocated) = self.get_meta();
         self.assert_allocated(false, Some(allocated));
 
-        if size < size_first + MEM_BOX_MIN_SIZE + MEM_BOX_META_SIZE * 2 {
+        if size < size_first + CELL_MIN_SIZE + CELL_META_SIZE * 2 {
             return Err(self);
         }
 
         let first = Self::new(self.get_ptr(), size_first, false);
 
-        let size_second = size - size_first - MEM_BOX_META_SIZE * 2;
+        let size_second = size - size_first - CELL_META_SIZE * 2;
 
         let second = Self::new(first.get_next_neighbor_ptr(), size_second, false);
 
@@ -249,7 +251,7 @@ impl<T> RawSBox<T> {
             self_ptr
         };
 
-        let size = self_size + neighbor_size + MEM_BOX_META_SIZE * 2;
+        let size = self_size + neighbor_size + CELL_META_SIZE * 2;
 
         Self::new(ptr, size, false)
     }
@@ -265,7 +267,7 @@ impl<T> RawSBox<T> {
     }
 
     pub(crate) fn get_next_neighbor_ptr(&self) -> u64 {
-        self.get_ptr() + (MEM_BOX_META_SIZE * 2 + self.get_meta().0) as u64
+        self.get_ptr() + (CELL_META_SIZE * 2 + self.get_meta().0) as u64
     }
 
     pub(crate) fn assert_allocated(&self, expected: bool, val: Option<bool>) {
@@ -281,7 +283,7 @@ impl<T> RawSBox<T> {
     }
 
     fn read_meta(ptr: u64) -> (usize, bool) {
-        let mut meta = [0u8; MEM_BOX_META_SIZE as usize];
+        let mut meta = [0u8; CELL_META_SIZE as usize];
         stable::read(ptr, &mut meta);
 
         let encoded_size = usize::from_le_bytes(meta);
@@ -307,16 +309,27 @@ impl<T> RawSBox<T> {
         let meta = encoded_size.to_le_bytes();
 
         stable::write(ptr, &meta);
-        stable::write(ptr + (MEM_BOX_META_SIZE + size) as u64, &meta);
+        stable::write(ptr + (CELL_META_SIZE + size) as u64, &meta);
+    }
+}
+
+impl<T> AsBytes for RawSCell<T> {
+    unsafe fn as_bytes(&self) -> Vec<u8> {
+        self.ptr.as_bytes()
+    }
+
+    unsafe fn from_bytes(bytes: &[u8]) -> Self {
+        Self::from_ptr(u64::from_bytes(bytes), Side::Start)
+            .expect("Unable to make unsafe cell from bytes")
     }
 }
 
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::mem::membox::raw::{Side, MEM_BOX_META_SIZE};
+    use crate::primitive::raw_s_cell::{Side, CELL_META_SIZE};
     use crate::utils::mem_context::stable;
-    use crate::RawSBox;
+    use crate::RawSCell;
 
     #[test]
     fn creation_works_fine() {
@@ -328,67 +341,67 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = RawSBox::<()>::new(0, m1_size, false);
+            let m1 = RawSCell::<()>::new(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
-                (0 + m1_size + MEM_BOX_META_SIZE * 2) as u64
+                (0 + m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = RawSCell::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
-                m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
+                m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = RawSCell::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
-                m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as u64
+                m2.get_next_neighbor_ptr() + (m3_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m1 = RawSBox::<()>::from_ptr(0, Side::Start).unwrap();
+            let m1 = RawSCell::<()>::from_ptr(0, Side::Start).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
-                0 + (m1_size + MEM_BOX_META_SIZE * 2) as u64
+                0 + (m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m1 = RawSBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m1 = RawSCell::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
-                0 + (m1_size + MEM_BOX_META_SIZE * 2) as u64
+                0 + (m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSBox::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m2 = RawSCell::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
-                m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
+                m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m2 = RawSCell::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
-                m1.get_next_neighbor_ptr() + (m2_size + MEM_BOX_META_SIZE * 2) as u64
+                m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSBox::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m3 = RawSCell::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
-                m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as u64
+                m2.get_next_neighbor_ptr() + (m3_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSBox::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m3 = RawSCell::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
-                m2.get_next_neighbor_ptr() + (m3_size + MEM_BOX_META_SIZE * 2) as u64
+                m2.get_next_neighbor_ptr() + (m3_size + CELL_META_SIZE * 2) as u64
             );
         }
     }
@@ -403,9 +416,9 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = RawSBox::<()>::new(0, m1_size, false);
-            let m2 = RawSBox::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = RawSBox::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = RawSCell::<()>::new(0, m1_size, false);
+            let m2 = RawSCell::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = RawSCell::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
@@ -413,10 +426,7 @@ mod tests {
             assert_eq!(m3.get_meta(), (100, false));
             assert_eq!(m3.get_next_neighbor_ptr(), m4.get_ptr());
 
-            assert_eq!(
-                m4.get_meta(),
-                (m3_size - 100 - 2 * MEM_BOX_META_SIZE, false)
-            );
+            assert_eq!(m4.get_meta(), (m3_size - 100 - 2 * CELL_META_SIZE, false));
             assert_eq!(m4.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
             let m3 = m4.merge_with_neighbor(m3);
@@ -426,14 +436,14 @@ mod tests {
             let m2 = m2.merge_with_neighbor(m3);
             assert_eq!(
                 m2.get_meta(),
-                (m2_size + m3_size + 2 * MEM_BOX_META_SIZE, false)
+                (m2_size + m3_size + 2 * CELL_META_SIZE, false)
             );
             assert_eq!(m2.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
             let m1 = m2.merge_with_neighbor(m1);
             assert_eq!(
                 m1.get_meta(),
-                (m1_size + m2_size + m3_size + 4 * MEM_BOX_META_SIZE, false)
+                (m1_size + m2_size + m3_size + 4 * CELL_META_SIZE, false)
             );
             assert_eq!(m1.get_next_neighbor_ptr(), initial_m3_next_ptr);
 
@@ -441,7 +451,7 @@ mod tests {
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m2.get_meta(),
-                (m2_size + m3_size + 2 * MEM_BOX_META_SIZE, false)
+                (m2_size + m3_size + 2 * CELL_META_SIZE, false)
             );
             assert_eq!(m1.get_next_neighbor_ptr(), m2.get_ptr());
             assert_eq!(m2.get_next_neighbor_ptr(), initial_m3_next_ptr);
@@ -460,7 +470,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let mut m1 = RawSBox::<()>::new(0, 100, true);
+            let m1 = RawSCell::<()>::new(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];

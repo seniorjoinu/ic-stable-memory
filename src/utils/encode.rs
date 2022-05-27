@@ -23,22 +23,20 @@ pub fn decode_one_allow_trailing<'de, T: CandidType + Deserialize<'de>>(
 }
 
 pub trait AsBytes {
-    fn as_bytes(&self) -> Vec<u8>;
-    fn from_bytes(bytes: &[u8]) -> Self;
+    unsafe fn as_bytes(&self) -> Vec<u8>;
+    unsafe fn from_bytes(bytes: &[u8]) -> Self;
 }
 
 impl<T: Copy> AsBytes for T {
-    fn as_bytes(&self) -> Vec<u8> {
-        unsafe {
-            Vec::from(from_raw_parts(
-                (self as *const T) as *const u8,
-                size_of::<T>(),
-            ))
-        }
+    unsafe fn as_bytes(&self) -> Vec<u8> {
+        Vec::from(from_raw_parts(
+            (self as *const T) as *const u8,
+            size_of::<T>(),
+        ))
     }
 
-    fn from_bytes(bytes: &[u8]) -> Self {
+    unsafe fn from_bytes(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), size_of::<T>());
-        unsafe { (bytes.as_ptr() as *const T).read() }
+        *(bytes.as_ptr() as *const T)
     }
 }

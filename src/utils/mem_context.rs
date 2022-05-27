@@ -93,32 +93,31 @@ pub mod stable {
 #[cfg(not(target_family = "wasm"))]
 pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
+    use std::cell::RefCell;
 
-    static mut CONTEXT: TestMemContext = TestMemContext { data: vec![] };
-
-    pub fn clear() {
-        unsafe {
-            CONTEXT = TestMemContext { data: vec![] };
-        }
+    thread_local! {
+        static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
     }
 
-    pub(crate) fn _get_context() -> &'static mut TestMemContext {
-        unsafe { &mut CONTEXT }
+    pub fn clear() {
+        CONTEXT.with(|it| {
+            it.borrow_mut().data = vec![];
+        });
     }
 
     pub fn size_pages() -> u64 {
-        unsafe { CONTEXT.size_pages() }
+        CONTEXT.with(|it| it.borrow().size_pages())
     }
 
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
-        unsafe { CONTEXT.grow(new_pages) }
+        CONTEXT.with(|it| it.borrow_mut().grow(new_pages))
     }
 
     pub fn read(offset: u64, buf: &mut [u8]) {
-        unsafe { CONTEXT.read(offset, buf) }
+        CONTEXT.with(|it| it.borrow().read(offset, buf))
     }
 
     pub fn write(offset: u64, buf: &[u8]) {
-        unsafe { CONTEXT.write(offset, buf) }
+        CONTEXT.with(|it| it.borrow_mut().write(offset, buf))
     }
 }
