@@ -1,8 +1,8 @@
-use crate::primitive::s_cellbox::SCellBox;
-use crate::primitive::s_slice::Side;
-use crate::utils::encode::{AsBytes, SPhantomData};
+use crate::utils::encode::AsBytes;
 use crate::{allocate, deallocate, OutOfMemory, SSlice};
+use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize};
+use serde::Deserializer;
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
@@ -11,17 +11,52 @@ use std::mem::size_of;
 const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
 const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
 
+struct SVecSector;
+
 #[derive(CandidType, Deserialize)]
-struct SVec<T: Sized + AsBytes> {
+struct SVecInfo {
     _len: u64,
     _capacity: u64,
     _sectors: Vec<SSlice<SVecSector>>,
     _sector_sizes: Vec<u32>,
-    _data: SPhantomData<T>,
 }
 
-#[derive(Copy, Clone)]
-struct SVecSector;
+pub struct SVec<T> {
+    _info: SVecInfo,
+    _data: PhantomData<T>,
+}
+
+impl<T> CandidType for SVec<T> {
+    fn _ty() -> Type {
+        SVecInfo::_ty()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self._info.idl_serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for SVec<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let _info = SVecInfo::deserialize(deserializer)?;
+        Ok(Self {
+            _info,
+            _data: PhantomData::default(),
+        })
+    }
+}
+
+impl<T: Sized + AsBytes> Default for SVec<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<T: Sized + AsBytes> SVec<T> {
     pub fn new() -> Self {
@@ -29,17 +64,21 @@ impl<T: Sized + AsBytes> SVec<T> {
     }
 
     pub fn new_with_capacity(capacity: u64) -> Self {
-        Self {
+        let _info = SVecInfo {
             _len: 0,
             _capacity: capacity,
             _sectors: Vec::new(),
             _sector_sizes: Vec::new(),
-            _data: SPhantomData::default(),
+        };
+
+        Self {
+            _info,
+            _data: PhantomData::default(),
         }
     }
 
     pub fn push(&mut self, element: &T) -> Result<(), OutOfMemory> {
-        if self._sectors.is_empty() {
+        if self._info._sectors.is_empty() {
             self.init_sectors()?;
         }
 
@@ -70,7 +109,7 @@ impl<T: Sized + AsBytes> SVec<T> {
         unsafe { Some(T::from_bytes(&element_bytes)) }
     }
 
-    fn get(&self, idx: u64) -> Option<T> {
+    pub fn get(&self, idx: u64) -> Option<T> {
         if idx >= self.len() {
             return None;
         }
@@ -83,13 +122,8 @@ impl<T: Sized + AsBytes> SVec<T> {
         unsafe { Some(T::from_bytes(&element_bytes)) }
     }
 
-    pub fn set(&mut self, idx: u64, element: &T) -> Result<Option<T>, OutOfMemory> {
-        assert!(idx <= self.len(), "Out of bounds");
-
-        if idx == self.len() {
-            self.push(element)?;
-            return Ok(None);
-        }
+    pub fn replace(&mut self, idx: u64, element: &T) -> T {
+        assert!(idx < self.len(), "Out of bounds");
 
         let (sector, offset) = self.calculate_inner_index(idx);
 
@@ -100,49 +134,70 @@ impl<T: Sized + AsBytes> SVec<T> {
         let bytes_element = unsafe { element.as_bytes() };
         sector._write_bytes(offset, &bytes_element);
 
-        Ok(Some(prev_element))
+        prev_element
+    }
+
+    pub fn swap(&mut self, idx1: u64, idx2: u64) {
+        assert!(idx1 < self.len(), "Out of bounds");
+        assert!(idx2 < self.len(), "Out of bounds");
+
+        if self.is_empty() || self.len() == 1 {
+            return;
+        }
+
+        let (sector1, offset1) = self.calculate_inner_index(idx1);
+        let (sector2, offset2) = self.calculate_inner_index(idx2);
+
+        let mut elem1 = vec![0u8; size_of::<T>()];
+        sector1._read_bytes(offset1, &mut elem1);
+
+        let mut elem2 = vec![0u8; size_of::<T>()];
+        sector2._read_bytes(offset2, &mut elem2);
+
+        sector1._write_bytes(offset1, &elem2);
+        sector2._write_bytes(offset2, &elem1);
     }
 
     pub fn drop(self) {
-        for sector in self._sectors {
+        for sector in self._info._sectors {
             deallocate(sector);
         }
     }
 
     pub fn capacity(&self) -> u64 {
-        self._capacity
+        self._info._capacity
     }
 
     fn set_capacity(&mut self, new_capacity: u64) {
-        self._capacity = new_capacity;
+        self._info._capacity = new_capacity;
     }
 
     pub fn len(&self) -> u64 {
-        self._len
+        self._info._len
     }
 
     pub fn is_empty(&self) -> bool {
-        self._len == 0
+        self._info._len == 0
     }
 
     fn set_len(&mut self, new_len: u64) {
-        self._len = new_len;
+        self._info._len = new_len;
     }
 
     fn get_sector_size(&self, idx: usize) -> usize {
-        self._sector_sizes[idx] as usize
+        self._info._sector_sizes[idx] as usize
     }
 
     fn get_sector(&self, idx: usize) -> &SSlice<SVecSector> {
-        &self._sectors[idx]
+        &self._info._sectors[idx]
     }
 
     fn get_sector_mut(&mut self, idx: usize) -> &mut SSlice<SVecSector> {
-        &mut self._sectors[idx]
+        &mut self._info._sectors[idx]
     }
 
     fn get_sectors_count(&self) -> usize {
-        self._sectors.len()
+        self._info._sectors.len()
     }
 
     pub fn is_about_to_grow(&self) -> bool {
@@ -160,8 +215,8 @@ impl<T: Sized + AsBytes> SVec<T> {
 
             let sector = allocate(new_sector_size)?;
             self.set_capacity(self.capacity() + (new_sector_size / size_of::<T>()) as u64);
-            self._sectors.push(sector);
-            self._sector_sizes.push(new_sector_size as u32);
+            self._info._sectors.push(sector);
+            self._info._sector_sizes.push(new_sector_size as u32);
         }
 
         Ok(())
@@ -172,7 +227,7 @@ impl<T: Sized + AsBytes> SVec<T> {
 
         let mut idx_counter: u64 = 0;
 
-        for (sector_idx, sector_size) in self._sector_sizes.iter().enumerate() {
+        for (sector_idx, sector_size) in self._info._sector_sizes.iter().enumerate() {
             let elems_in_sector = (*sector_size as usize / size_of::<T>()) as u64;
             idx_counter += elems_in_sector;
 
@@ -199,7 +254,7 @@ impl<T: Sized + AsBytes> SVec<T> {
     fn init_sectors(&mut self) -> Result<(), OutOfMemory> {
         let mut sectors = vec![];
         let mut sector_sizes = vec![];
-        let mut capacity_size = self._capacity * size_of::<T>() as u64;
+        let mut capacity_size = self._info._capacity * size_of::<T>() as u64;
 
         while capacity_size > MAX_SECTOR_SIZE as u64 {
             let sector_res = allocate::<SVecSector>(MAX_SECTOR_SIZE);
@@ -238,8 +293,8 @@ impl<T: Sized + AsBytes> SVec<T> {
             }
         }
 
-        self._sectors = sectors.iter().map(|it| unsafe { it.clone() }).collect();
-        self._sector_sizes = sector_sizes;
+        self._info._sectors = sectors.iter().map(|it| unsafe { it.clone() }).collect();
+        self._info._sector_sizes = sector_sizes;
 
         Ok(())
     }
@@ -248,7 +303,7 @@ impl<T: Sized + AsBytes> SVec<T> {
 impl<T: Debug + Sized + AsBytes> Debug for SVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut sector_strs = Vec::new();
-        for sector in &self._sectors {
+        for sector in &self._info._sectors {
             let mut elems = Vec::new();
 
             let size = sector.get_size_bytes();
@@ -264,14 +319,14 @@ impl<T: Debug + Sized + AsBytes> Debug for SVec<T> {
         }
 
         f.debug_struct("SVec")
-            .field("len", &self._len)
-            .field("capacity", &self._capacity)
+            .field("len", &self._info._len)
+            .field("capacity", &self._info._capacity)
             .field("sectors", &sector_strs)
             .finish()
     }
 }
 
-impl<T: Copy + Display> Display for SVec<T> {
+impl<T: Sized + AsBytes + Display> Display for SVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut elements = vec![];
 
@@ -336,7 +391,7 @@ mod tests {
         for i in 0..count {
             let it = Test { a: count - i, b: i };
 
-            stable_vec.set(i, &it).unwrap();
+            stable_vec.replace(i, &it);
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after set");
@@ -393,9 +448,7 @@ mod tests {
             })
             .unwrap();
 
-            if let Some(prev_it) = stable_vec.set(i, &it).unwrap() {
-                prev_it.drop();
-            }
+            stable_vec.replace(i, &it).drop();
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
