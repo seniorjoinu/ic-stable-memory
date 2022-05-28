@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Formatter};
+use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
 use crate::utils::encode::AsBytes;
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
 use candid::parser::value::{IDLValue, IDLValueVisitor};
@@ -6,10 +6,10 @@ use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize};
 use serde::de::Error;
 use serde::Deserializer;
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::usize;
-use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
 
 pub(crate) const ALLOCATED: usize = 2usize.pow(usize::BITS - 1); // first biggest bit set to 1, other set to 0
 pub(crate) const FREE: usize = 2usize.pow(usize::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
@@ -23,18 +23,18 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-pub struct RawSCell<T> {
+pub struct SSlice<T> {
     pub(crate) ptr: u64,
     pub(crate) data: PhantomData<T>,
 }
 
-impl<T: NotFree + NotStableMemoryAllocator> Debug for RawSCell<T> {
+impl<T: NotFree + NotStableMemoryAllocator> Debug for SSlice<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(format!("S_PTR({})", self.ptr).as_str())
     }
 }
 
-impl<T> CandidType for RawSCell<T> {
+impl<T> CandidType for SSlice<T> {
     fn _ty() -> Type {
         Type::Nat64
     }
@@ -47,14 +47,14 @@ impl<T> CandidType for RawSCell<T> {
     }
 }
 
-impl<'de, T> Deserialize<'de> for RawSCell<T> {
+impl<'de, T> Deserialize<'de> for SSlice<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
         match idl_value {
-            IDLValue::Nat64(ptr) => Ok(RawSCell {
+            IDLValue::Nat64(ptr) => Ok(SSlice {
                 ptr,
                 data: PhantomData::default(),
             }),
@@ -63,7 +63,7 @@ impl<'de, T> Deserialize<'de> for RawSCell<T> {
     }
 }
 
-impl<T> RawSCell<T> {
+impl<T> SSlice<T> {
     pub fn get_size_bytes(&self) -> usize {
         self.get_meta().0
     }
@@ -313,7 +313,7 @@ impl<T> RawSCell<T> {
     }
 }
 
-impl<T> AsBytes for RawSCell<T> {
+impl<T> AsBytes for SSlice<T> {
     unsafe fn as_bytes(&self) -> Vec<u8> {
         self.ptr.as_bytes()
     }
@@ -327,9 +327,9 @@ impl<T> AsBytes for RawSCell<T> {
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::primitive::raw_s_cell::{Side, CELL_META_SIZE};
+    use crate::primitive::s_slice::{Side, CELL_META_SIZE};
     use crate::utils::mem_context::stable;
-    use crate::RawSCell;
+    use crate::SSlice;
 
     #[test]
     fn creation_works_fine() {
@@ -341,63 +341,63 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = RawSCell::<()>::new(0, m1_size, false);
+            let m1 = SSlice::<()>::new(0, m1_size, false);
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 (0 + m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSCell::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
+            let m2 = SSlice::<()>::new(m1.get_next_neighbor_ptr(), m2_size, true);
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSCell::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m3 = SSlice::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m1 = RawSCell::<()>::from_ptr(0, Side::Start).unwrap();
+            let m1 = SSlice::<()>::from_ptr(0, Side::Start).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m1 = RawSCell::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m1 = SSlice::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m1.get_meta(), (m1_size, false));
             assert_eq!(
                 m1.get_next_neighbor_ptr(),
                 0 + (m1_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSCell::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m2 = SSlice::<()>::from_ptr(m1.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m2 = RawSCell::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m2 = SSlice::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m2.get_meta(), (m2_size, true));
             assert_eq!(
                 m2.get_next_neighbor_ptr(),
                 m1.get_next_neighbor_ptr() + (m2_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSCell::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
+            let m3 = SSlice::<()>::from_ptr(m2.get_next_neighbor_ptr(), Side::Start).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
                 m2.get_next_neighbor_ptr() + (m3_size + CELL_META_SIZE * 2) as u64
             );
 
-            let m3 = RawSCell::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
+            let m3 = SSlice::<()>::from_ptr(m3.get_next_neighbor_ptr(), Side::End).unwrap();
             assert_eq!(m3.get_meta(), (m3_size, false));
             assert_eq!(
                 m3.get_next_neighbor_ptr(),
@@ -416,9 +416,9 @@ mod tests {
             let m2_size: usize = 200;
             let m3_size: usize = 300;
 
-            let m1 = RawSCell::<()>::new(0, m1_size, false);
-            let m2 = RawSCell::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
-            let m3 = RawSCell::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
+            let m1 = SSlice::<()>::new(0, m1_size, false);
+            let m2 = SSlice::<()>::new(m1.get_next_neighbor_ptr(), m2_size, false);
+            let m3 = SSlice::<()>::new(m2.get_next_neighbor_ptr(), m3_size, false);
 
             let initial_m3_next_ptr = m3.get_next_neighbor_ptr();
 
@@ -470,7 +470,7 @@ mod tests {
             stable::clear();
             stable::grow(10).expect("Unable to grow");
 
-            let m1 = RawSCell::<()>::new(0, 100, true);
+            let m1 = SSlice::<()>::new(0, 100, true);
 
             let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
             let b = vec![1u8, 3, 3, 7];

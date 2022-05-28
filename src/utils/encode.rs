@@ -1,8 +1,10 @@
 use candid::de::IDLDeserialize;
+use candid::types::{Serializer, Type};
 use candid::utils::ArgumentDecoder;
 use candid::{encode_one, CandidType, Result};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use std::marker::PhantomData;
 use std::mem::size_of;
 use std::slice::from_raw_parts;
 
@@ -38,5 +40,35 @@ impl<T: Copy> AsBytes for T {
     unsafe fn from_bytes(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), size_of::<T>());
         *(bytes.as_ptr() as *const T)
+    }
+}
+
+pub struct SPhantomData<T: AsBytes + Sized>(PhantomData<T>);
+
+impl<T: AsBytes + Sized> Default for SPhantomData<T> {
+    fn default() -> Self {
+        Self(PhantomData::default())
+    }
+}
+
+impl<T: AsBytes + Sized> CandidType for SPhantomData<T> {
+    fn _ty() -> Type {
+        Type::Null
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> std::result::Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_null(())
+    }
+}
+
+impl<'de, T: AsBytes + Sized> Deserialize<'de> for SPhantomData<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(SPhantomData::default())
     }
 }

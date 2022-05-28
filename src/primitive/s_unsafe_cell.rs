@@ -1,12 +1,12 @@
 use crate::utils::encode::{decode_one_allow_trailing, AsBytes};
-use crate::{allocate, deallocate, reallocate, OutOfMemory, RawSCell};
+use crate::{allocate, deallocate, reallocate, OutOfMemory, SSlice};
 use candid::types::{Serializer, Type};
 use candid::{encode_one, CandidType};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use std::cell::UnsafeCell;
 
-pub struct SUnsafeCell<T>(RawSCell<T>);
+pub struct SUnsafeCell<T>(SSlice<T>);
 
 impl<T> CandidType for SUnsafeCell<T> {
     fn _ty() -> Type {
@@ -26,7 +26,7 @@ impl<'de, T> Deserialize<'de> for SUnsafeCell<T> {
     where
         D: Deserializer<'de>,
     {
-        Ok(SUnsafeCell(RawSCell::<T>::deserialize(deserializer)?))
+        Ok(SUnsafeCell(SSlice::<T>::deserialize(deserializer)?))
     }
 }
 
@@ -56,7 +56,7 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
         let mut res = false;
 
         if self.0.get_size_bytes() < bytes.len() {
-            self.0 = reallocate(RawSCell::from_bytes(&self.0.as_bytes()), bytes.len())?;
+            self.0 = reallocate(SSlice::from_bytes(&self.0.as_bytes()), bytes.len())?;
             res = true;
         }
 
@@ -76,7 +76,7 @@ impl<T> AsBytes for SUnsafeCell<T> {
     }
 
     unsafe fn from_bytes(bytes: &[u8]) -> Self {
-        Self(RawSCell::from_bytes(bytes))
+        Self(SSlice::from_bytes(bytes))
     }
 }
 

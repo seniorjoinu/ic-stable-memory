@@ -1,13 +1,13 @@
 use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
 use crate::utils::encode::AsBytes;
-use crate::{allocate, deallocate, OutOfMemory, RawSCell};
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use candid::types::{Serializer, Type};
 use candid::CandidType;
 use serde::{Deserialize, Deserializer};
 use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 
-pub struct SCell<T>(RawSCell<T>);
+pub struct SCell<T>(SSlice<T>);
 
 impl<T: NotFree + NotStableMemoryAllocator> Debug for SCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -39,7 +39,7 @@ impl<'de, T> Deserialize<'de> for SCell<T> {
     where
         D: Deserializer<'de>,
     {
-        Ok(SCell(RawSCell::<T>::deserialize(deserializer)?))
+        Ok(SCell(SSlice::<T>::deserialize(deserializer)?))
     }
 }
 
@@ -80,6 +80,6 @@ impl<T> AsBytes for SCell<T> {
     }
 
     unsafe fn from_bytes(bytes: &[u8]) -> Self {
-        Self(RawSCell::from_bytes(bytes))
+        Self(SSlice::from_bytes(bytes))
     }
 }
