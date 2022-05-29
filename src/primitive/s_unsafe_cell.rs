@@ -1,3 +1,4 @@
+use crate::primitive::s_slice::Side;
 use crate::utils::encode::{decode_one_allow_trailing, AsBytes};
 use crate::{allocate, deallocate, reallocate, OutOfMemory, SSlice};
 use candid::types::{Serializer, Type};
@@ -63,6 +64,15 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
         self.0._write_bytes(0, &bytes);
 
         Ok(res)
+    }
+
+    pub unsafe fn from_ptr(ptr: u64) -> Self {
+        assert_ne!(ptr, 0);
+        Self(SSlice::from_ptr(ptr, Side::Start).unwrap())
+    }
+
+    pub unsafe fn to_ptr(self) -> u64 {
+        self.0.ptr
     }
 
     pub fn drop(self) {

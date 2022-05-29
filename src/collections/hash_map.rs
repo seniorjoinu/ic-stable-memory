@@ -1,14 +1,18 @@
 use crate::collections::vec::SVec;
+use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::s_cellbox::SCellBox;
+use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::utils::encode::AsBytes;
-use crate::OutOfMemory;
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use candid::types::{Field, Label, Serializer, Type};
 use candid::{CandidType, Deserialize};
+use serde::Deserializer;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::mem::size_of;
 
-const STABLE_HASH_MAP_DEFAULT_CAPACITY: u64 = 11;
+const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 9973;
 
 struct HashMapEntry<K, V> {
     key: K,
@@ -41,57 +45,111 @@ impl<K: AsBytes, V: AsBytes> AsBytes for HashMapEntry<K, V> {
     }
 }
 
+struct SMapTable;
+type SHashMapBucketPtr<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;
+
 #[derive(CandidType, Deserialize)]
-pub struct SHashMap<K, V> {
+struct SHashMapInfo {
     _len: u64,
-    _table: SVec<SCellBox<SVec<HashMapEntry<K, V>>>>,
+    _table_capacity: u32,
+    _table: SSlice<SMapTable>,
 }
 
-impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> Default for SHashMap<K, V> {
-    fn default() -> Self {
-        Self::new()
+pub struct SHashMap<K, V> {
+    _info: SHashMapInfo,
+    _k: PhantomData<K>,
+    _v: PhantomData<V>,
+}
+
+impl<K, V> CandidType for SHashMap<K, V> {
+    fn _ty() -> Type {
+        SHashMapInfo::ty()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self._info.idl_serialize(serializer)
+    }
+}
+
+impl<'de, K, V> Deserialize<'de> for SHashMap<K, V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let _info = SHashMapInfo::deserialize(deserializer)?;
+        Ok(Self {
+            _info,
+            _k: PhantomData::default(),
+            _v: PhantomData::default(),
+        })
     }
 }
 
 impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, OutOfMemory> {
         Self::with_capacity(STABLE_HASH_MAP_DEFAULT_CAPACITY)
     }
 
-    pub fn with_capacity(capacity: u64) -> Self {
-        Self {
+    pub fn with_capacity(capacity: u32) -> Result<Self, OutOfMemory> {
+        let capacity_bytes = capacity as usize * size_of::<SHashMapBucketPtr<K, V>>();
+        let slice = allocate(capacity_bytes)?;
+
+        let mut table_bytes = vec![0u8; capacity_bytes];
+        slice._read_bytes(0, &mut table_bytes);
+
+        let _info = SHashMapInfo {
             _len: 0,
-            _table: SVec::new_with_capacity(capacity),
-        }
+            _table_capacity: capacity,
+            _table: slice,
+        };
+
+        Ok(Self {
+            _info,
+            _k: PhantomData::default(),
+            _v: PhantomData::default(),
+        })
     }
 
-    fn init_buckets(&mut self) -> Result<(), OutOfMemory> {
-        if self._table.is_empty() {
-            for _ in 0..self._table.capacity() {
-                let bucket = SVec::new_with_capacity(1);
-                let bucket_box = SCellBox::new(&bucket)?;
-                self._table.push(&bucket_box)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn find_bucket(&self, key: &K) -> SCellBox<SVec<HashMapEntry<K, V>>> {
+    fn find_bucket(&self, key: &K) -> (usize, Option<SHashMapBucketPtr<K, V>>) {
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
         let hash = hasher.finish();
-        let idx = hash % self._table.len();
+        let idx = (hash % self._info._table_capacity as u64) as usize;
 
-        self._table.get(idx).unwrap()
+        self.read_bucket(idx)
+    }
+
+    fn read_bucket(&self, idx: usize) -> (usize, Option<SHashMapBucketPtr<K, V>>) {
+        let offset = idx * size_of::<SHashMapBucketPtr<K, V>>();
+        let ptr = self._info._table._read_word(offset);
+
+        if ptr == 0 || ptr == EMPTY_PTR {
+            (offset, None)
+        } else {
+            (
+                offset,
+                Some(unsafe { SHashMapBucketPtr::<K, V>::from_ptr(ptr) }),
+            )
+        }
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
-        self.init_buckets()?;
-
         let entry = HashMapEntry::new(key, value);
-        let mut bucket_box = self.find_bucket(&entry.key);
-        let mut bucket = bucket_box.get_cloned();
+        let (offset, bucket_box_opt) = self.find_bucket(&entry.key);
+
+        let (mut bucket_box, mut bucket) = if let Some(bb) = bucket_box_opt {
+            let bucket = bb.get_cloned();
+
+            (bb, bucket)
+        } else {
+            let bucket = SVec::new();
+            let bb = SHashMapBucketPtr::new(&bucket)?;
+
+            (bb, bucket)
+        };
 
         let mut found = false;
         let mut prev = None;
@@ -110,8 +168,14 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
             bucket.push(&entry)?;
         }
 
-        bucket_box.set(&bucket)?;
-        self._len += 1;
+        self._info._len += 1;
+
+        let should_update = unsafe { bucket_box.set(&bucket)? };
+        if should_update {
+            self._info
+                ._table
+                ._write_word(offset, unsafe { bucket_box.to_ptr() });
+        }
 
         Ok(prev)
     }
@@ -121,7 +185,8 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
             return None;
         }
 
-        let mut bucket_box = self.find_bucket(key);
+        let (_, bucket_box_opt) = self.find_bucket(key);
+        let mut bucket_box = bucket_box_opt?;
         let mut bucket = bucket_box.get_cloned();
 
         let mut prev = None;
@@ -138,8 +203,8 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
             }
         }
 
-        bucket_box.set(&bucket).expect("Should not reallocate");
-        self._len -= 1;
+        unsafe { bucket_box.set(&bucket).expect("Should not reallocate") };
+        self._info._len -= 1;
 
         prev
     }
@@ -149,8 +214,8 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
             return None;
         }
 
-        let bucket_box = self.find_bucket(key);
-        let bucket = bucket_box.get_cloned();
+        let (_, bucket_box) = self.find_bucket(key);
+        let bucket = bucket_box?.get_cloned();
 
         for i in 0..bucket.len() {
             let elem = bucket.get(i).unwrap();
@@ -163,7 +228,7 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
     }
 
     pub fn len(&self) -> u64 {
-        self._len
+        self._info._len
     }
 
     pub fn is_empty(&self) -> bool {
@@ -171,11 +236,14 @@ impl<K: Hash + Eq + Sized + AsBytes, V: Sized + AsBytes> SHashMap<K, V> {
     }
 
     pub fn drop(self) {
-        for i in 0..self._table.len() {
-            self._table.get(i).unwrap().drop()
+        for i in 0..self._info._table_capacity {
+            let (_, bucket_box_opt) = self.read_bucket(i as usize);
+            if let Some(bb) = bucket_box_opt {
+                bb.drop();
+            }
         }
 
-        self._table.drop();
+        deallocate(self._info._table);
     }
 }
 
@@ -185,13 +253,7 @@ mod tests {
     use crate::init_allocator;
     use crate::utils::mem_context::stable;
 
-    #[test]
-    fn simple_flow_works_well() {
-        stable::grow(1).unwrap();
-        init_allocator(0);
-
-        let mut map = SHashMap::new();
-
+    fn test_body(mut map: SHashMap<&str, i32>) {
         map.insert("key1", 1).unwrap();
         map.insert("key2", 2).unwrap();
         map.insert("key3", 3).unwrap();
@@ -229,5 +291,25 @@ mod tests {
         assert_eq!(map.get(&"key4").unwrap(), 4);
         assert_eq!(map.get(&"key6").unwrap(), 6);
         assert_eq!(map.get(&"key8").unwrap(), 8);
+
+        map.drop();
+    }
+
+    #[test]
+    fn simple_flow_works_well_for_big() {
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let map = SHashMap::new().unwrap();
+        test_body(map);
+    }
+
+    #[test]
+    fn simple_flow_works_well_for_small() {
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let map = SHashMap::with_capacity(3).unwrap();
+        test_body(map);
     }
 }
