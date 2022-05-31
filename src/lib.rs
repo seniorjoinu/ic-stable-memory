@@ -2,6 +2,7 @@
 #![feature(local_key_cell_methods)]
 
 use crate::mem::allocator::StableMemoryAllocator;
+use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use primitive::s_slice::SSlice;
 use utils::mem_context::OutOfMemory;
 
@@ -63,4 +64,12 @@ pub fn get_allocated_size() -> u64 {
 
 pub fn get_free_size() -> u64 {
     get_allocator().get_free_size()
+}
+
+pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
+    get_allocator().set_custom_data_ptr(idx, data_ptr)
+}
+
+pub fn _get_custom_data_ptr(idx: usize) -> u64 {
+    unsafe { get_allocator().get_custom_data_ptr(idx) }
 }

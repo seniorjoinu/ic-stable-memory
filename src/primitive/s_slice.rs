@@ -1,5 +1,4 @@
 use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
-use crate::utils::encode::AsBytes;
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
 use candid::parser::value::{IDLValue, IDLValueVisitor};
 use candid::types::{Serializer, Type};
@@ -81,7 +80,7 @@ impl<T> SSlice<T> {
         stable::write(self.get_ptr() + (CELL_META_SIZE + offset) as u64, data);
     }
 
-    pub fn _write_word(&mut self, offset: usize, word: u64) {
+    pub fn _write_word(&self, offset: usize, word: u64) {
         let num = word.to_le_bytes();
         self._write_bytes(offset, &num);
     }
@@ -310,17 +309,6 @@ impl<T> SSlice<T> {
 
         stable::write(ptr, &meta);
         stable::write(ptr + (CELL_META_SIZE + size) as u64, &meta);
-    }
-}
-
-impl<T> AsBytes for SSlice<T> {
-    unsafe fn as_bytes(&self) -> Vec<u8> {
-        self.ptr.as_bytes()
-    }
-
-    unsafe fn from_bytes(bytes: &[u8]) -> Self {
-        Self::from_ptr(u64::from_bytes(bytes), Side::Start)
-            .expect("Unable to make unsafe cell from bytes")
     }
 }
 

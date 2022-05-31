@@ -1,0 +1,5 @@
+service : {
+    mint : (principal, nat64) -> ();
+    transfer : (principal, nat64) -> ();
+    balance_of : (principal) -> (nat64) query;
+}
