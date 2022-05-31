@@ -1,63 +1,49 @@
 use crate::collections::hash_map::SHashMap;
-use crate::{SUnsafeCell, _get_custom_data_ptr, _set_custom_data_ptr};
+use crate::primitive::s_unsafe_cell::SUnsafeCell;
+use crate::{OutOfMemory, _get_custom_data_ptr, _set_custom_data_ptr};
 use candid::CandidType;
 use serde::de::DeserializeOwned;
 
-type StableVars = SHashMap<String, u64>;
+static mut VARS: Option<SHashMap<String, u64>> = None;
 
-pub fn init_stable_vars() {
-    let storage = StableVars::new();
-    let storage_box = SUnsafeCell::new(&storage).expect("Unable to init stable vars storage");
-
-    _set_custom_data_ptr(0, unsafe { storage_box.as_ptr() });
+pub fn init_vars() {
+    unsafe { VARS = Some(SHashMap::new()) }
 }
 
-// TODO: return to cellbox for this one
+pub fn store_vars() {
+    let vars = unsafe { VARS.take() };
+    let vars_box = SUnsafeCell::new(&vars.unwrap()).expect("Unable to store vars");
 
-unsafe fn get_stable_vars_storage() -> SUnsafeCell<StableVars> {
-    let vec_box_ptr = _get_custom_data_ptr(0);
-
-    SUnsafeCell::from_ptr(vec_box_ptr)
+    _set_custom_data_ptr(0, unsafe { vars_box.as_ptr() });
 }
 
-pub fn declare_stable_var<T: CandidType + DeserializeOwned>(
-    name: String,
-    data: T,
-) -> SUnsafeCell<T> {
-    let var_box = SUnsafeCell::new(&data).expect("Unable to declare stable var");
+pub fn reinit_vars() {
+    let vars_box_ptr = _get_custom_data_ptr(0);
+    let vars_box = unsafe { SUnsafeCell::from_ptr(vars_box_ptr) };
 
-    persist_stable_var(name, &var_box);
-
-    var_box
+    unsafe { VARS = Some(vars_box.get_cloned()) }
 }
 
-pub fn persist_stable_var<T: CandidType + DeserializeOwned>(
-    name: String,
-    var_box: &SUnsafeCell<T>,
-) {
-    let mut storage_box = unsafe { get_stable_vars_storage() };
-    let mut storage = storage_box.get_cloned();
-
-    storage
-        .insert(name, unsafe { var_box.as_ptr() })
-        .expect("Unable to declare stable var");
+pub fn set_var<T: CandidType + DeserializeOwned>(name: &str, value: &T) -> Result<(), OutOfMemory> {
+    let val_box = SUnsafeCell::new(value)?;
     unsafe {
-        storage_box
-            .set(&storage)
-            .expect("Unable to declare stable var")
+        VARS.as_mut()
+            .unwrap()
+            .insert(String::from(name), val_box.as_ptr())
+            .expect("Unable to set var")
     };
+
+    Ok(())
 }
 
-#[macro_export]
-macro_rules! s_declare {
-    ($name:ident = $expr:expr) => {
-        let $name = $crate::utils::vars::declare_stable_var(String::from(stringify!($name)), $expr);
-    };
-}
-
-#[macro_export]
-macro_rules! s_persist {
-    ($name:ident) => {
-        $crate::utils::vars::persist_stable_var(String::from(stringify!($name), $name));
-    };
+pub fn get_var<T: CandidType + DeserializeOwned>(name: &str) -> T {
+    unsafe {
+        SUnsafeCell::from_ptr(
+            VARS.as_ref()
+                .unwrap()
+                .get_cloned(&String::from(name))
+                .unwrap(),
+        )
+        .get_cloned()
+    }
 }
