@@ -184,7 +184,7 @@ fn mem_metrics() -> (u64, u64, u64) {
 
 #[heartbeat]
 fn tick() {
-    for _ in 0..1000 {
+    for _ in 0..100 {
         mint(Principal::anonymous(), 1);
     }
     _debug_print_allocator();
