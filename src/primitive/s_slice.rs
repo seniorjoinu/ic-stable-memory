@@ -67,6 +67,10 @@ impl<T> SSlice<T> {
         self.get_meta().0
     }
 
+    pub fn get_total_size_bytes(&self) -> usize {
+        self.get_size_bytes() + CELL_META_SIZE * 2
+    }
+
     pub fn _write_bytes(&self, offset: usize, data: &[u8]) {
         let (size, _) = self.get_meta();
 

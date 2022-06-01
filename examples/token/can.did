@@ -1,6 +1,18 @@
+type HistoryEntry = record {
+    from : opt principal;
+    to : opt principal;
+    qty : nat64;
+    timestamp : nat64;
+};
+
 service : {
     mint : (principal, nat64) -> ();
     transfer : (principal, nat64) -> ();
+    burn : (nat64) -> ();
+
     balance_of : (principal) -> (nat64) query;
     total_supply : () -> (nat64) query;
+    get_history : (nat64, nat64) -> (vec HistoryEntry, nat64) query;
+
+    mem_metrics : () -> (nat64, nat64, nat64) query;
 }

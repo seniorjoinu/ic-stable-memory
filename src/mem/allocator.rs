@@ -1,4 +1,4 @@
-use crate::primitive::s_slice::{Side, CELL_MIN_SIZE, PTR_SIZE};
+use crate::primitive::s_slice::{Side, CELL_META_SIZE, CELL_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::SSlice;
@@ -118,33 +118,23 @@ impl SSlice<StableMemoryAllocator> {
 
         let free_membox = self.pop_allocated_membox(size)?;
         let membox = unsafe { SSlice::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap() };
-        let membox_size = membox.get_meta().0;
-
-        let total_free = self.get_free_size();
-        self.set_free_size(total_free - membox_size as u64);
-
-        let total_allocated = self.get_allocated_size();
-        self.set_allocated_size(total_allocated + membox_size as u64);
 
         Ok(membox)
     }
 
     pub(crate) fn deallocate<T>(&mut self, mut membox: SSlice<T>) {
-        let (size, allocated) = membox.get_meta();
+        let (_, allocated) = membox.get_meta();
         membox.assert_allocated(true, Some(allocated));
         membox.set_allocated(false);
 
-        let total_free = self.get_free_size();
-        self.set_free_size(total_free + size as u64);
-
         let total_allocated = self.get_allocated_size();
-        self.set_allocated_size(total_allocated - size as u64);
+        self.set_allocated_size(total_allocated - membox.get_total_size_bytes() as u64);
 
         let membox = unsafe { SSlice::<Free>::from_ptr(membox.get_ptr(), Side::Start).unwrap() };
         self.push_free_membox(membox);
     }
 
-    // TODO: allocate inplace
+    // TODO: reallocate inplace
 
     pub(crate) fn reallocate<T>(
         &mut self,
@@ -155,7 +145,7 @@ impl SSlice<StableMemoryAllocator> {
         membox._read_bytes(0, &mut data);
 
         self.deallocate(membox);
-        let mut new_membox = self.allocate(new_size)?;
+        let new_membox = self.allocate(new_size)?;
         new_membox._write_bytes(0, &data);
 
         Ok(new_membox)
@@ -180,14 +170,15 @@ impl SSlice<StableMemoryAllocator> {
             let free_mem_box =
                 unsafe { SSlice::<Free>::new_total_size(ptr, total_free_size as usize, false) };
 
-            self.set_free_size(free_mem_box.get_meta().0 as u64);
-
             self.push_free_membox(free_mem_box);
         }
     }
 
     fn push_free_membox(&mut self, mut membox: SSlice<Free>) {
         membox.assert_allocated(false, None);
+
+        let total_free = self.get_free_size();
+        self.set_free_size(total_free + membox.get_total_size_bytes() as u64);
 
         membox = self.maybe_merge_with_free_neighbors(membox);
         let (size, _) = membox.get_meta();
@@ -219,11 +210,16 @@ impl SSlice<StableMemoryAllocator> {
         // iterate over this seg class, until big enough membox found or til it ends
         if let Some(mut free_membox) = free_membox_opt {
             loop {
-                let (membox_size, _) = free_membox.get_meta();
+                let membox_size = free_membox.get_size_bytes();
 
                 // if valid membox found,
                 if membox_size >= size {
                     self.eject_from_freelist(seg_class_id, &mut free_membox);
+
+                    let total_allocated = self.get_allocated_size();
+                    self.set_allocated_size(
+                        total_allocated + free_membox.get_total_size_bytes() as u64,
+                    );
 
                     free_membox.set_allocated(true);
 
@@ -247,7 +243,7 @@ impl SSlice<StableMemoryAllocator> {
             free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
 
             if let Some(free_membox) = &free_membox_opt {
-                if free_membox.get_meta().0 >= size {
+                if free_membox.get_size_bytes() >= size {
                     break;
                 }
             }
@@ -266,10 +262,20 @@ impl SSlice<StableMemoryAllocator> {
                         result.set_allocated(true);
                         self.push_free_membox(additional);
 
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + result.get_total_size_bytes() as u64,
+                        );
+
                         Ok(result)
                     }
                     Err(mut result) => {
                         result.set_allocated(true);
+
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + result.get_total_size_bytes() as u64,
+                        );
 
                         Ok(result)
                     }
@@ -288,20 +294,26 @@ impl SSlice<StableMemoryAllocator> {
                 let new_free_membox =
                     unsafe { SSlice::<Free>::new_total_size(ptr, total_free_size as usize, false) };
 
-                let new_free_membox_size = new_free_membox.get_meta().0;
-                let total_free_size = self.get_free_size();
-                self.set_free_size(total_free_size + new_free_membox_size as u64);
-
                 match unsafe { new_free_membox.split(size) } {
                     Ok((mut result, additional)) => {
                         result.set_allocated(true);
 
                         self.push_free_membox(additional);
 
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + result.get_total_size_bytes() as u64,
+                        );
+
                         Ok(result)
                     }
                     Err(mut new_free_membox) => {
                         new_free_membox.set_allocated(true);
+
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + new_free_membox.get_total_size_bytes() as u64,
+                        );
 
                         Ok(new_free_membox)
                     }
@@ -322,6 +334,13 @@ impl SSlice<StableMemoryAllocator> {
         self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE)
     }
 
+    fn set_free_size(&mut self, size: u64) {
+        self._write_word(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE,
+            size,
+        );
+    }
+
     pub fn set_custom_data_ptr(&mut self, idx: usize, ptr: u64) {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
@@ -337,13 +356,6 @@ impl SSlice<StableMemoryAllocator> {
         self._read_word(
             MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + idx * PTR_SIZE,
         )
-    }
-
-    fn set_free_size(&mut self, size: u64) {
-        self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE,
-            size,
-        );
     }
 
     unsafe fn get_seg_class_head(&self, id: SegClassId) -> Option<SSlice<Free>> {
@@ -380,6 +392,9 @@ impl SSlice<StableMemoryAllocator> {
                 prev.set_next_free_ptr(EMPTY_PTR);
             }
         }
+
+        let total_free = self.get_free_size();
+        self.set_free_size(total_free - membox.get_total_size_bytes() as u64);
 
         membox.set_prev_free_ptr(EMPTY_PTR);
         membox.set_next_free_ptr(EMPTY_PTR);

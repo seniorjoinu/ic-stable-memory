@@ -3,6 +3,7 @@
 
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
+use ic_cdk::print;
 use primitive::s_slice::SSlice;
 use utils::mem_context::OutOfMemory;
 
@@ -71,5 +72,9 @@ pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
 }
 
 pub fn _get_custom_data_ptr(idx: usize) -> u64 {
-    unsafe { get_allocator().get_custom_data_ptr(idx) }
+    get_allocator().get_custom_data_ptr(idx)
+}
+
+pub fn _debug_print_allocator() {
+    print(format!("{:?}", get_allocator()))
 }

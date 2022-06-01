@@ -2,17 +2,19 @@ use crate::collections::hash_map::SHashMap;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::{OutOfMemory, _get_custom_data_ptr, _set_custom_data_ptr};
 use candid::CandidType;
+use ic_cdk::trap;
 use serde::de::DeserializeOwned;
 
 static mut VARS: Option<SHashMap<String, u64>> = None;
 
 pub fn init_vars() {
-    unsafe { VARS = Some(SHashMap::new()) }
+    unsafe { VARS = Some(SHashMap::with_capacity(101)) }
 }
 
 pub fn store_vars() {
     let vars = unsafe { VARS.take() };
-    let vars_box = SUnsafeCell::new(&vars.unwrap()).expect("Unable to store vars");
+    let vars_box = SUnsafeCell::new(&vars.expect("Stable vars are not initialized yet"))
+        .expect("Unable to store vars");
 
     _set_custom_data_ptr(0, unsafe { vars_box.as_ptr() });
 }
@@ -28,9 +30,9 @@ pub fn set_var<T: CandidType + DeserializeOwned>(name: &str, value: &T) -> Resul
     let val_box = SUnsafeCell::new(value)?;
     unsafe {
         VARS.as_mut()
-            .unwrap()
+            .expect("Stable vars are not initialized yet")
             .insert(String::from(name), val_box.as_ptr())
-            .expect("Unable to set var")
+            .expect("Unable to set stable var")
     };
 
     Ok(())
@@ -40,9 +42,9 @@ pub fn get_var<T: CandidType + DeserializeOwned>(name: &str) -> T {
     unsafe {
         SUnsafeCell::from_ptr(
             VARS.as_ref()
-                .unwrap()
+                .expect("Stable vars are not initialized yet")
                 .get_cloned(&String::from(name))
-                .unwrap(),
+                .unwrap_or_else(|| trap(format!("Invalid stable var name {}", name).as_str())),
         )
         .get_cloned()
     }
