@@ -6,7 +6,7 @@ edition = "2021"
 description = "Internet Computer's stable memory collections and tools"
 license = "MIT"
 readme = "./README.md"
-keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "memory", "collections"]
+keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "collections"]
 
 [lib]
 path = "./src/lib.rs"
