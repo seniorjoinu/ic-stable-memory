@@ -1,6 +1,6 @@
 [package]
 name = "ic-stable-memory"
-version = "0.0.1"
+version = "0.0.2"
 authors = ["Александр Втюрин <senior.joinu@gmail.com>"]
 edition = "2021"
 description = "Internet Computer's stable memory collections and tools"
@@ -12,7 +12,6 @@ keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "collections"
 path = "./src/lib.rs"
 
 [dependencies]
-ic-cdk = "0.5.1"
+ic-cdk = "0.5.2"
 candid = "0.7.14"
-serde = "1.0.137"
-sha2 = "0.10.2"
+serde = "1.0.138"

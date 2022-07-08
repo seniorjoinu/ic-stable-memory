@@ -5,12 +5,15 @@ use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use ic_cdk::print;
 use primitive::s_slice::SSlice;
-use utils::mem_context::OutOfMemory;
 
 pub mod collections;
+pub mod macros;
 pub mod mem;
 pub mod primitive;
 pub mod utils;
+
+pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
+pub use crate::utils::vars::{init_vars, reinit_vars, store_vars};
 
 static mut STABLE_MEMORY_ALLOCATOR: Option<SSlice<StableMemoryAllocator>> = None;
 
@@ -77,4 +80,22 @@ pub fn _get_custom_data_ptr(idx: usize) -> u64 {
 
 pub fn _debug_print_allocator() {
     print(format!("{:?}", get_allocator()))
+}
+
+pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
+    if should_grow {
+        stable::grow(1).expect("Out of memory (stable_memory_init)");
+    }
+
+    init_allocator(allocator_pointer);
+    init_vars();
+}
+
+pub fn stable_memory_pre_upgrade() {
+    store_vars();
+}
+
+pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
+    reinit_allocator(allocator_pointer);
+    reinit_vars();
 }

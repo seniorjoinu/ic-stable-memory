@@ -1,17 +1,17 @@
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::api::time;
 use ic_cdk::caller;
-use ic_cdk_macros::{heartbeat, init, post_upgrade, pre_upgrade, query, update};
+use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
 use ic_stable_memory::collections::hash_map::SHashMap;
 use ic_stable_memory::collections::vec::SVec;
-use ic_stable_memory::utils::mem_context::{stable, PAGE_SIZE_BYTES};
-use ic_stable_memory::utils::vars::{get_var, init_vars, reinit_vars, set_var, store_vars};
 use ic_stable_memory::{
-    _debug_print_allocator, get_allocated_size, get_free_size, init_allocator, reinit_allocator,
+    get_allocated_size, get_free_size, s, stable, stable_memory_init, stable_memory_post_upgrade,
+    stable_memory_pre_upgrade, PAGE_SIZE_BYTES,
 };
 
-type Token = SHashMap<Principal, u64>;
-type Ledger = SVec<HistoryEntry>;
+type AccountBalances = SHashMap<Principal, u64>;
+type TransactionLedger = SVec<HistoryEntry>;
+type TotalSupply = u64;
 
 #[derive(CandidType, Deserialize)]
 struct HistoryEntry {
@@ -21,50 +21,44 @@ struct HistoryEntry {
     pub timestamp: u64,
 }
 
-const TOKEN: &str = "token";
-const LEDGER: &str = "ledger";
-const TOTAL_SUPPLY: &str = "total_supply";
-
 #[init]
 fn init() {
     // initialize stable memory (cheap)
-    stable::grow(1).expect("Out of memory");
-    init_allocator(0);
-    init_vars();
+    stable_memory_init(true, 0);
 
     // initialize stable variables (cheap)
-    set_var(TOKEN, &Token::new()).expect("Unable to create token stable var");
-    set_var(TOTAL_SUPPLY, &0u64).expect("Unable to create total_supply stable var");
-    set_var(LEDGER, &Ledger::new()).expect("Unable to create ledger stable var")
+    s!(AccountBalances = AccountBalances::new()).expect("Out of memory (balances)");
+    s!(TransactionLedger = TransactionLedger::new()).expect("Out of memory (ledger)");
+    s!(TotalSupply = TotalSupply::default()).expect("Out of memory (token)");
 }
 
 #[pre_upgrade]
 fn pre_upgrade() {
-    // save stable variables meta (cheap)
-    store_vars();
+    // save stable variables meta-info (cheap)
+    stable_memory_pre_upgrade();
 }
 
 #[post_upgrade]
 fn post_upgrade() {
     // reinitialize stable memory and variables (cheap)
-    reinit_allocator(0);
-    reinit_vars();
+    stable_memory_post_upgrade(0);
 }
 
 #[update]
 fn mint(to: Principal, qty: u64) {
-    // update token
-    let mut token = get_var::<Token>(TOKEN);
-    let balance = token.get_cloned(&to).unwrap_or_default();
+    // update balances
+    let mut balances = s!(AccountBalances);
+    let balance = balances.get_cloned(&to).unwrap_or_default();
 
-    token
+    balances
         .insert(to, balance + qty)
-        .expect("Unable to add new token entry");
-    set_var(TOKEN, &token).expect("Unable to save token");
+        .expect("Out of memory (balance entry)");
+
+    s!(AccountBalances = balances).expect("Out of memory (balances)");
 
     // update total supply
-    let total_supply = get_var::<u64>(TOTAL_SUPPLY);
-    set_var(TOTAL_SUPPLY, &(total_supply + qty)).expect("Unable to save total supply");
+    let total_supply: u64 = s!(TotalSupply);
+    s!(TotalSupply = total_supply + qty).expect("Out of memory (total supply)");
 
     // emit ledger entry
     let entry = HistoryEntry {
@@ -73,32 +67,31 @@ fn mint(to: Principal, qty: u64) {
         qty,
         timestamp: time(),
     };
-    let mut ledger = get_var::<Ledger>(LEDGER);
-    ledger
-        .push(&entry)
-        .expect("Unable to push new history entry");
-    set_var(LEDGER, &ledger).expect("Unable to save ledger");
+    let mut ledger = s!(TransactionLedger);
+    ledger.push(&entry).expect("Out of memory (history entry)");
+
+    s!(TransactionLedger = ledger).expect("Out of memory (ledger)");
 }
 
 #[update]
 fn transfer(to: Principal, qty: u64) {
     let from = caller();
 
-    // update token
-    let mut token = get_var::<Token>(TOKEN);
+    // update balances
+    let mut balances = s!(AccountBalances);
 
-    let from_balance = token.get_cloned(&from).unwrap_or_default();
+    let from_balance = balances.get_cloned(&from).unwrap_or_default();
     assert!(from_balance >= qty, "Insufficient funds");
-    token
+    balances
         .insert(from, from_balance - qty)
-        .expect("Unable to add new token entry");
+        .expect("Out of memory (from balance)");
 
-    let to_balance = token.get_cloned(&to).unwrap_or_default();
-    token
+    let to_balance = balances.get_cloned(&to).unwrap_or_default();
+    balances
         .insert(to, to_balance + qty)
-        .expect("Unable to add new token entry");
+        .expect("Out of memory (to balance)");
 
-    set_var(TOKEN, &token).expect("Unable to save token");
+    s!(AccountBalances = balances).expect("Out of memory (token)");
 
     // emit ledger entry
     let entry = HistoryEntry {
@@ -107,29 +100,30 @@ fn transfer(to: Principal, qty: u64) {
         qty,
         timestamp: time(),
     };
-    let mut ledger = get_var::<Ledger>(LEDGER);
+    let mut ledger = s!(TransactionLedger);
     ledger
         .push(&entry)
         .expect("Unable to push new history entry");
-    set_var(LEDGER, &ledger).expect("Unable to save ledger");
+
+    s!(TransactionLedger = ledger).expect("Out of memory (ledger)");
 }
 
 #[update]
 fn burn(qty: u64) {
     let from = caller();
 
-    // update token
-    let mut token = get_var::<Token>(TOKEN);
-    let from_balance = token.get_cloned(&from).unwrap_or_default();
+    // update balances
+    let mut balances = s!(AccountBalances);
+    let from_balance = balances.get_cloned(&from).unwrap_or_default();
     assert!(from_balance >= qty, "Insufficient funds");
 
-    token
+    balances
         .insert(from, from_balance - qty)
-        .expect("Unable to add new token entry");
-    set_var(TOKEN, &token).expect("Unable to save token");
+        .expect("Out of memory (balance entry)");
+    s!(AccountBalances = balances).expect("Out of memory (token)");
 
-    let total_supply = get_var::<u64>(TOTAL_SUPPLY);
-    set_var(TOTAL_SUPPLY, &(total_supply - qty)).expect("Unable to save token");
+    let total_supply = s!(TotalSupply);
+    s!(TotalSupply = total_supply - qty).expect("Out of memory (total supply)");
 
     // emit ledger entry
     let entry = HistoryEntry {
@@ -138,21 +132,20 @@ fn burn(qty: u64) {
         qty,
         timestamp: time(),
     };
-    let mut ledger = get_var::<Ledger>(LEDGER);
-    ledger
-        .push(&entry)
-        .expect("Unable to push new history entry");
-    set_var(LEDGER, &ledger).expect("Unable to save ledger");
+    let mut ledger = s!(TransactionLedger);
+    ledger.push(&entry).expect("Out of memory (history entry)");
+
+    s!(TransactionLedger = ledger).expect("Out of memory (ledger)");
 }
 
 #[query]
 fn balance_of(of: Principal) -> u64 {
-    get_var::<Token>(TOKEN).get_cloned(&of).unwrap_or_default()
+    s!(AccountBalances).get_cloned(&of).unwrap_or_default()
 }
 
 #[query]
-fn total_supply() -> u64 {
-    get_var::<u64>(TOTAL_SUPPLY)
+fn total_supply() -> TotalSupply {
+    s!(TotalSupply)
 }
 
 #[query]
@@ -160,7 +153,7 @@ fn get_history(page_index: u64, page_size: u64) -> (Vec<HistoryEntry>, u64) {
     let from = page_index * page_size;
     let to = page_index * page_size + page_size;
 
-    let ledger = get_var::<Ledger>(LEDGER);
+    let ledger = s!(TransactionLedger);
     let mut result = vec![];
     let total_pages = ledger.len() / page_size + 1;
 
@@ -180,12 +173,4 @@ fn mem_metrics() -> (u64, u64, u64) {
         get_allocated_size(),                          // allocated
         get_free_size(),                               // free
     )
-}
-
-#[heartbeat]
-fn tick() {
-    for _ in 0..100 {
-        mint(Principal::anonymous(), 1);
-    }
-    _debug_print_allocator();
 }
