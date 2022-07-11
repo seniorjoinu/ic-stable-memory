@@ -4,10 +4,7 @@ use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
 use serde::Deserializer;
-use std::fmt;
-use std::fmt::{Debug, Display, Formatter};
 use std::marker::PhantomData;
-use std::mem::size_of;
 
 const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
 const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
@@ -308,46 +305,6 @@ impl<'de, T> Deserialize<'de> for SVec<T> {
 impl<T: CandidType + DeserializeOwned> Default for SVec<T> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<T: Debug + CandidType + DeserializeOwned> Debug for SVec<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut sector_strs = Vec::new();
-        for sector in &self._info._sectors {
-            let mut elems = Vec::new();
-
-            let size = sector.get_size_bytes();
-            let size_elems = (size / PTR_SIZE as usize) as usize;
-
-            for i in 0..size_elems {
-                let elem_ptr = sector._read_word(i * PTR_SIZE);
-                let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
-
-                elems.push(format!("{:?}", elem_cell.get_cloned()));
-            }
-
-            sector_strs.push(elems)
-        }
-
-        f.debug_struct("SVec")
-            .field("len", &self._info._len)
-            .field("capacity", &self._info._capacity)
-            .field("sectors", &sector_strs)
-            .finish()
-    }
-}
-
-impl<T: Display + CandidType + DeserializeOwned> Display for SVec<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut elements = vec![];
-
-        for i in 0..self.len() {
-            let element = self.get_cloned(i).unwrap();
-            elements.push(format!("{}", element));
-        }
-
-        write!(f, "[{}]", elements.join(","))
     }
 }
 

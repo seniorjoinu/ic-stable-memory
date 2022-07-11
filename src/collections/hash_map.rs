@@ -227,31 +227,6 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
     }
 }
 
-impl<
-        K: Hash + Eq + Debug + CandidType + DeserializeOwned,
-        V: Debug + CandidType + DeserializeOwned,
-    > Debug for SHashMap<K, V>
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut m = f.debug_map();
-
-        for i in 0..self._info._table_capacity {
-            let (_, bucket_box_opt) = self.read_bucket(i as usize);
-            if let Some(bb) = bucket_box_opt {
-                let bucket = bb.get_cloned();
-
-                for i in 0..bucket.len() {
-                    let entry = bucket.get_cloned(i).unwrap();
-                    m.key(&entry.key);
-                    m.value(&entry.val);
-                }
-            }
-        }
-
-        m.finish()
-    }
-}
-
 impl<K, V> CandidType for SHashMap<K, V> {
     fn _ty() -> Type {
         SHashMapInfo::ty()
@@ -296,36 +271,13 @@ mod tests {
         let k8 = "key8".to_string();
 
         map.insert(k1.clone(), 1).unwrap();
-
-        println!("step 1: {:?}", map);
-
         map.insert(k2.clone(), 2).unwrap();
-
-        println!("step 2: {:?}", map);
-
         map.insert(k3.clone(), 3).unwrap();
-
-        println!("step 3: {:?}", map);
-
         map.insert(k4.clone(), 4).unwrap();
-
-        println!("step 4: {:?}", map);
-
         map.insert(k5.clone(), 5).unwrap();
-
-        println!("step 5: {:?}", map);
-
         map.insert(k6.clone(), 6).unwrap();
-
-        println!("step 6: {:?}", map);
-
         map.insert(k7.clone(), 7).unwrap();
-
-        println!("step 7: {:?}", map);
-
         map.insert(k8.clone(), 8).unwrap();
-
-        println!("step 8: {:?}", map);
 
         assert_eq!(map.get_cloned(&k1).unwrap(), 1);
         assert_eq!(map.get_cloned(&k2).unwrap(), 2);
@@ -336,15 +288,11 @@ mod tests {
         assert_eq!(map.get_cloned(&k7).unwrap(), 7);
         assert_eq!(map.get_cloned(&k8).unwrap(), 8);
 
-        println!("{:?}", map);
-
         assert!(map.get_cloned(&String::from("key9")).is_none());
         assert!(map.get_cloned(&String::from("key0")).is_none());
 
         assert_eq!(map.remove(&k3).unwrap(), 3);
         assert!(map.get_cloned(&k3).is_none());
-
-        println!("{:?}", map);
 
         assert_eq!(map.remove(&k1).unwrap(), 1);
         assert!(map.get_cloned(&k1).is_none());
@@ -354,8 +302,6 @@ mod tests {
 
         assert_eq!(map.remove(&k7).unwrap(), 7);
         assert!(map.get_cloned(&k7).is_none());
-
-        println!("{:?}", map);
 
         assert_eq!(map.get_cloned(&k2).unwrap(), 2);
         assert_eq!(map.get_cloned(&k4).unwrap(), 4);

@@ -14,6 +14,7 @@ pub mod utils;
 
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 pub use crate::utils::vars::{init_vars, reinit_vars, store_vars};
+use crate::utils::MemMetrics;
 
 static mut STABLE_MEMORY_ALLOCATOR: Option<SSlice<StableMemoryAllocator>> = None;
 
@@ -72,6 +73,14 @@ pub fn get_free_size() -> u64 {
 
 pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
     get_allocator().set_custom_data_ptr(idx, data_ptr)
+}
+
+pub fn get_mem_metrics() -> MemMetrics {
+    MemMetrics {
+        available: stable::size_pages() * PAGE_SIZE_BYTES as u64,
+        free: get_free_size(),
+        allocated: get_allocated_size(),
+    }
 }
 
 pub fn _get_custom_data_ptr(idx: usize) -> u64 {

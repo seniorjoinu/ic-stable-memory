@@ -177,14 +177,13 @@ impl SSlice<StableMemoryAllocator> {
     fn push_free_membox(&mut self, mut membox: SSlice<Free>) {
         membox.assert_allocated(false, None);
 
+        membox = self.maybe_merge_with_free_neighbors(membox);
+
         let total_free = self.get_free_size();
         self.set_free_size(total_free + membox.get_total_size_bytes() as u64);
 
-        membox = self.maybe_merge_with_free_neighbors(membox);
         let (size, _) = membox.get_meta();
-
         let seg_class_id = get_seg_class_id(size);
-
         let head_opt = unsafe { self.get_seg_class_head(seg_class_id) };
 
         self.set_seg_class_head(seg_class_id, membox.get_ptr());
