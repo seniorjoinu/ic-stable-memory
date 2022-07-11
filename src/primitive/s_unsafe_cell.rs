@@ -166,9 +166,9 @@ impl<T: Debug + CandidType + DeserializeOwned> Debug for SUnsafeCell<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::init_allocator;
     use crate::primitive::s_unsafe_cell::SUnsafeCell;
     use crate::utils::mem_context::stable;
+    use crate::{init_allocator, stable_memory_init};
     use candid::Nat;
     use ic_cdk::export::candid::{CandidType, Deserialize};
 

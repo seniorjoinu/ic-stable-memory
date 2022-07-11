@@ -311,8 +311,8 @@ impl<T: CandidType + DeserializeOwned> Default for SVec<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::vec::{SVec, STABLE_VEC_DEFAULT_CAPACITY};
-    use crate::init_allocator;
     use crate::utils::mem_context::stable;
+    use crate::{init_allocator, stable_memory_init};
     use candid::{CandidType, Deserialize, Nat};
 
     #[derive(CandidType, Deserialize, Debug)]
@@ -324,8 +324,7 @@ mod tests {
     #[test]
     fn create_destroy_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init(true, 0);
 
         let mut stable_vec = SVec::<Test>::new();
         assert_eq!(stable_vec.capacity(), STABLE_VEC_DEFAULT_CAPACITY);
@@ -342,8 +341,8 @@ mod tests {
 
     #[test]
     fn push_pop_work_fine() {
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable::clear();
+        stable_memory_init(true, 0);
 
         let mut stable_vec = SVec::new();
         let count = 10u64;

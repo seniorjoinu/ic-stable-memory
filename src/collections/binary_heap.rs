@@ -2,7 +2,6 @@ use crate::collections::vec::SVec;
 use crate::OutOfMemory;
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
-use std::cmp::Ordering;
 
 #[derive(CandidType, Deserialize)]
 pub enum SHeapType {
@@ -168,6 +167,10 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
         }
     }
 
+    pub fn drop(self) {
+        self.arr.drop();
+    }
+
     pub fn len(&self) -> u64 {
         self.arr.len()
     }
@@ -177,30 +180,23 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
     }
 }
 
+impl<T: CandidType + DeserializeOwned + Ord> Default for SBinaryHeap<T> {
+    fn default() -> Self {
+        SBinaryHeap::new(SHeapType::Max)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::binary_heap::{SBinaryHeap, SHeapType};
-    use crate::stable_memory_init;
+    use crate::{stable, stable_memory_init};
     use candid::CandidType;
     use serde::de::DeserializeOwned;
     use std::fmt::Debug;
 
-    fn print_heap<T: Debug + CandidType + DeserializeOwned + Ord>(h: &SBinaryHeap<T>) {
-        print!("[");
-
-        for i in 0..h.len() {
-            print!("{:?}", h.arr.get_cloned(i).unwrap());
-
-            if i < h.len() - 1 {
-                print!(", ");
-            }
-        }
-
-        println!("]");
-    }
-
     #[test]
     fn heap_sort_works_fine() {
+        stable::clear();
         stable_memory_init(true, 0);
 
         let example = vec![10u32, 20, 30, 40, 50, 60, 70, 80, 90, 100];

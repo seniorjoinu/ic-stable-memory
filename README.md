@@ -17,7 +17,7 @@ With this Rust library you can:
 # cargo.toml
 
 [dependencies]
-ic-stable-memory = "0.0.2"
+ic-stable-memory = "0.1.0"
 ```
 
 ## Quick example
@@ -127,7 +127,28 @@ fn add_my_string(entry: String) {
 }
 ```
 
-There is also a `SHashMap` collection, if you need keyed values.
+## Collections
+
+### SVec
+[source code](./src/collections/vec.rs)
+
+// TODO: API
+
+### SHashMap
+[source code](./src/collections/hash_map.rs)
+
+// TODO: API
+
+### SHashSet
+[source code](./src/collections/hash_set.rs)
+
+// TODO: API
+
+### SBinaryHeap
+[source code](./src/collections/binary_heap.rs)
+
+// TODO: API
+
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.

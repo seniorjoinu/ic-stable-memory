@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 static mut VARS: Option<SHashMap<String, u64>> = None;
 
 pub fn init_vars() {
-    unsafe { VARS = Some(SHashMap::with_capacity(101)) }
+    unsafe { VARS = Some(SHashMap::new_with_capacity(101)) }
 }
 
 pub fn store_vars() {

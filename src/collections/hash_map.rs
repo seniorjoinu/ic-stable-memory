@@ -55,10 +55,10 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
     SHashMap<K, V>
 {
     pub fn new() -> Self {
-        Self::with_capacity(STABLE_HASH_MAP_DEFAULT_CAPACITY)
+        Self::new_with_capacity(STABLE_HASH_MAP_DEFAULT_CAPACITY)
     }
 
-    pub fn with_capacity(capacity: u32) -> Self {
+    pub fn new_with_capacity(capacity: u32) -> Self {
         let _info = SHashMapInfo {
             _len: 0,
             _table_capacity: capacity,
@@ -149,6 +149,10 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
         self._info._len -= 1;
 
         prev
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get_cloned(key).is_some()
     }
 
     pub fn get_cloned(&self, key: &K) -> Option<V> {
@@ -257,8 +261,8 @@ impl<'de, K, V> Deserialize<'de> for SHashMap<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_map::SHashMap;
-    use crate::init_allocator;
     use crate::utils::mem_context::stable;
+    use crate::{init_allocator, stable_memory_init};
 
     fn test_body(mut map: SHashMap<String, i32>) {
         let k1 = "key1".to_string();
@@ -313,8 +317,8 @@ mod tests {
 
     #[test]
     fn simple_flow_works_well_for_big() {
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable::clear();
+        stable_memory_init(true, 0);
 
         let map = SHashMap::new();
         test_body(map);
@@ -322,10 +326,10 @@ mod tests {
 
     #[test]
     fn simple_flow_works_well_for_small() {
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable::clear();
+        stable_memory_init(true, 0);
 
-        let map = SHashMap::with_capacity(3);
+        let map = SHashMap::new_with_capacity(3);
         test_body(map);
     }
 }

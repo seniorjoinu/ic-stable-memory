@@ -100,9 +100,7 @@ pub mod stable {
     }
 
     pub fn clear() {
-        CONTEXT.with(|it| {
-            it.borrow_mut().data = vec![];
-        });
+        CONTEXT.replace(TestMemContext::default());
     }
 
     pub fn size_pages() -> u64 {
