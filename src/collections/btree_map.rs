@@ -1,9 +1,55 @@
 use crate::primitive::s_slice::{SSlice, PTR_SIZE};
-use crate::{allocate, OutOfMemory};
+use crate::{allocate, OutOfMemory, SUnsafeCell};
+use candid::{CandidType, Deserialize};
+use serde::de::DeserializeOwned;
+use std::marker::PhantomData;
 
-pub struct BTreeMap {
-    root: SSlice<BTreeNode>,
+const DEFAULT_BTREE_M: usize = 4 * 1024;
+
+#[derive(CandidType, Deserialize)]
+pub struct BTreeMap<K, V> {
+    root: Option<SSlice<BTreeNode>>,
     len: u64,
+    m: usize,
+    _k: PhantomData<K>,
+    _v: PhantomData<V>,
+}
+
+impl<K: CandidType + DeserializeOwned + Ord, V: CandidType + DeserializeOwned> BTreeMap<K, V> {
+    pub fn new() -> Self {
+        Self::new_with_factor(DEFAULT_BTREE_M)
+    }
+
+    pub fn new_with_factor(m: usize) -> Self {
+        Self {
+            root: None,
+            len: 0,
+            m,
+            _k: PhantomData::default(),
+            _v: PhantomData::default(),
+        }
+    }
+
+    pub fn insert(&mut self, k: K, v: V) -> Result<Option<V>, OutOfMemory> {
+        if self.root.is_none() {
+            self.root = Some(SSlice::new_btree_node(self.m)?);
+        }
+    }
+
+    fn binary_search_node(&self, node: &SSlice<BTreeNode>, k: &K) -> BSResult {
+        let mut key_idx = node.len() / 2;
+    }
+}
+
+enum BSResult {
+    Found(usize),
+    Insert(usize),
+    Follow(usize, ChildKind),
+}
+
+struct BTreeMapEntry<K, V> {
+    key: K,
+    value_cell: SUnsafeCell<V>,
 }
 
 struct BTreeNode;
@@ -55,17 +101,19 @@ impl SSlice<BTreeNode> {
     }
 
     fn move_right(&self, key_idx: usize) {
+        let len = self.len();
+
         let old_keys_offset = self.get_key_offset(key_idx);
         let new_keys_offset = old_keys_offset + PTR_SIZE;
-        let keys_size = (self.len() - key_idx) * PTR_SIZE;
+        let keys_size = (len - key_idx) * PTR_SIZE;
         let mut keys_buf = vec![0u8; keys_size];
 
         self._read_bytes(old_keys_offset, &mut keys_buf);
         self._write_bytes(new_keys_offset, &keys_buf);
 
-        let old_children_offset = self.get_child_offset(key_idx, ChildKind::Left);
+        let old_children_offset = self.get_child_offset(key_idx, ChildKind::Right);
         let new_children_offset = old_children_offset + PTR_SIZE;
-        let children_size = (self.len() + 1 - key_idx) * PTR_SIZE;
+        let children_size = (len - key_idx) * PTR_SIZE;
         let mut children_buf = vec![0u8; children_size];
 
         self._read_bytes(old_children_offset, &mut children_buf);
@@ -198,5 +246,16 @@ mod tests {
         assert_eq!(node.remove(0), (30, 3, 2));
         assert_eq!(node.remove(0), (20, 2, 0));
         assert_eq!(node.remove(0), (10, 0, 1));
+
+        assert_eq!(node.get_key_ptr(0), 0);
+        assert_eq!(node.get_key_ptr(1), 0);
+        assert_eq!(node.get_key_ptr(2), 0);
+        assert_eq!(node.get_key_ptr(3), 0);
+
+        assert_eq!(node.get_child_ptr(0, ChildKind::Left), 0);
+        assert_eq!(node.get_child_ptr(1, ChildKind::Left), 0);
+        assert_eq!(node.get_child_ptr(2, ChildKind::Left), 0);
+        assert_eq!(node.get_child_ptr(3, ChildKind::Left), 0);
+        assert_eq!(node.get_child_ptr(3, ChildKind::Right), 0);
     }
 }
