@@ -1,76 +1,24 @@
-use crate::primitive::s_slice::{Side, CELL_META_SIZE, CELL_MIN_SIZE, PTR_SIZE};
+use crate::primitive::s_slice::{Side, CELL_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::SSlice;
+use candid::encode_args;
+use ic_cdk::api::call::call_raw;
+use ic_cdk::{id, print, spawn, trap};
 use std::fmt::{Debug, Formatter};
 use std::usize;
 
+pub(crate) const COMBINED: u64 = 2u64.pow(u64::BITS - 1); // first biggest bit set to 1, other set to 0
+pub(crate) const DECOMBINED: u64 = 2u64.pow(u64::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
 pub(crate) const EMPTY_PTR: u64 = u64::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
 pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
 pub(crate) const CUSTOM_DATA_PTRS_COUNT: usize = 4;
+pub(crate) const DEFAULT_MAX_ALLOCATION_SIZE: u32 = 10 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_GROW_PAGES: u64 = 0;
+pub(crate) const LOW_ON_MEMORY_HOOK_NAME: &str = "on_low_stable_memory";
 
 pub(crate) type SegClassId = u32;
-
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct Free;
-
-pub auto trait NotFree {}
-impl !NotFree for Free {}
-
-impl SSlice<Free> {
-    pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {
-        self.assert_allocated(false, None);
-
-        self._write_word(0, prev_ptr);
-    }
-
-    pub(crate) fn get_prev_free_ptr(&self) -> u64 {
-        self.assert_allocated(false, None);
-
-        self._read_word(0)
-    }
-
-    pub(crate) fn set_next_free_ptr(&mut self, next_ptr: u64) {
-        self.assert_allocated(false, None);
-
-        self._write_word(PTR_SIZE, next_ptr);
-    }
-
-    pub(crate) fn get_next_free_ptr(&self) -> u64 {
-        self.assert_allocated(false, None);
-
-        self._read_word(PTR_SIZE)
-    }
-}
-
-impl Debug for SSlice<Free> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let (size, allocated) = self.get_meta();
-
-        let prev_ptr = self.get_next_free_ptr();
-        let prev = if prev_ptr == EMPTY_PTR {
-            String::from("EMPTY")
-        } else {
-            prev_ptr.to_string()
-        };
-
-        let next_ptr = self.get_next_free_ptr();
-        let next = if next_ptr == EMPTY_PTR {
-            String::from("EMPTY")
-        } else {
-            next_ptr.to_string()
-        };
-
-        f.debug_struct("FreeMemBox")
-            .field("ptr", &self.get_ptr())
-            .field("size", &size)
-            .field("is_allocated", &allocated)
-            .field("prev_free", &prev)
-            .field("next_free", &next)
-            .finish()
-    }
-}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct StableMemoryAllocator;
@@ -79,12 +27,16 @@ pub auto trait NotStableMemoryAllocator {}
 impl !NotStableMemoryAllocator for StableMemoryAllocator {}
 
 impl SSlice<StableMemoryAllocator> {
-    const SIZE: usize = MAGIC.len()
-        + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
-        + PTR_SIZE * 2
-        + CUSTOM_DATA_PTRS_COUNT * PTR_SIZE;
+    const SIZE: usize = MAGIC.len()                     // magic bytes
+        + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE      // segregations classes table
+        + PTR_SIZE * 2                                  // free & allocated counters
+        + PTR_SIZE                                      // max allocation size
+        + PTR_SIZE                                      // max grow pages
+        + CUSTOM_DATA_PTRS_COUNT * PTR_SIZE; // pointers to custom data
 
     /// # Safety
+    /// Invoke only once during `init()` canister function execution
+    /// Execution more than once will lead to undefined behavior
     pub(crate) unsafe fn init(offset: u64) -> Self {
         let mut allocator = SSlice::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
 
@@ -95,6 +47,9 @@ impl SSlice<StableMemoryAllocator> {
     }
 
     /// # Safety
+    /// Invoke each time your canister upgrades, in `post_upgrade()` function
+    /// It's fine to call this function more than once, but remember that using multiple copies of
+    /// a single allocator can lead to race condition in an asynchronous scenario
     pub(crate) unsafe fn reinit(offset: u64) -> Option<Self> {
         let membox = SSlice::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
         let (size, allocated) = membox.get_meta();
@@ -111,15 +66,25 @@ impl SSlice<StableMemoryAllocator> {
         Some(membox)
     }
 
-    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> Result<SSlice<T>, OutOfMemory> {
+    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> SSlice<T> {
         if size < CELL_MIN_SIZE {
             size = CELL_MIN_SIZE
         }
 
-        let free_membox = self.pop_allocated_membox(size)?;
-        let membox = unsafe { SSlice::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap() };
+        // will be called only once during first ever allocate()
+        self.handle_free_buffer();
 
-        Ok(membox)
+        let free_membox = match self.pop_allocated_membox(size) {
+            Ok(m) => m,
+            Err(e) => trap(format!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size()).as_str())
+        };
+
+        self.handle_free_buffer();
+
+        unsafe {
+            // shouldn't throw, since the membox was just allocated and therefore operable
+            SSlice::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap()
+        }
     }
 
     pub(crate) fn deallocate<T>(&mut self, mut membox: SSlice<T>) {
@@ -136,19 +101,15 @@ impl SSlice<StableMemoryAllocator> {
 
     // TODO: reallocate inplace
 
-    pub(crate) fn reallocate<T>(
-        &mut self,
-        membox: SSlice<T>,
-        new_size: usize,
-    ) -> Result<SSlice<T>, OutOfMemory> {
+    pub(crate) fn reallocate<T>(&mut self, membox: SSlice<T>, new_size: usize) -> SSlice<T> {
         let mut data = vec![0u8; membox.get_size_bytes()];
         membox._read_bytes(0, &mut data);
 
         self.deallocate(membox);
-        let new_membox = self.allocate(new_size)?;
+        let new_membox = self.allocate(new_size);
         new_membox._write_bytes(0, &data);
 
-        Ok(new_membox)
+        new_membox
     }
 
     pub(crate) fn reset(&mut self) {
@@ -160,6 +121,7 @@ impl SSlice<StableMemoryAllocator> {
 
         self.set_allocated_size(0);
         self.set_free_size(0);
+        self.set_max_allocation_size(DEFAULT_MAX_ALLOCATION_SIZE);
 
         let total_free_size =
             stable::size_pages() * PAGE_SIZE_BYTES as u64 - self.get_next_neighbor_ptr();
@@ -280,44 +242,8 @@ impl SSlice<StableMemoryAllocator> {
                     }
                 }
             }
-            // otherwise, grow and if grown successfully, split in two, take first, push second
-            None => {
-                let pages_to_grow = size / PAGE_SIZE_BYTES + 1;
-                let prev_total_size = stable::grow(pages_to_grow as u64)? * PAGE_SIZE_BYTES as u64;
-
-                let total_free_size =
-                    stable::size_pages() * PAGE_SIZE_BYTES as u64 - prev_total_size;
-
-                let ptr = prev_total_size;
-
-                let new_free_membox =
-                    unsafe { SSlice::<Free>::new_total_size(ptr, total_free_size as usize, false) };
-
-                match unsafe { new_free_membox.split(size) } {
-                    Ok((mut result, additional)) => {
-                        result.set_allocated(true);
-
-                        self.push_free_membox(additional);
-
-                        let total_allocated = self.get_allocated_size();
-                        self.set_allocated_size(
-                            total_allocated + result.get_total_size_bytes() as u64,
-                        );
-
-                        Ok(result)
-                    }
-                    Err(mut new_free_membox) => {
-                        new_free_membox.set_allocated(true);
-
-                        let total_allocated = self.get_allocated_size();
-                        self.set_allocated_size(
-                            total_allocated + new_free_membox.get_total_size_bytes() as u64,
-                        );
-
-                        Ok(new_free_membox)
-                    }
-                }
-            }
+            // otherwise, throw (max allocation size limit violated)
+            None => Err(OutOfMemory),
         }
     }
 
@@ -340,11 +266,34 @@ impl SSlice<StableMemoryAllocator> {
         );
     }
 
+    pub(crate) fn get_max_allocation_size(&self) -> u32 {
+        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2)
+            as u32
+    }
+
+    pub(crate) fn set_max_allocation_size(&mut self, size: u32) {
+        self._write_word(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2,
+            size as u64,
+        );
+    }
+
+    pub(crate) fn get_max_grow_pages(&self) -> u64 {
+        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3)
+    }
+
+    pub(crate) fn set_max_grow_pages(&mut self, max_pages: u64) {
+        self._write_word(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3,
+            max_pages,
+        );
+    }
+
     pub fn set_custom_data_ptr(&mut self, idx: usize, ptr: u64) {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
         self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + idx * PTR_SIZE,
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 4 + idx * PTR_SIZE,
             ptr,
         );
     }
@@ -353,7 +302,7 @@ impl SSlice<StableMemoryAllocator> {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
         self._read_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + idx * PTR_SIZE,
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 4 + idx * PTR_SIZE,
         )
     }
 
@@ -435,6 +384,64 @@ impl SSlice<StableMemoryAllocator> {
         membox
     }
 
+    // makes sure the allocator always has at least X bytes of free memory, tries to grow otherwise
+    fn handle_free_buffer(&mut self) {
+        let free = self.get_free_size();
+        let max_allocation_size = self.get_max_allocation_size() as u64;
+
+        if free >= max_allocation_size {
+            return;
+        }
+
+        let already_grew = stable::size_pages();
+        let max_grow_pages = self.get_max_grow_pages();
+
+        if max_grow_pages != 0 && already_grew >= max_grow_pages {
+            return;
+        }
+
+        let pages_to_grow = (max_allocation_size - free) / PAGE_SIZE_BYTES as u64 + 1;
+
+        if let Some(prev_pages) = Self::grow_or_trigger_low_memory_hook(pages_to_grow) {
+            let ptr = prev_pages * PAGE_SIZE_BYTES as u64;
+            let new_memory_size = stable::size_pages() * PAGE_SIZE_BYTES as u64 - ptr;
+
+            let new_free_membox =
+                unsafe { SSlice::<Free>::new_total_size(ptr, new_memory_size as usize, false) };
+
+            self.push_free_membox(new_free_membox);
+        }
+    }
+
+    fn grow_or_trigger_low_memory_hook(pages_to_grow: u64) -> Option<u64> {
+        match stable::grow(pages_to_grow) {
+            Ok(prev_pages) => Some(prev_pages),
+            Err(_) => {
+                print(
+                    format!(
+                        "Low on stable memory, triggering {}()...",
+                        LOW_ON_MEMORY_HOOK_NAME
+                    )
+                    .as_str(),
+                );
+
+                spawn(async {
+                    call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &encode_args(()).unwrap(), 0)
+                        .await
+                        .expect(
+                            format!(
+                                "Unable to trigger {}(), failing silently...",
+                                LOW_ON_MEMORY_HOOK_NAME
+                            )
+                            .as_str(),
+                        );
+                });
+
+                None
+            }
+        }
+    }
+
     fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: u64) {
         self._write_word(Self::get_seg_class_head_offset(id), head_ptr);
     }
@@ -465,7 +472,9 @@ impl Debug for SSlice<StableMemoryAllocator> {
         let mut d = f.debug_struct("StableMemoryAllocator");
 
         d.field("total_allocated", &self.get_allocated_size())
-            .field("total_free", &self.get_free_size());
+            .field("total_free", &self.get_free_size())
+            .field("max_allocation_size", &self.get_max_allocation_size())
+            .field("max_grow_pages", &self.get_max_grow_pages());
 
         for id in 0..SEG_CLASS_PTRS_COUNT as u32 {
             let head = unsafe { self.get_seg_class_head(id) };
@@ -491,6 +500,66 @@ impl Debug for SSlice<StableMemoryAllocator> {
         }
 
         d.finish()
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct Free;
+
+pub auto trait NotFree {}
+impl !NotFree for Free {}
+
+impl SSlice<Free> {
+    pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {
+        self.assert_allocated(false, None);
+
+        self._write_word(0, prev_ptr);
+    }
+
+    pub(crate) fn get_prev_free_ptr(&self) -> u64 {
+        self.assert_allocated(false, None);
+
+        self._read_word(0)
+    }
+
+    pub(crate) fn set_next_free_ptr(&mut self, next_ptr: u64) {
+        self.assert_allocated(false, None);
+
+        self._write_word(PTR_SIZE, next_ptr);
+    }
+
+    pub(crate) fn get_next_free_ptr(&self) -> u64 {
+        self.assert_allocated(false, None);
+
+        self._read_word(PTR_SIZE)
+    }
+}
+
+impl Debug for SSlice<Free> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let (size, allocated) = self.get_meta();
+
+        let prev_ptr = self.get_next_free_ptr();
+        let prev = if prev_ptr == EMPTY_PTR {
+            String::from("EMPTY")
+        } else {
+            prev_ptr.to_string()
+        };
+
+        let next_ptr = self.get_next_free_ptr();
+        let next = if next_ptr == EMPTY_PTR {
+            String::from("EMPTY")
+        } else {
+            next_ptr.to_string()
+        };
+
+        f.debug_struct("FreeMemBox")
+            .field("ptr", &self.get_ptr())
+            .field("size", &size)
+            .field("is_allocated", &allocated)
+            .field("prev_free", &prev)
+            .field("next_free", &next)
+            .finish()
     }
 }
 
@@ -536,13 +605,13 @@ mod tests {
 
         unsafe {
             let mut sma = SSlice::<StableMemoryAllocator>::init(0);
+            sma.set_max_grow_pages(0);
+
             let mut memboxes = vec![];
 
             // try to allocate 1000 MB
             for i in 0..1024 {
-                let membox = sma
-                    .allocate::<u8>(1024)
-                    .unwrap_or_else(|_| panic!("Unable to allocate on step {}", i));
+                let membox = sma.allocate::<u8>(1024);
 
                 assert!(membox.get_meta().0 >= 1024, "Invalid membox size at {}", i);
 
@@ -553,9 +622,7 @@ mod tests {
 
             for i in 0..1024 {
                 let mut membox = memboxes[i].clone();
-                membox = sma
-                    .reallocate(membox, 2 * 1024)
-                    .unwrap_or_else(|_| panic!("Unable to reallocate on step {}", i));
+                membox = sma.reallocate(membox, 2 * 1024);
 
                 assert!(
                     membox.get_meta().0 >= 2 * 1024,

@@ -1,3 +1,5 @@
+THIS IS __NOT__ A BATTLE-TESTED SOFTWARE; USE AT YOUR OWN RISK
+
 # IC Stable Memory
 
 With this Rust library you can:
@@ -149,6 +151,8 @@ fn add_my_string(entry: String) {
 
 // TODO: API
 
+
+## Benchmarks
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.
