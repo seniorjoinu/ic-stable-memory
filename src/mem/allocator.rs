@@ -81,10 +81,15 @@ impl SSlice<StableMemoryAllocator> {
 
         self.handle_free_buffer();
 
-        unsafe {
+        let it = unsafe {
             // shouldn't throw, since the membox was just allocated and therefore operable
             SSlice::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap()
-        }
+        };
+
+        let buf = vec![0u8; it.get_size_bytes()];
+        it._write_bytes(0, &buf);
+
+        it
     }
 
     pub(crate) fn deallocate<T>(&mut self, mut membox: SSlice<T>) {
@@ -428,13 +433,12 @@ impl SSlice<StableMemoryAllocator> {
                 spawn(async {
                     call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &encode_args(()).unwrap(), 0)
                         .await
-                        .expect(
-                            format!(
+                        .unwrap_or_else(|_| {
+                            panic!(
                                 "Unable to trigger {}(), failing silently...",
                                 LOW_ON_MEMORY_HOOK_NAME
                             )
-                            .as_str(),
-                        );
+                        });
                 });
 
                 None

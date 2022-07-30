@@ -77,7 +77,8 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.init_table();
 
-        let (offset, bucket_box_opt) = self.find_bucket(&key);
+        let idx = self.find_bucket_idx(&key);
+        let (offset, bucket_box_opt) = self.read_bucket(idx);
 
         let (mut bucket_box, mut bucket) = if let Some(bb) = bucket_box_opt {
             let bucket = bb.get_cloned();
@@ -114,11 +115,12 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
 
         self._info._len += 1;
 
-        let should_update = unsafe { bucket_box.set(&bucket) };
+        unsafe {
+            let should_update = bucket_box.set(&bucket);
 
-        if should_update {
-            self.table()
-                ._write_word(offset, unsafe { bucket_box.as_ptr() });
+            if should_update {
+                self.set_bucket(idx, &bucket_box);
+            }
         }
 
         prev
@@ -129,7 +131,8 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             return None;
         }
 
-        let (_, bucket_box_opt) = self.find_bucket(key);
+        let idx = self.find_bucket_idx(key);
+        let (_, bucket_box_opt) = self.read_bucket(idx);
         let mut bucket_box = bucket_box_opt?;
         let mut bucket = bucket_box.get_cloned();
 
@@ -147,7 +150,13 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             }
         }
 
-        unsafe { bucket_box.set(&bucket) };
+        unsafe {
+            let should_update = bucket_box.set(&bucket);
+
+            if should_update {
+                self.set_bucket(idx, &bucket_box);
+            }
+        }
         self._info._len -= 1;
 
         prev
@@ -162,7 +171,8 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             return None;
         }
 
-        let (_, bucket_box) = self.find_bucket(key);
+        let idx = self.find_bucket_idx(key);
+        let (_, bucket_box) = self.read_bucket(idx);
         let bucket = bucket_box?.get_cloned();
 
         for i in 0..bucket.len() {
@@ -203,13 +213,18 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
         }
     }
 
-    fn find_bucket(&self, key: &K) -> (usize, Option<HashMapBucket<K, V>>) {
+    fn find_bucket_idx(&self, key: &K) -> usize {
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
         let hash = hasher.finish();
-        let idx = (hash % self._info._table_capacity as u64) as usize;
 
-        self.read_bucket(idx)
+        (hash % self._info._table_capacity as u64) as usize
+    }
+
+    fn set_bucket(&mut self, idx: usize, bucket_value: &HashMapBucket<K, V>) {
+        let offset = idx * PTR_SIZE;
+        self.table()
+            ._write_word(offset, unsafe { bucket_value.as_ptr() });
     }
 
     fn read_bucket(&self, idx: usize) -> (usize, Option<HashMapBucket<K, V>>) {
