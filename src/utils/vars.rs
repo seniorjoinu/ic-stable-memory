@@ -32,7 +32,6 @@ pub fn set_var<T: CandidType + DeserializeOwned>(name: &str, value: &T) {
         VARS.as_mut()
             .expect("Stable vars are not initialized yet")
             .insert(String::from(name), val_box.as_ptr())
-            .expect("Unable to set stable var")
     };
 }
 

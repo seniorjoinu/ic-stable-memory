@@ -8,8 +8,6 @@ use ic_cdk::{id, print, spawn, trap};
 use std::fmt::{Debug, Formatter};
 use std::usize;
 
-pub(crate) const COMBINED: u64 = 2u64.pow(u64::BITS - 1); // first biggest bit set to 1, other set to 0
-pub(crate) const DECOMBINED: u64 = 2u64.pow(u64::BITS - 1) - 1; // first biggest bit set to 0, other set to 1
 pub(crate) const EMPTY_PTR: u64 = u64::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
 pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
@@ -31,6 +29,7 @@ impl SSlice<StableMemoryAllocator> {
         + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE      // segregations classes table
         + PTR_SIZE * 2                                  // free & allocated counters
         + PTR_SIZE                                      // max allocation size
+        + 1                                             // was on_low_stable_memory() callback executed flag
         + PTR_SIZE                                      // max grow pages
         + CUSTOM_DATA_PTRS_COUNT * PTR_SIZE; // pointers to custom data
 
@@ -127,6 +126,8 @@ impl SSlice<StableMemoryAllocator> {
         self.set_allocated_size(0);
         self.set_free_size(0);
         self.set_max_allocation_size(DEFAULT_MAX_ALLOCATION_SIZE);
+        self.set_max_grow_pages(DEFAULT_MAX_GROW_PAGES);
+        self.set_on_low_executed_flag(false);
 
         let total_free_size =
             stable::size_pages() * PAGE_SIZE_BYTES as u64 - self.get_next_neighbor_ptr();
@@ -283,13 +284,32 @@ impl SSlice<StableMemoryAllocator> {
         );
     }
 
+    pub(crate) fn get_on_low_executed_flag(&self) -> bool {
+        let mut buf = [0u8; 1];
+        self._read_bytes(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + 1,
+            &mut buf,
+        );
+
+        buf[0] == 1
+    }
+
+    pub(crate) fn set_on_low_executed_flag(&mut self, flag: bool) {
+        let buf = if flag { [1u8; 1] } else { [0u8; 1] };
+
+        self._write_bytes(
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + 1,
+            &buf,
+        );
+    }
+
     pub(crate) fn get_max_grow_pages(&self) -> u64 {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3)
+        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3 + 1)
     }
 
     pub(crate) fn set_max_grow_pages(&mut self, max_pages: u64) {
         self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3,
+            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3 + 1,
             max_pages,
         );
     }
@@ -298,7 +318,11 @@ impl SSlice<StableMemoryAllocator> {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
         self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 4 + idx * PTR_SIZE,
+            MAGIC.len()
+                + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
+                + PTR_SIZE * 4
+                + 1
+                + idx * PTR_SIZE,
             ptr,
         );
     }
@@ -307,7 +331,11 @@ impl SSlice<StableMemoryAllocator> {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
         self._read_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 4 + idx * PTR_SIZE,
+            MAGIC.len()
+                + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
+                + PTR_SIZE * 4
+                + 1
+                + idx * PTR_SIZE,
         )
     }
 
@@ -398,16 +426,9 @@ impl SSlice<StableMemoryAllocator> {
             return;
         }
 
-        let already_grew = stable::size_pages();
-        let max_grow_pages = self.get_max_grow_pages();
-
-        if max_grow_pages != 0 && already_grew >= max_grow_pages {
-            return;
-        }
-
         let pages_to_grow = (max_allocation_size - free) / PAGE_SIZE_BYTES as u64 + 1;
 
-        if let Some(prev_pages) = Self::grow_or_trigger_low_memory_hook(pages_to_grow) {
+        if let Some(prev_pages) = self.grow_or_trigger_low_memory_hook(pages_to_grow) {
             let ptr = prev_pages * PAGE_SIZE_BYTES as u64;
             let new_memory_size = stable::size_pages() * PAGE_SIZE_BYTES as u64 - ptr;
 
@@ -418,32 +439,51 @@ impl SSlice<StableMemoryAllocator> {
         }
     }
 
-    fn grow_or_trigger_low_memory_hook(pages_to_grow: u64) -> Option<u64> {
+    fn grow_or_trigger_low_memory_hook(&mut self, pages_to_grow: u64) -> Option<u64> {
+        let already_grew = stable::size_pages();
+        let max_grow_pages = self.get_max_grow_pages();
+
+        if max_grow_pages != 0 && already_grew + pages_to_grow >= max_grow_pages {
+            self.handle_low_memory();
+
+            return None;
+        }
+
         match stable::grow(pages_to_grow) {
             Ok(prev_pages) => Some(prev_pages),
             Err(_) => {
-                print(
-                    format!(
-                        "Low on stable memory, triggering {}()...",
-                        LOW_ON_MEMORY_HOOK_NAME
-                    )
-                    .as_str(),
-                );
-
-                spawn(async {
-                    call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &encode_args(()).unwrap(), 0)
-                        .await
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "Unable to trigger {}(), failing silently...",
-                                LOW_ON_MEMORY_HOOK_NAME
-                            )
-                        });
-                });
+                self.handle_low_memory();
 
                 None
             }
         }
+    }
+
+    fn handle_low_memory(&mut self) {
+        if self.get_on_low_executed_flag() {
+            return;
+        }
+
+        print(
+            format!(
+                "Low on stable memory, triggering {}()...",
+                LOW_ON_MEMORY_HOOK_NAME
+            )
+            .as_str(),
+        );
+
+        spawn(async {
+            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &encode_args(()).unwrap(), 0)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Unable to trigger {}(), failing silently...",
+                        LOW_ON_MEMORY_HOOK_NAME
+                    )
+                });
+        });
+
+        self.set_on_low_executed_flag(true);
     }
 
     fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: u64) {
