@@ -1,5 +1,5 @@
 use crate::primitive::s_slice::PTR_SIZE;
-use crate::{allocate, deallocate, OutOfMemory, SSlice, SUnsafeCell};
+use crate::{allocate, deallocate, SSlice, SUnsafeCell};
 use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
@@ -8,6 +8,8 @@ use std::marker::PhantomData;
 
 const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
 const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
+
+// TODO: make sectors of constant size
 
 struct SVecSector;
 
@@ -43,25 +45,20 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
         }
     }
 
-    pub fn push(&mut self, element: &T) -> Result<(), OutOfMemory> {
-        let elem_cell = SUnsafeCell::new(element)?;
+    pub fn push(&mut self, element: &T) {
+        let elem_cell = SUnsafeCell::new(element);
         let elem_ptr = unsafe { elem_cell.as_ptr() };
 
         if self._info._sectors.is_empty() {
-            self.init_sectors()?;
+            self.init_sectors();
         }
 
-        self.grow_if_needed().map_err(|e| {
-            elem_cell.drop();
-            e
-        })?;
+        self.grow_if_needed();
         self.set_len(self.len() + 1);
 
         let (sector, offset) = self.calculate_inner_index(self.len() - 1);
 
         sector._write_word(offset, elem_ptr);
-
-        Ok(())
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -95,9 +92,9 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
         Some(elem)
     }
 
-    pub fn replace(&mut self, idx: u64, element: &T) -> Result<T, OutOfMemory> {
+    pub fn replace(&mut self, idx: u64, element: &T) -> T {
         assert!(idx < self.len(), "Out of bounds");
-        let new_elem_cell = SUnsafeCell::new(element)?;
+        let new_elem_cell = SUnsafeCell::new(element);
         let new_elem_ptr = unsafe { new_elem_cell.as_ptr() };
 
         let (sector, offset) = self.calculate_inner_index(idx);
@@ -108,7 +105,7 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
 
         sector._write_word(offset, new_elem_ptr);
 
-        Ok(prev_elem)
+        prev_elem
     }
 
     pub fn swap(&mut self, idx1: u64, idx2: u64) {
@@ -181,7 +178,7 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
         self.len() == self.capacity()
     }
 
-    fn grow_if_needed(&mut self) -> Result<(), OutOfMemory> {
+    fn grow_if_needed(&mut self) {
         if self.is_about_to_grow() {
             let last_sector_size = self.get_sector_size(self.get_sectors_count() - 1);
             let new_sector_size = if last_sector_size * 2 < MAX_SECTOR_SIZE {
@@ -190,13 +187,11 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
                 MAX_SECTOR_SIZE
             };
 
-            let sector = allocate(new_sector_size)?;
+            let sector = allocate(new_sector_size);
             self.set_capacity(self.capacity() + (new_sector_size / PTR_SIZE) as u64);
             self._info._sectors.push(sector);
             self._info._sector_sizes.push(new_sector_size as u32);
         }
-
-        Ok(())
     }
 
     fn calculate_inner_index(&self, idx: u64) -> (&SSlice<SVecSector>, usize) {
@@ -227,52 +222,26 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
         unreachable!("Unable to calculate inner index");
     }
 
-    fn init_sectors(&mut self) -> Result<(), OutOfMemory> {
+    fn init_sectors(&mut self) {
         let mut sectors = vec![];
         let mut sector_sizes = vec![];
         let mut capacity_size = self._info._capacity * PTR_SIZE as u64;
 
         while capacity_size > MAX_SECTOR_SIZE as u64 {
-            let sector_res = allocate::<SVecSector>(MAX_SECTOR_SIZE);
+            let sector = allocate::<SVecSector>(MAX_SECTOR_SIZE);
 
-            match sector_res {
-                Ok(sector) => {
-                    sectors.push(sector);
-                    sector_sizes.push(MAX_SECTOR_SIZE as u32);
-                    capacity_size -= MAX_SECTOR_SIZE as u64;
-                }
-                // revert
-                Err(e) => {
-                    for sector in sectors {
-                        deallocate(sector);
-                    }
-
-                    return Err(e);
-                }
-            }
+            sectors.push(sector);
+            sector_sizes.push(MAX_SECTOR_SIZE as u32);
+            capacity_size -= MAX_SECTOR_SIZE as u64;
         }
 
-        let sector_res = allocate::<SVecSector>(capacity_size as usize);
+        let sector = allocate::<SVecSector>(capacity_size as usize);
 
-        match sector_res {
-            Ok(sector) => {
-                sectors.push(sector);
-                sector_sizes.push(capacity_size as u32);
-            }
-            // revert
-            Err(e) => {
-                for sector in sectors {
-                    deallocate(sector);
-                }
-
-                return Err(e);
-            }
-        }
+        sectors.push(sector);
+        sector_sizes.push(capacity_size as u32);
 
         self._info._sectors = sectors.iter().map(|it| unsafe { it.clone() }).collect();
         self._info._sector_sizes = sector_sizes;
-
-        Ok(())
     }
 }
 
@@ -353,9 +322,7 @@ mod tests {
                 b: format!("Str {}", i),
             };
 
-            stable_vec
-                .push(&it)
-                .unwrap_or_else(|e| panic!("Unable to push at step {}: {:?}", i, e));
+            stable_vec.push(&it);
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
@@ -366,7 +333,7 @@ mod tests {
                 b: format!("String of the element {}", i),
             };
 
-            stable_vec.replace(i, &it).unwrap();
+            stable_vec.replace(i, &it);
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
@@ -386,9 +353,7 @@ mod tests {
                 b: format!("Str {}", i),
             };
 
-            stable_vec
-                .push(&it)
-                .unwrap_or_else(|e| panic!("Unable to push at step {}: {:?}", i, e));
+            stable_vec.push(&it);
         }
 
         stable_vec.drop();

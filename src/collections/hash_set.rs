@@ -1,5 +1,4 @@
 use crate::collections::hash_map::SHashMap;
-use crate::OutOfMemory;
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
 use std::hash::Hash;
@@ -22,8 +21,8 @@ impl<T: CandidType + DeserializeOwned + Hash + Eq> SHashSet<T> {
         }
     }
 
-    pub fn insert(&mut self, value: T) -> Result<bool, OutOfMemory> {
-        self.map.insert(value, ()).map(|prev| prev.is_some())
+    pub fn insert(&mut self, value: T) -> bool {
+        self.map.insert(value, ()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {

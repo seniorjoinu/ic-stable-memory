@@ -2,15 +2,17 @@ use crate::collections::vec::SVec;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::s_slice::PTR_SIZE;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
-use crate::{allocate, deallocate, OutOfMemory, SSlice};
+use crate::{allocate, deallocate, SSlice};
 use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
 use serde::Deserializer;
 use std::collections::hash_map::DefaultHasher;
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+
+// TODO: make entry store value more efficiently
 
 const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 9973;
 type HashMapBucket<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;
@@ -72,8 +74,8 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
-        self.init_table()?;
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.init_table();
 
         let (offset, bucket_box_opt) = self.find_bucket(&key);
 
@@ -83,7 +85,7 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             (bb, bucket)
         } else {
             let bucket = SVec::<HashMapEntry<K, V>>::new();
-            let bb = HashMapBucket::<K, V>::new(&bucket)?;
+            let bb = HashMapBucket::<K, V>::new(&bucket);
 
             self.table()._write_word(offset, unsafe { bb.as_ptr() });
 
@@ -99,7 +101,7 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             let prev_entry = bucket.get_cloned(i).unwrap();
 
             if prev_entry.key.eq(&new_entry.key) {
-                bucket.replace(i, &new_entry)?;
+                bucket.replace(i, &new_entry);
                 prev = Some(prev_entry.val);
                 found = true;
                 break;
@@ -107,19 +109,19 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
         }
 
         if !found {
-            bucket.push(&new_entry)?;
+            bucket.push(&new_entry);
         }
 
         self._info._len += 1;
 
-        let should_update = unsafe { bucket_box.set(&bucket)? };
+        let should_update = unsafe { bucket_box.set(&bucket) };
 
         if should_update {
             self.table()
                 ._write_word(offset, unsafe { bucket_box.as_ptr() });
         }
 
-        Ok(prev)
+        prev
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
@@ -145,7 +147,7 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
             }
         }
 
-        unsafe { bucket_box.set(&bucket).expect("Should not reallocate") };
+        unsafe { bucket_box.set(&bucket) };
         self._info._len -= 1;
 
         prev
@@ -192,15 +194,13 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
         deallocate(self.table());
     }
 
-    fn init_table(&mut self) -> Result<(), OutOfMemory> {
+    fn init_table(&mut self) {
         if self._info._table.is_none() {
             let capacity_bytes = self._info._table_capacity as usize * PTR_SIZE;
-            let table = allocate(capacity_bytes)?;
+            let table = allocate(capacity_bytes);
 
             self._info._table = Some(table);
         }
-
-        Ok(())
     }
 
     fn find_bucket(&self, key: &K) -> (usize, Option<HashMapBucket<K, V>>) {
@@ -274,14 +274,14 @@ mod tests {
         let k7 = "key7".to_string();
         let k8 = "key8".to_string();
 
-        map.insert(k1.clone(), 1).unwrap();
-        map.insert(k2.clone(), 2).unwrap();
-        map.insert(k3.clone(), 3).unwrap();
-        map.insert(k4.clone(), 4).unwrap();
-        map.insert(k5.clone(), 5).unwrap();
-        map.insert(k6.clone(), 6).unwrap();
-        map.insert(k7.clone(), 7).unwrap();
-        map.insert(k8.clone(), 8).unwrap();
+        map.insert(k1.clone(), 1);
+        map.insert(k2.clone(), 2);
+        map.insert(k3.clone(), 3);
+        map.insert(k4.clone(), 4);
+        map.insert(k5.clone(), 5);
+        map.insert(k6.clone(), 6);
+        map.insert(k7.clone(), 7);
+        map.insert(k8.clone(), 8);
 
         assert_eq!(map.get_cloned(&k1).unwrap(), 1);
         assert_eq!(map.get_cloned(&k2).unwrap(), 2);

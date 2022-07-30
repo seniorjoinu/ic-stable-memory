@@ -1,5 +1,4 @@
 use crate::collections::vec::SVec;
-use crate::OutOfMemory;
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
 
@@ -30,11 +29,11 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
         }
     }
 
-    pub fn insert(&mut self, elem: &T) -> Result<(), OutOfMemory> {
-        self.arr.push(elem)?;
+    pub fn insert(&mut self, elem: &T) {
+        self.arr.push(elem);
         let len = self.len();
         if len == 1 {
-            return Ok(());
+            return;
         }
 
         let mut idx = len - 1;
@@ -69,8 +68,6 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
 
             break;
         }
-
-        Ok(())
     }
 
     pub fn peek(&self) -> Option<T> {
@@ -203,16 +200,16 @@ mod tests {
         let mut max_heap = SBinaryHeap::<u32>::new(SHeapType::Max);
 
         // insert example values in random order
-        max_heap.insert(&80).unwrap();
-        max_heap.insert(&100).unwrap();
-        max_heap.insert(&50).unwrap();
-        max_heap.insert(&10).unwrap();
-        max_heap.insert(&90).unwrap();
-        max_heap.insert(&60).unwrap();
-        max_heap.insert(&70).unwrap();
-        max_heap.insert(&20).unwrap();
-        max_heap.insert(&40).unwrap();
-        max_heap.insert(&30).unwrap();
+        max_heap.insert(&80);
+        max_heap.insert(&100);
+        max_heap.insert(&50);
+        max_heap.insert(&10);
+        max_heap.insert(&90);
+        max_heap.insert(&60);
+        max_heap.insert(&70);
+        max_heap.insert(&20);
+        max_heap.insert(&40);
+        max_heap.insert(&30);
 
         let mut probe = vec![];
 
@@ -236,16 +233,16 @@ mod tests {
         let mut min_heap = SBinaryHeap::<u32>::new(SHeapType::Min);
 
         // insert example values in random order
-        min_heap.insert(&80).unwrap();
-        min_heap.insert(&100).unwrap();
-        min_heap.insert(&50).unwrap();
-        min_heap.insert(&10).unwrap();
-        min_heap.insert(&90).unwrap();
-        min_heap.insert(&90).unwrap();
-        min_heap.insert(&70).unwrap();
-        min_heap.insert(&20).unwrap();
-        min_heap.insert(&40).unwrap();
-        min_heap.insert(&30).unwrap();
+        min_heap.insert(&80);
+        min_heap.insert(&100);
+        min_heap.insert(&50);
+        min_heap.insert(&10);
+        min_heap.insert(&90);
+        min_heap.insert(&90);
+        min_heap.insert(&70);
+        min_heap.insert(&20);
+        min_heap.insert(&40);
+        min_heap.insert(&30);
 
         let mut probe = vec![];
 

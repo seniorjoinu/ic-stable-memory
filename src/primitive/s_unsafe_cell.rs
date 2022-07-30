@@ -1,6 +1,6 @@
 use crate::primitive::s_slice::Side;
 use crate::utils::encode::decode_one_allow_trailing;
-use crate::{allocate, deallocate, reallocate, OutOfMemory, SSlice};
+use crate::{allocate, deallocate, reallocate, SSlice};
 use candid::types::{Serializer, Type};
 use candid::{encode_one, CandidType};
 use serde::de::DeserializeOwned;
@@ -12,13 +12,13 @@ use std::hash::{Hash, Hasher};
 pub struct SUnsafeCell<T>(SSlice<T>);
 
 impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
-    pub fn new(it: &T) -> Result<Self, OutOfMemory> {
+    pub fn new(it: &T) -> Self {
         let bytes = encode_one(it).expect("Unable to encode");
-        let raw = allocate(bytes.len())?;
+        let raw = allocate(bytes.len());
 
         raw._write_bytes(0, &bytes);
 
-        Ok(Self(raw))
+        Self(raw)
     }
 
     pub fn get_cloned(&self) -> T {
@@ -32,18 +32,18 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
     /// Make sure you update all references pointing to this sbox after setting a new value to it.
     /// Set can cause a reallocation that will change the location of the data.
     /// Use the return bool value to determine if the location is changed (true = you need to update).
-    pub unsafe fn set(&mut self, it: &T) -> Result<bool, OutOfMemory> {
+    pub unsafe fn set(&mut self, it: &T) -> bool {
         let bytes = encode_one(it).expect("Unable to encode");
         let mut res = false;
 
         if self.0.get_size_bytes() < bytes.len() {
-            self.0 = reallocate(self.0.clone(), bytes.len())?;
+            self.0 = reallocate(self.0.clone(), bytes.len());
             res = true;
         }
 
         self.0._write_bytes(0, &bytes);
 
-        Ok(res)
+        res
     }
 
     pub fn _allocated_size(&self) -> usize {
@@ -189,7 +189,7 @@ mod tests {
             b: String::from("The string"),
         };
 
-        let membox = SUnsafeCell::new(&obj).expect("Should allocate just fine");
+        let membox = SUnsafeCell::new(&obj);
         let obj1 = membox.get_cloned();
 
         assert_eq!(obj, obj1);

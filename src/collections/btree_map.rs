@@ -1,4 +1,4 @@
-use crate::{OutOfMemory, SUnsafeCell};
+use crate::SUnsafeCell;
 use candid::{decode_one, encode_one, CandidType, Deserialize};
 use serde::de::DeserializeOwned;
 use std::cmp::Ordering;
@@ -29,33 +29,30 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         }
     }
 
-    pub fn insert(&mut self, key: K, value: &V) -> Result<Option<V>, OutOfMemory> {
+    pub fn insert(&mut self, key: K, value: &V) -> Option<V> {
         let root = &mut self.root;
-        let btree_key = BTreeKey::new(key, value)?;
+        let btree_key = BTreeKey::new(key, value);
 
         let res = if root.keys.len() == 2 * self.degree - 1 {
             let mut temp = BTreeNode::new(false, false);
 
             root.is_root = false;
-            temp.children.insert(0, SUnsafeCell::new(root)?);
+            temp.children.insert(0, SUnsafeCell::new(root));
 
-            if matches!(Self::split_child(self.degree, &mut temp, 0), Err(_)) {
-                btree_key.drop();
-                return Err(OutOfMemory);
-            }
-            let res = Self::insert_non_full(self.degree, &mut temp, btree_key)?;
+            Self::split_child(self.degree, &mut temp, 0);
+            let res = Self::insert_non_full(self.degree, &mut temp, btree_key);
 
             self.root = temp;
             self.root.is_root = true;
 
             res
         } else {
-            Self::insert_non_full(self.degree, &mut self.root, btree_key)?
+            Self::insert_non_full(self.degree, &mut self.root, btree_key)
         };
 
         self.len += 1;
 
-        Ok(res)
+        res
     }
 
     pub fn delete(&mut self, key: &K) -> Option<V> {
@@ -81,22 +78,19 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         degree: usize,
         node: &mut BTreeNode<K, V>,
         key: BTreeKey<K, V>,
-    ) -> Result<Option<V>, OutOfMemory> {
+    ) -> Option<V> {
         match node.keys.binary_search(&key) {
             Ok(idx) => {
                 let old_key = std::mem::replace(&mut node.keys[idx], key);
-                Ok(Some(old_key.drop()))
+                Some(old_key.drop())
             }
             Err(mut idx) => {
                 if node.is_leaf {
                     node.keys.insert(idx, key);
-                    Ok(None)
+                    None
                 } else {
                     if node.children[idx].get_cloned().keys.len() == 2 * degree - 1 {
-                        if matches!(Self::split_child(degree, node, idx), Err(_)) {
-                            key.drop();
-                            return Err(OutOfMemory);
-                        }
+                        Self::split_child(degree, node, idx);
 
                         if key > node.keys[idx] {
                             idx += 1;
@@ -106,11 +100,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                     let mut child = node.children[idx].get_cloned();
                     let result = Self::insert_non_full(degree, &mut child, key);
 
-                    unsafe {
-                        // unwrapping, because I don't see any way of returning OOM here - recursion
-                        // I'm not sure, but it also looks like an error place
-                        let should_update = node.children[idx].set(&child).unwrap();
-                    }
+                    unsafe { node.children[idx].set(&child) };
 
                     result
                 }
@@ -118,11 +108,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         }
     }
 
-    fn split_child(
-        degree: usize,
-        node: &mut BTreeNode<K, V>,
-        idx: usize,
-    ) -> Result<(), OutOfMemory> {
+    fn split_child(degree: usize, node: &mut BTreeNode<K, V>, idx: usize) {
         let mut child = node.children[idx].get_cloned();
         let mut new_child = BTreeNode::<K, V>::new(child.is_leaf, false);
 
@@ -137,13 +123,8 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
             }
         }
 
-        unsafe {
-            node.children[idx].set(&child).unwrap();
-        }
-        node.children
-            .insert(idx + 1, SUnsafeCell::new(&new_child).unwrap());
-
-        Ok(())
+        unsafe { node.children[idx].set(&child) };
+        node.children.insert(idx + 1, SUnsafeCell::new(&new_child));
     }
 
     fn _get(&self, node: &BTreeNode<K, V>, key: &K) -> Option<V> {
@@ -171,9 +152,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
 
                 if child.keys.len() >= degree {
                     let res = Self::_delete(degree, &mut child, key);
-                    unsafe {
-                        node.children[idx].set(&child).unwrap();
-                    }
+                    unsafe { node.children[idx].set(&child) };
 
                     res
                 } else {
@@ -204,9 +183,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
 
                     let mut child = node.children[idx].get_cloned();
                     let res = Self::_delete(degree, &mut child, key);
-                    unsafe {
-                        node.children[idx].set(&child).unwrap();
-                    }
+                    unsafe { node.children[idx].set(&child) };
 
                     res
                 }
@@ -233,7 +210,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                 &mut node.keys[idx],
                 Self::delete_predecessor(degree, &mut left_child),
             );
-            unsafe { node.children[idx].set(&left_child).unwrap() };
+            unsafe { node.children[idx].set(&left_child) };
 
             Some(btree_key.drop())
         } else if right_child.keys.len() >= degree {
@@ -241,7 +218,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                 &mut node.keys[idx],
                 Self::delete_successor(degree, &mut right_child),
             );
-            unsafe { node.children[idx + 1].set(&right_child).unwrap() };
+            unsafe { node.children[idx + 1].set(&right_child) };
 
             Some(btree_key.drop())
         } else {
@@ -253,9 +230,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                 let mut left_child = node.children[idx].get_cloned();
                 let res = Self::delete_internal_node(degree, &mut left_child, key, degree - 1);
 
-                unsafe {
-                    node.children[idx].set(&left_child).unwrap();
-                }
+                unsafe { node.children[idx].set(&left_child) };
 
                 res
             }
@@ -279,9 +254,8 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         let mut grand_child = child.children[n].get_cloned();
         let res = Self::delete_predecessor(degree, &mut grand_child);
 
-        unsafe {
-            child.children[n].set(&grand_child).unwrap();
-        }
+        unsafe { child.children[n].set(&grand_child) };
+
         res
     }
 
@@ -301,9 +275,8 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         let mut grand_child = child.children[1].get_cloned();
         let res = Self::delete_successor(degree, &mut grand_child);
 
-        unsafe {
-            child.children[0].set(&grand_child).unwrap();
-        }
+        unsafe { child.children[0].set(&grand_child) };
+
         res
     }
 
@@ -317,9 +290,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
             child.keys.extend(child_right_sibling.keys);
             child.children.extend(child_right_sibling.children);
 
-            unsafe {
-                node.children[i].set(&child).unwrap();
-            }
+            unsafe { node.children[i].set(&child) };
 
             let child_right_sibling_ptr = node.children.remove(j);
             child_right_sibling_ptr.drop();
@@ -332,9 +303,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
             child_left_sibling.keys.extend(child.keys);
             child_left_sibling.children.extend(child.children);
 
-            unsafe {
-                node.children[j].set(&child_left_sibling).unwrap();
-            }
+            unsafe { node.children[j].set(&child_left_sibling) };
 
             let child_ptr = node.children.remove(i);
             child_ptr.drop();
@@ -345,12 +314,12 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         if node.is_root && node.keys.is_empty() {
             // dealing with memory leaks - remove the element from stable memory, if it becomes root
             if j > i {
-                // FIXME: also dirty, but rust does not let me go straight to children[i]
+                // FIXME: dirty, but rust does not let me go straight to children[i], since I want to consume it during drop()
                 unsafe {
                     SUnsafeCell::<BTreeNode<K, V>>::from_ptr(node.children[i].as_ptr()).drop()
                 };
             } else {
-                // FIXME: also dirty, but rust does not let me go straight to children[j]
+                // FIXME: dirty, but rust does not let me go straight to children[j], since I want to consume it during drop()
                 unsafe {
                     SUnsafeCell::<BTreeNode<K, V>>::from_ptr(node.children[j].as_ptr()).drop()
                 };
@@ -374,9 +343,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                 child.children.push(child_right_sibling.children.remove(0));
             }
 
-            unsafe {
-                node.children[j].set(&child_right_sibling).unwrap();
-            }
+            unsafe { node.children[j].set(&child_right_sibling) };
         } else {
             let mut child_left_sibling = node.children[j].get_cloned();
             child.keys.insert(0, node.keys.remove(i - 1));
@@ -389,14 +356,10 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
                     .insert(0, child_left_sibling.children.pop().unwrap())
             }
 
-            unsafe {
-                node.children[j].set(&child_left_sibling).unwrap();
-            }
+            unsafe { node.children[j].set(&child_left_sibling) };
         }
 
-        unsafe {
-            node.children[i].set(&child).unwrap();
-        }
+        unsafe { node.children[i].set(&child) };
     }
 }
 
@@ -415,11 +378,11 @@ struct BTreeKey<K, V> {
 }
 
 impl<K, V: CandidType + DeserializeOwned> BTreeKey<K, V> {
-    pub fn new(key: K, value: &V) -> Result<Self, OutOfMemory> {
-        Ok(Self {
+    pub fn new(key: K, value: &V) -> Self {
+        Self {
             key,
-            value_cell: SUnsafeCell::new(value)?,
-        })
+            value_cell: SUnsafeCell::new(value),
+        }
     }
 
     pub fn drop(self) -> V {
@@ -613,39 +576,39 @@ mod tests {
 
         println!("INSERTION");
 
-        assert!(map.insert(30, &3).unwrap().is_none());
+        assert!(map.insert(30, &3).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(90, &9).unwrap().is_none());
+        assert!(map.insert(90, &9).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(10, &1).unwrap().is_none());
+        assert!(map.insert(10, &1).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(70, &7).unwrap().is_none());
+        assert!(map.insert(70, &7).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(80, &8).unwrap().is_none());
+        assert!(map.insert(80, &8).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(50, &5).unwrap().is_none());
+        assert!(map.insert(50, &5).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(20, &2).unwrap().is_none());
+        assert!(map.insert(20, &2).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(60, &6).unwrap().is_none());
+        assert!(map.insert(60, &6).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(40, &4).unwrap().is_none());
+        assert!(map.insert(40, &4).is_none());
         print_btree(&map);
         println!();
 

@@ -47,7 +47,7 @@ fn get_allocator() -> SSlice<StableMemoryAllocator> {
     unsafe { STABLE_MEMORY_ALLOCATOR.as_ref().unwrap().clone() }
 }
 
-pub fn allocate<T>(size: usize) -> Result<SSlice<T>, OutOfMemory> {
+pub fn allocate<T>(size: usize) -> SSlice<T> {
     get_allocator().allocate(size)
 }
 
@@ -55,8 +55,24 @@ pub fn deallocate<T>(membox: SSlice<T>) {
     get_allocator().deallocate(membox)
 }
 
-pub fn reallocate<T>(membox: SSlice<T>, new_size: usize) -> Result<SSlice<T>, OutOfMemory> {
+pub fn reallocate<T>(membox: SSlice<T>, new_size: usize) -> SSlice<T> {
     get_allocator().reallocate(membox, new_size)
+}
+
+pub fn set_max_allocation_size(size: u32) {
+    get_allocator().set_max_allocation_size(size)
+}
+
+pub fn get_max_allocation_size() -> u32 {
+    get_allocator().get_max_allocation_size()
+}
+
+pub fn set_max_grow_pages(pages: u64) {
+    get_allocator().set_max_grow_pages(pages)
+}
+
+pub fn get_max_grow_pages() -> u64 {
+    get_allocator().get_max_grow_pages()
 }
 
 pub fn reset() {
