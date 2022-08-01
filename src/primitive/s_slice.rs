@@ -1,11 +1,5 @@
-use crate::mem::allocator::{NotFree, NotStableMemoryAllocator};
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
-use candid::parser::value::{IDLValue, IDLValueVisitor};
-use candid::types::{Serializer, Type};
-use candid::{CandidType, Deserialize};
-use serde::de::Error;
-use serde::Deserializer;
-use std::fmt::{Debug, Formatter};
+use speedy::{Readable, Writable};
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::usize;
@@ -22,44 +16,11 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
+#[derive(Readable, Writable)]
 pub struct SSlice<T> {
     pub(crate) ptr: u64,
+    #[speedy(skip)]
     pub(crate) data: PhantomData<T>,
-}
-
-impl<T: NotFree + NotStableMemoryAllocator> Debug for SSlice<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(format!("S_PTR({})", self.ptr).as_str())
-    }
-}
-
-impl<T> CandidType for SSlice<T> {
-    fn _ty() -> Type {
-        Type::Nat64
-    }
-
-    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
-    where
-        S: Serializer,
-    {
-        self.get_ptr().idl_serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for SSlice<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let idl_value = deserializer.deserialize_u64(IDLValueVisitor)?;
-        match idl_value {
-            IDLValue::Nat64(ptr) => Ok(SSlice {
-                ptr,
-                data: PhantomData::default(),
-            }),
-            _ => Err(D::Error::custom("Unable to deserialize a Membox")),
-        }
-    }
 }
 
 impl<T> SSlice<T> {

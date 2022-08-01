@@ -1,11 +1,9 @@
-#![feature(auto_traits, negative_impls)]
-#![feature(local_key_cell_methods)]
-
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use ic_cdk::print;
 use primitive::s_slice::SSlice;
 
+mod benchmarks;
 pub mod collections;
 pub mod macros;
 pub mod mem;
@@ -59,12 +57,12 @@ pub fn reallocate<T>(membox: SSlice<T>, new_size: usize) -> SSlice<T> {
     get_allocator().reallocate(membox, new_size)
 }
 
-pub fn set_max_allocation_size(size: u32) {
-    get_allocator().set_max_allocation_size(size)
+pub fn set_max_allocation_pages(pages: u32) {
+    get_allocator().set_max_allocation_pages(pages)
 }
 
-pub fn get_max_allocation_size() -> u32 {
-    get_allocator().get_max_allocation_size()
+pub fn get_max_allocation_pages() -> u32 {
+    get_allocator().get_max_allocation_pages()
 }
 
 pub fn set_max_grow_pages(pages: u64) {

@@ -1,28 +1,27 @@
-use crate::collections::hash_map::SHashMap;
 use candid::{CandidType, Deserialize};
 use serde::de::DeserializeOwned;
-use std::hash::Hash;
+use crate::collections::btree_map::SBTreeMap;
 
 #[derive(CandidType, Deserialize)]
-pub struct SHashSet<T> {
-    map: SHashMap<T, ()>,
+pub struct SBTreeSet<T> {
+    map: SBTreeMap<T, ()>
 }
 
-impl<T: CandidType + DeserializeOwned + Hash + Eq> SHashSet<T> {
+impl <T: CandidType + DeserializeOwned + Ord> SBTreeSet<T> {
     pub fn new() -> Self {
         Self {
-            map: SHashMap::new(),
+            map: SBTreeMap::new()
         }
     }
-
-    pub fn new_with_capacity(capacity: u32) -> Self {
+    
+    pub fn new_with_degree(degree: usize) -> Self {
         Self {
-            map: SHashMap::new_with_capacity(capacity),
+            map: SBTreeMap::new_with_degree(degree)
         }
     }
 
     pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(value, ()).is_some()
+        self.map.insert(value, &()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {
@@ -46,8 +45,8 @@ impl<T: CandidType + DeserializeOwned + Hash + Eq> SHashSet<T> {
     }
 }
 
-impl<T: CandidType + DeserializeOwned + Hash + Eq> Default for SHashSet<T> {
+impl <T: CandidType + DeserializeOwned + Ord> Default for SBTreeSet<T> {
     fn default() -> Self {
-        SHashSet::new()
+        SBTreeSet::new()
     }
 }

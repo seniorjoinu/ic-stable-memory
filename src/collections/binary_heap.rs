@@ -29,7 +29,7 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
         }
     }
 
-    pub fn insert(&mut self, elem: &T) {
+    pub fn push(&mut self, elem: &T) {
         self.arr.push(elem);
         let len = self.len();
         if len == 1 {
@@ -200,16 +200,16 @@ mod tests {
         let mut max_heap = SBinaryHeap::<u32>::new(SHeapType::Max);
 
         // insert example values in random order
-        max_heap.insert(&80);
-        max_heap.insert(&100);
-        max_heap.insert(&50);
-        max_heap.insert(&10);
-        max_heap.insert(&90);
-        max_heap.insert(&60);
-        max_heap.insert(&70);
-        max_heap.insert(&20);
-        max_heap.insert(&40);
-        max_heap.insert(&30);
+        max_heap.push(&80);
+        max_heap.push(&100);
+        max_heap.push(&50);
+        max_heap.push(&10);
+        max_heap.push(&90);
+        max_heap.push(&60);
+        max_heap.push(&70);
+        max_heap.push(&20);
+        max_heap.push(&40);
+        max_heap.push(&30);
 
         let mut probe = vec![];
 
@@ -233,16 +233,16 @@ mod tests {
         let mut min_heap = SBinaryHeap::<u32>::new(SHeapType::Min);
 
         // insert example values in random order
-        min_heap.insert(&80);
-        min_heap.insert(&100);
-        min_heap.insert(&50);
-        min_heap.insert(&10);
-        min_heap.insert(&90);
-        min_heap.insert(&90);
-        min_heap.insert(&70);
-        min_heap.insert(&20);
-        min_heap.insert(&40);
-        min_heap.insert(&30);
+        min_heap.push(&80);
+        min_heap.push(&100);
+        min_heap.push(&50);
+        min_heap.push(&10);
+        min_heap.push(&90);
+        min_heap.push(&90);
+        min_heap.push(&70);
+        min_heap.push(&20);
+        min_heap.push(&40);
+        min_heap.push(&30);
 
         let mut probe = vec![];
 

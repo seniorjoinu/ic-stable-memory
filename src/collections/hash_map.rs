@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 // TODO: make entry store value more efficiently
+// FIXME: there is an endless loop somewhere, run benchmarks with a lot of iterations to spot it
 
 const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 9973;
 type HashMapBucket<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;

@@ -55,15 +55,29 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         res
     }
 
-    pub fn delete(&mut self, key: &K) -> Option<V> {
+    pub fn remove(&mut self, key: &K) -> Option<V> {
         let res = Self::_delete(self.degree, &mut self.root, key)?;
         self.len -= 1;
 
         Some(res)
     }
 
+    pub fn drop(mut self) {
+        while let Some(key) = self.root.keys.pop() {
+            key.drop();
+        }
+
+        while let Some(child_node) = self.root.children.pop() {
+            self._drop(child_node);
+        }
+    }
+
     pub fn get(&self, key: &K) -> Option<V> {
         self._get(&self.root, key)
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self._contains_key(&self.root, key)
     }
 
     pub fn len(&self) -> u64 {
@@ -79,20 +93,27 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         node: &mut BTreeNode<K, V>,
         key: BTreeKey<K, V>,
     ) -> Option<V> {
-        match node.keys.binary_search(&key) {
+        match node.keys.binary_search_by(|k| k.get_cloned().cmp(&key)) {
             Ok(idx) => {
-                let old_key = std::mem::replace(&mut node.keys[idx], key);
+                let new_key_cell = SUnsafeCell::new(&key);
+                let old_key_cell = std::mem::replace(&mut node.keys[idx], new_key_cell);
+
+                let old_key = old_key_cell.get_cloned();
+                old_key_cell.drop();
+
                 Some(old_key.drop())
             }
             Err(mut idx) => {
                 if node.is_leaf {
-                    node.keys.insert(idx, key);
+                    let new_key_cell = SUnsafeCell::new(&key);
+
+                    node.keys.insert(idx, new_key_cell);
                     None
                 } else {
                     if node.children[idx].get_cloned().keys.len() == 2 * degree - 1 {
                         Self::split_child(degree, node, idx);
 
-                        if key > node.keys[idx] {
+                        if key > node.keys[idx].get_cloned() {
                             idx += 1;
                         }
                     }
@@ -127,9 +148,24 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         node.children.insert(idx + 1, SUnsafeCell::new(&new_child));
     }
 
+    fn _contains_key(&self, node: &BTreeNode<K, V>, key: &K) -> bool {
+        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
+            Ok(idx) => true,
+            Err(idx) => {
+                if let Some(child_cell) = node.children.get(idx) {
+                    let child = child_cell.get_cloned();
+
+                    self._contains_key(&child, key)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
     fn _get(&self, node: &BTreeNode<K, V>, key: &K) -> Option<V> {
-        match node.keys.binary_search_by(|k| k.key.cmp(key)) {
-            Ok(idx) => Some(node.keys[idx].value_cell.get_cloned()),
+        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
+            Ok(idx) => Some(node.keys[idx].get_cloned().value_cell.get_cloned()),
             Err(idx) => {
                 let child = node.children.get(idx)?.get_cloned();
                 self._get(&child, key)
@@ -137,11 +173,27 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         }
     }
 
+    fn _drop(&mut self, node_cell: SUnsafeCell<BTreeNode<K, V>>) {
+        let mut node = node_cell.get_cloned();
+        for child_cell in node.children {
+            self._drop(child_cell);
+        }
+
+        while let Some(key) = node.keys.pop() {
+            key.drop();
+        }
+        node_cell.drop();
+    }
+
     fn _delete(degree: usize, node: &mut BTreeNode<K, V>, key: &K) -> Option<V> {
-        match node.keys.binary_search_by(|k| k.key.cmp(key)) {
+        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
             Ok(idx) => {
                 if node.is_leaf {
-                    let btree_key = node.keys.remove(idx);
+                    let btree_key_cell = node.keys.remove(idx);
+
+                    let btree_key = btree_key_cell.get_cloned();
+                    btree_key_cell.drop();
+
                     Some(btree_key.drop())
                 } else {
                     Self::delete_internal_node(degree, node, key, idx)
@@ -197,8 +249,13 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         key: &K,
         idx: usize,
     ) -> Option<V> {
-        if node.is_leaf && node.keys[idx].key.eq(key) {
-            let btree_key = node.keys.remove(idx);
+        let idx_key = node.keys[idx].get_cloned();
+
+        if node.is_leaf && idx_key.key.eq(key) {
+            let btree_key_cell = node.keys.remove(idx);
+            let btree_key = btree_key_cell.get_cloned();
+            btree_key_cell.drop();
+
             return Some(btree_key.drop());
         }
 
@@ -206,19 +263,25 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         let mut right_child = node.children[idx + 1].get_cloned();
 
         if left_child.keys.len() >= degree {
-            let btree_key = std::mem::replace(
+            let btree_key_cell = std::mem::replace(
                 &mut node.keys[idx],
                 Self::delete_predecessor(degree, &mut left_child),
             );
             unsafe { node.children[idx].set(&left_child) };
 
+            let btree_key = btree_key_cell.get_cloned();
+            btree_key_cell.drop();
+
             Some(btree_key.drop())
         } else if right_child.keys.len() >= degree {
-            let btree_key = std::mem::replace(
+            let btree_key_cell = std::mem::replace(
                 &mut node.keys[idx],
                 Self::delete_successor(degree, &mut right_child),
             );
             unsafe { node.children[idx + 1].set(&right_child) };
+
+            let btree_key = btree_key_cell.get_cloned();
+            btree_key_cell.drop();
 
             Some(btree_key.drop())
         } else {
@@ -237,7 +300,10 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         }
     }
 
-    fn delete_predecessor(degree: usize, child: &mut BTreeNode<K, V>) -> BTreeKey<K, V> {
+    fn delete_predecessor(
+        degree: usize,
+        child: &mut BTreeNode<K, V>,
+    ) -> SUnsafeCell<BTreeKey<K, V>> {
         if child.is_leaf {
             return child.keys.pop().unwrap();
         }
@@ -259,7 +325,7 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
         res
     }
 
-    fn delete_successor(degree: usize, child: &mut BTreeNode<K, V>) -> BTreeKey<K, V> {
+    fn delete_successor(degree: usize, child: &mut BTreeNode<K, V>) -> SUnsafeCell<BTreeKey<K, V>> {
         if child.is_leaf {
             return child.keys.remove(0);
         }
@@ -452,7 +518,7 @@ impl<K: Ord, V> Ord for BTreeKey<K, V> {
 struct BTreeNode<K, V> {
     is_leaf: bool,
     is_root: bool,
-    keys: Vec<BTreeKey<K, V>>,
+    keys: Vec<SUnsafeCell<BTreeKey<K, V>>>,
     children: Vec<SUnsafeCell<BTreeNode<K, V>>>,
 }
 
@@ -464,10 +530,6 @@ impl<K: CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> BTreeNo
             keys: Vec::new(),
             children: Vec::new(),
         }
-    }
-
-    fn dirty_clone(&self) -> Self {
-        decode_one(&encode_one(self).unwrap()).unwrap()
     }
 }
 
@@ -482,7 +544,7 @@ fn btree_to_sorted_vec<
         if let Some(child) = btree_node.children.get(i).map(|it| it.get_cloned()) {
             btree_to_sorted_vec(&child, vec);
         }
-        let btree_key = &btree_node.keys[i];
+        let btree_key = &btree_node.keys[i].get_cloned();
         vec.push((btree_key.key.clone(), btree_key.value_cell.get_cloned()));
     }
 
@@ -538,7 +600,7 @@ fn print_btree_level<
         btree_node
             .keys
             .iter()
-            .map(|it| (&it.key, it.value_cell.get_cloned()))
+            .map(|it| (it.get_cloned().key, it.get_cloned().value_cell.get_cloned()))
             .collect::<Vec<_>>()
     );
 
@@ -620,42 +682,44 @@ mod tests {
 
         println!("DELETION");
 
-        assert_eq!(map.delete(&30).unwrap(), 3);
+        assert_eq!(map.remove(&30).unwrap(), 3);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&70).unwrap(), 7);
+        assert_eq!(map.remove(&70).unwrap(), 7);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&50).unwrap(), 5);
+        assert_eq!(map.remove(&50).unwrap(), 5);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&40).unwrap(), 4);
+        assert_eq!(map.remove(&40).unwrap(), 4);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&60).unwrap(), 6);
+        assert_eq!(map.remove(&60).unwrap(), 6);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&20).unwrap(), 2);
+        assert_eq!(map.remove(&20).unwrap(), 2);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&80).unwrap(), 8);
+        assert_eq!(map.remove(&80).unwrap(), 8);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&10).unwrap(), 1);
+        assert_eq!(map.remove(&10).unwrap(), 1);
         print_btree(&map);
         println!();
 
-        assert_eq!(map.delete(&90).unwrap(), 9);
+        assert_eq!(map.remove(&90).unwrap(), 9);
         print_btree(&map);
         println!();
 
         assert!(map.is_empty());
+
+        map.drop();
     }
 }

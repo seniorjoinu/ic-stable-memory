@@ -5,7 +5,7 @@ use ic_cdk_macros::{heartbeat, init, post_upgrade, pre_upgrade, query, update};
 use ic_stable_memory::collections::hash_map::SHashMap;
 use ic_stable_memory::collections::vec::SVec;
 use ic_stable_memory::{
-    get_allocated_size, get_free_size, s, set_max_allocation_size, set_max_grow_pages, stable,
+    get_allocated_size, get_free_size, s, set_max_allocation_pages, set_max_grow_pages, stable,
     stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade, PAGE_SIZE_BYTES,
 };
 

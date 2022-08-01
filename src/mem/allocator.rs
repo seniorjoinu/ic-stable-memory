@@ -2,7 +2,6 @@ use crate::primitive::s_slice::{Side, CELL_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::SSlice;
-use candid::encode_args;
 use ic_cdk::api::call::call_raw;
 use ic_cdk::{id, print, spawn, trap};
 use std::fmt::{Debug, Formatter};
@@ -12,7 +11,7 @@ pub(crate) const EMPTY_PTR: u64 = u64::MAX;
 pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
 pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
 pub(crate) const CUSTOM_DATA_PTRS_COUNT: usize = 4;
-pub(crate) const DEFAULT_MAX_ALLOCATION_SIZE: u32 = 10 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_ALLOCATION_PAGES: u32 = 180; // 180 * 64k = ~10MB
 pub(crate) const DEFAULT_MAX_GROW_PAGES: u64 = 0;
 pub(crate) const LOW_ON_MEMORY_HOOK_NAME: &str = "on_low_stable_memory";
 
@@ -20,9 +19,6 @@ pub(crate) type SegClassId = u32;
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct StableMemoryAllocator;
-
-pub auto trait NotStableMemoryAllocator {}
-impl !NotStableMemoryAllocator for StableMemoryAllocator {}
 
 impl SSlice<StableMemoryAllocator> {
     const SIZE: usize = MAGIC.len()                     // magic bytes
@@ -75,7 +71,7 @@ impl SSlice<StableMemoryAllocator> {
 
         let free_membox = match self.pop_allocated_membox(size) {
             Ok(m) => m,
-            Err(e) => trap(format!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size()).as_str())
+            Err(_) => trap(format!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size()).as_str())
         };
 
         self.handle_free_buffer();
@@ -125,7 +121,7 @@ impl SSlice<StableMemoryAllocator> {
 
         self.set_allocated_size(0);
         self.set_free_size(0);
-        self.set_max_allocation_size(DEFAULT_MAX_ALLOCATION_SIZE);
+        self.set_max_allocation_pages(DEFAULT_MAX_ALLOCATION_PAGES);
         self.set_max_grow_pages(DEFAULT_MAX_GROW_PAGES);
         self.set_on_low_executed_flag(false);
 
@@ -272,15 +268,15 @@ impl SSlice<StableMemoryAllocator> {
         );
     }
 
-    pub(crate) fn get_max_allocation_size(&self) -> u32 {
+    pub(crate) fn get_max_allocation_pages(&self) -> u32 {
         self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2)
             as u32
     }
 
-    pub(crate) fn set_max_allocation_size(&mut self, size: u32) {
+    pub(crate) fn set_max_allocation_pages(&mut self, pages: u32) {
         self._write_word(
             MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2,
-            size as u64,
+            pages as u64,
         );
     }
 
@@ -420,13 +416,13 @@ impl SSlice<StableMemoryAllocator> {
     // makes sure the allocator always has at least X bytes of free memory, tries to grow otherwise
     fn handle_free_buffer(&mut self) {
         let free = self.get_free_size();
-        let max_allocation_size = self.get_max_allocation_size() as u64;
+        let max_allocation_size = self.get_max_allocation_pages() as u64;
 
-        if free >= max_allocation_size {
+        if free >= max_allocation_size * PAGE_SIZE_BYTES as u64 {
             return;
         }
 
-        let pages_to_grow = (max_allocation_size - free) / PAGE_SIZE_BYTES as u64 + 1;
+        let pages_to_grow = max_allocation_size - free / PAGE_SIZE_BYTES as u64 + 1;
 
         if let Some(prev_pages) = self.grow_or_trigger_low_memory_hook(pages_to_grow) {
             let ptr = prev_pages * PAGE_SIZE_BYTES as u64;
@@ -473,7 +469,7 @@ impl SSlice<StableMemoryAllocator> {
         );
 
         spawn(async {
-            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &encode_args(()).unwrap(), 0)
+            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, EMPTY_ARGS, 0)
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
@@ -497,6 +493,8 @@ impl SSlice<StableMemoryAllocator> {
     }
 }
 
+const EMPTY_ARGS: [u8; 6] = [b'D', b'I', b'D', b'L', 0, 0];
+
 fn get_seg_class_id(size: usize) -> SegClassId {
     let mut log = fast_log2(size);
 
@@ -517,7 +515,7 @@ impl Debug for SSlice<StableMemoryAllocator> {
 
         d.field("total_allocated", &self.get_allocated_size())
             .field("total_free", &self.get_free_size())
-            .field("max_allocation_size", &self.get_max_allocation_size())
+            .field("max_allocation_size", &self.get_max_allocation_pages())
             .field("max_grow_pages", &self.get_max_grow_pages());
 
         for id in 0..SEG_CLASS_PTRS_COUNT as u32 {
@@ -549,9 +547,6 @@ impl Debug for SSlice<StableMemoryAllocator> {
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Free;
-
-pub auto trait NotFree {}
-impl !NotFree for Free {}
 
 impl SSlice<Free> {
     pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {

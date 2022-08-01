@@ -1,10 +1,6 @@
 use crate::primitive::s_slice::Side;
 use crate::utils::encode::decode_one_allow_trailing;
 use crate::{allocate, deallocate, reallocate, SSlice};
-use candid::types::{Serializer, Type};
-use candid::{encode_one, CandidType};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -164,7 +160,6 @@ impl<T: Debug + CandidType + DeserializeOwned> Debug for SUnsafeCell<T> {
     }
 }
 
-#[cfg(test)]
 mod tests {
     use crate::primitive::s_unsafe_cell::SUnsafeCell;
     use crate::utils::mem_context::stable;
@@ -178,7 +173,6 @@ mod tests {
         pub b: String,
     }
 
-    #[test]
     fn candid_membox_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();
