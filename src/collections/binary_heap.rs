@@ -1,20 +1,19 @@
 use crate::collections::vec::SVec;
-use candid::{CandidType, Deserialize};
-use serde::de::DeserializeOwned;
+use speedy::{LittleEndian, Readable, Writable};
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub enum SHeapType {
     Min,
     Max,
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub struct SBinaryHeap<T> {
     ty: SHeapType,
     arr: SVec<T>,
 }
 
-impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBinaryHeap<T> {
     pub fn new(ty: SHeapType) -> Self {
         Self {
             ty,
@@ -177,7 +176,7 @@ impl<T: CandidType + DeserializeOwned + Ord> SBinaryHeap<T> {
     }
 }
 
-impl<T: CandidType + DeserializeOwned + Ord> Default for SBinaryHeap<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> Default for SBinaryHeap<T> {
     fn default() -> Self {
         SBinaryHeap::new(SHeapType::Max)
     }
@@ -187,9 +186,6 @@ impl<T: CandidType + DeserializeOwned + Ord> Default for SBinaryHeap<T> {
 mod tests {
     use crate::collections::binary_heap::{SBinaryHeap, SHeapType};
     use crate::{stable, stable_memory_init};
-    use candid::CandidType;
-    use serde::de::DeserializeOwned;
-    use std::fmt::Debug;
 
     #[test]
     fn heap_sort_works_fine() {

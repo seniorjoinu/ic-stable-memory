@@ -1,6 +1,6 @@
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
+use crate::utils::phantom_data::SPhantomData;
 use speedy::{Readable, Writable};
-use std::marker::PhantomData;
 use std::mem::size_of;
 use std::usize;
 
@@ -19,8 +19,7 @@ pub(crate) enum Side {
 #[derive(Readable, Writable)]
 pub struct SSlice<T> {
     pub(crate) ptr: u64,
-    #[speedy(skip)]
-    pub(crate) data: PhantomData<T>,
+    pub(crate) data: SPhantomData<T>,
 }
 
 impl<T> SSlice<T> {
@@ -86,7 +85,7 @@ impl<T> SSlice<T> {
 
         Self {
             ptr,
-            data: PhantomData::default(),
+            data: SPhantomData::default(),
         }
     }
 
@@ -138,7 +137,7 @@ impl<T> SSlice<T> {
         } else {
             Some(Self {
                 ptr,
-                data: PhantomData::default(),
+                data: SPhantomData::default(),
             })
         }
     }

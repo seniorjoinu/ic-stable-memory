@@ -1,14 +1,13 @@
 use crate::collections::hash_map::SHashMap;
-use candid::{CandidType, Deserialize};
-use serde::de::DeserializeOwned;
+use speedy::{LittleEndian, Readable, Writable};
 use std::hash::Hash;
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub struct SHashSet<T> {
     map: SHashMap<T, ()>,
 }
 
-impl<T: CandidType + DeserializeOwned + Hash + Eq> SHashSet<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> SHashSet<T> {
     pub fn new() -> Self {
         Self {
             map: SHashMap::new(),
@@ -46,7 +45,9 @@ impl<T: CandidType + DeserializeOwned + Hash + Eq> SHashSet<T> {
     }
 }
 
-impl<T: CandidType + DeserializeOwned + Hash + Eq> Default for SHashSet<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> Default
+    for SHashSet<T>
+{
     fn default() -> Self {
         SHashSet::new()
     }

@@ -1,9 +1,8 @@
 use crate::collections::hash_map::SHashMap;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
-use candid::CandidType;
 use ic_cdk::trap;
-use serde::de::DeserializeOwned;
+use speedy::{LittleEndian, Readable, Writable};
 
 static mut VARS: Option<SHashMap<String, u64>> = None;
 
@@ -25,7 +24,7 @@ pub fn reinit_vars() {
     unsafe { VARS = Some(vars_box.get_cloned()) }
 }
 
-pub fn set_var<T: CandidType + DeserializeOwned>(name: &str, value: &T) {
+pub fn set_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str, value: &T) {
     let val_box = SUnsafeCell::new(value);
 
     unsafe {
@@ -35,7 +34,7 @@ pub fn set_var<T: CandidType + DeserializeOwned>(name: &str, value: &T) {
     };
 }
 
-pub fn get_var<T: CandidType + DeserializeOwned>(name: &str) -> T {
+pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
     unsafe {
         SUnsafeCell::from_ptr(
             VARS.as_ref()

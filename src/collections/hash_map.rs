@@ -2,15 +2,12 @@ use crate::collections::vec::SVec;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::s_slice::PTR_SIZE;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
+use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
-use candid::types::{Serializer, Type};
-use candid::{CandidType, Deserialize};
-use serde::de::DeserializeOwned;
-use serde::Deserializer;
+use speedy::{LittleEndian, Readable, Writable};
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
 
 // TODO: make entry store value more efficiently
 // FIXME: there is an endless loop somewhere, run benchmarks with a lot of iterations to spot it
@@ -18,7 +15,7 @@ use std::marker::PhantomData;
 const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 9973;
 type HashMapBucket<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;
 
-#[derive(CandidType, Deserialize, Debug)]
+#[derive(Readable, Writable, Debug)]
 struct HashMapEntry<K, V> {
     key: K,
     val: V,
@@ -33,29 +30,36 @@ impl<K, V> HashMapEntry<K, V> {
 #[derive(Copy, Clone)]
 struct SMapTable;
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 struct SHashMapInfo {
     _len: u64,
     _table_capacity: u32,
     _table: Option<SSlice<SMapTable>>,
 }
 
+#[derive(Readable, Writable)]
 pub struct SHashMap<K, V> {
     _info: SHashMapInfo,
-    _k: PhantomData<K>,
-    _v: PhantomData<V>,
+    _k: SPhantomData<K>,
+    _v: SPhantomData<V>,
 }
 
-impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> Default
-    for SHashMap<K, V>
+impl<
+        'a,
+        K: Hash + Eq + Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > Default for SHashMap<K, V>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned>
-    SHashMap<K, V>
+impl<
+        'a,
+        K: Hash + Eq + Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > SHashMap<K, V>
 {
     pub fn new() -> Self {
         Self::new_with_capacity(STABLE_HASH_MAP_DEFAULT_CAPACITY)
@@ -70,8 +74,8 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
 
         Self {
             _info,
-            _k: PhantomData::default(),
-            _v: PhantomData::default(),
+            _k: SPhantomData::default(),
+            _v: SPhantomData::default(),
         }
     }
 
@@ -247,38 +251,11 @@ impl<K: Hash + Eq + CandidType + DeserializeOwned, V: CandidType + DeserializeOw
     }
 }
 
-impl<K, V> CandidType for SHashMap<K, V> {
-    fn _ty() -> Type {
-        SHashMapInfo::ty()
-    }
-
-    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
-    where
-        S: Serializer,
-    {
-        self._info.idl_serialize(serializer)
-    }
-}
-
-impl<'de, K, V> Deserialize<'de> for SHashMap<K, V> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let _info = SHashMapInfo::deserialize(deserializer)?;
-        Ok(Self {
-            _info,
-            _k: PhantomData::default(),
-            _v: PhantomData::default(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_map::SHashMap;
+    use crate::init_allocator;
     use crate::utils::mem_context::stable;
-    use crate::{init_allocator, stable_memory_init};
 
     fn test_body(mut map: SHashMap<String, i32>) {
         let k1 = "key1".to_string();
@@ -334,7 +311,8 @@ mod tests {
     #[test]
     fn simple_flow_works_well_for_big() {
         stable::clear();
-        stable_memory_init(true, 0);
+        stable::grow(1).unwrap();
+        init_allocator(0);
 
         let map = SHashMap::new();
         test_body(map);
@@ -343,7 +321,8 @@ mod tests {
     #[test]
     fn simple_flow_works_well_for_small() {
         stable::clear();
-        stable_memory_init(true, 0);
+        stable::grow(1).unwrap();
+        init_allocator(0);
 
         let map = SHashMap::new_with_capacity(3);
         test_body(map);

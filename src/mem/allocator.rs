@@ -469,7 +469,7 @@ impl SSlice<StableMemoryAllocator> {
         );
 
         spawn(async {
-            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, EMPTY_ARGS, 0)
+            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &EMPTY_ARGS, 0)
                 .await
                 .unwrap_or_else(|_| {
                     panic!(

@@ -1,20 +1,24 @@
 use crate::SUnsafeCell;
-use candid::{decode_one, encode_one, CandidType, Deserialize};
-use serde::de::DeserializeOwned;
+use speedy::{LittleEndian, Readable, Writable};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
 const DEFAULT_BTREE_DEGREE: usize = 4096;
 
 /// FIXME: OOMs work really bad - I can't put my finger on that recursion
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub struct SBTreeMap<K, V> {
     root: BTreeNode<K, V>,
     degree: usize,
     len: u64,
 }
 
-impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> SBTreeMap<K, V> {
+impl<
+        'a,
+        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > SBTreeMap<K, V>
+{
     pub fn new() -> Self {
         Self::new_with_degree(DEFAULT_BTREE_DEGREE)
     }
@@ -429,21 +433,24 @@ impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> S
     }
 }
 
-impl<K: Ord + CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> Default
-    for SBTreeMap<K, V>
+impl<
+        'a,
+        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > Default for SBTreeMap<K, V>
 {
     fn default() -> Self {
         SBTreeMap::<K, V>::new()
     }
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 struct BTreeKey<K, V> {
     key: K,
     value_cell: SUnsafeCell<V>,
 }
 
-impl<K, V: CandidType + DeserializeOwned> BTreeKey<K, V> {
+impl<'a, K, V: Readable<'a, LittleEndian> + Writable<LittleEndian>> BTreeKey<K, V> {
     pub fn new(key: K, value: &V) -> Self {
         Self {
             key,
@@ -514,7 +521,7 @@ impl<K: Ord, V> Ord for BTreeKey<K, V> {
     }
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 struct BTreeNode<K, V> {
     is_leaf: bool,
     is_root: bool,
@@ -522,7 +529,12 @@ struct BTreeNode<K, V> {
     children: Vec<SUnsafeCell<BTreeNode<K, V>>>,
 }
 
-impl<K: CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> BTreeNode<K, V> {
+impl<
+        'a,
+        K: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > BTreeNode<K, V>
+{
     pub fn new(is_leaf: bool, is_root: bool) -> Self {
         Self {
             is_root,
@@ -534,8 +546,9 @@ impl<K: CandidType + DeserializeOwned, V: CandidType + DeserializeOwned> BTreeNo
 }
 
 fn btree_to_sorted_vec<
-    K: Ord + CandidType + DeserializeOwned + Clone,
-    V: CandidType + DeserializeOwned,
+    'a,
+    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Clone,
+    V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
 >(
     btree_node: &BTreeNode<K, V>,
     vec: &mut Vec<(K, V)>,
@@ -558,8 +571,9 @@ fn btree_to_sorted_vec<
 }
 
 fn print_btree<
-    K: Ord + CandidType + DeserializeOwned + Debug,
-    V: CandidType + DeserializeOwned + Debug,
+    'a,
+    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+    V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
 >(
     btree: &SBTreeMap<K, V>,
 ) {
@@ -588,8 +602,9 @@ fn print_btree<
 }
 
 fn print_btree_level<
-    K: Ord + CandidType + DeserializeOwned + Debug,
-    V: CandidType + DeserializeOwned + Debug,
+    'a,
+    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+    V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
 >(
     btree_node: &BTreeNode<K, V>,
 ) -> Vec<BTreeNode<K, V>> {

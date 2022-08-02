@@ -1,22 +1,21 @@
-use candid::{CandidType, Deserialize};
-use serde::de::DeserializeOwned;
 use crate::collections::btree_map::SBTreeMap;
+use speedy::{LittleEndian, Readable, Writable};
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub struct SBTreeSet<T> {
-    map: SBTreeMap<T, ()>
+    map: SBTreeMap<T, ()>,
 }
 
-impl <T: CandidType + DeserializeOwned + Ord> SBTreeSet<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBTreeSet<T> {
     pub fn new() -> Self {
         Self {
-            map: SBTreeMap::new()
+            map: SBTreeMap::new(),
         }
     }
-    
+
     pub fn new_with_degree(degree: usize) -> Self {
         Self {
-            map: SBTreeMap::new_with_degree(degree)
+            map: SBTreeMap::new_with_degree(degree),
         }
     }
 
@@ -45,7 +44,7 @@ impl <T: CandidType + DeserializeOwned + Ord> SBTreeSet<T> {
     }
 }
 
-impl <T: CandidType + DeserializeOwned + Ord> Default for SBTreeSet<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> Default for SBTreeSet<T> {
     fn default() -> Self {
         SBTreeSet::new()
     }

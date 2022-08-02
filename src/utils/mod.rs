@@ -1,11 +1,11 @@
-use candid::{CandidType, Deserialize};
+use speedy::{Readable, Writable};
 
-pub mod encode;
 pub mod math;
 pub mod mem_context;
+pub mod phantom_data;
 pub mod vars;
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 pub struct MemMetrics {
     pub available: u64,
     pub free: u64,

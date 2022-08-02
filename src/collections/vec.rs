@@ -1,19 +1,14 @@
 use crate::primitive::s_slice::PTR_SIZE;
+use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice, SUnsafeCell};
-use candid::types::{Serializer, Type};
-use candid::{CandidType, Deserialize};
-use serde::de::DeserializeOwned;
-use serde::Deserializer;
-use std::marker::PhantomData;
+use speedy::{LittleEndian, Readable, Writable};
 
 const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
 const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
 
-// TODO: make sectors of constant size
-
 struct SVecSector;
 
-#[derive(CandidType, Deserialize)]
+#[derive(Readable, Writable)]
 struct SVecInfo {
     _len: u64,
     _capacity: u64,
@@ -21,12 +16,13 @@ struct SVecInfo {
     _sector_sizes: Vec<u32>,
 }
 
+#[derive(Readable, Writable)]
 pub struct SVec<T> {
     _info: SVecInfo,
-    _data: PhantomData<T>,
+    _data: SPhantomData<T>,
 }
 
-impl<T: CandidType + DeserializeOwned> SVec<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     pub fn new() -> Self {
         Self::new_with_capacity(STABLE_VEC_DEFAULT_CAPACITY)
     }
@@ -41,7 +37,7 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
 
         Self {
             _info,
-            _data: PhantomData::default(),
+            _data: SPhantomData::default(),
         }
     }
 
@@ -245,33 +241,7 @@ impl<T: CandidType + DeserializeOwned> SVec<T> {
     }
 }
 
-impl<T> CandidType for SVec<T> {
-    fn _ty() -> Type {
-        SVecInfo::_ty()
-    }
-
-    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
-    where
-        S: Serializer,
-    {
-        self._info.idl_serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for SVec<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let _info = SVecInfo::deserialize(deserializer)?;
-        Ok(Self {
-            _info,
-            _data: PhantomData::default(),
-        })
-    }
-}
-
-impl<T: CandidType + DeserializeOwned> Default for SVec<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SVec<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -280,20 +250,21 @@ impl<T: CandidType + DeserializeOwned> Default for SVec<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::vec::{SVec, STABLE_VEC_DEFAULT_CAPACITY};
+    use crate::init_allocator;
     use crate::utils::mem_context::stable;
-    use crate::{init_allocator, stable_memory_init};
-    use candid::{CandidType, Deserialize, Nat};
+    use speedy::{Readable, Writable};
 
-    #[derive(CandidType, Deserialize, Debug)]
+    #[derive(Readable, Writable, Debug)]
     struct Test {
-        a: Nat,
+        a: u64,
         b: String,
     }
 
     #[test]
     fn create_destroy_work_fine() {
         stable::clear();
-        stable_memory_init(true, 0);
+        stable::grow(1).unwrap();
+        init_allocator(0);
 
         let mut stable_vec = SVec::<Test>::new();
         assert_eq!(stable_vec.capacity(), STABLE_VEC_DEFAULT_CAPACITY);
@@ -311,14 +282,15 @@ mod tests {
     #[test]
     fn push_pop_work_fine() {
         stable::clear();
-        stable_memory_init(true, 0);
+        stable::grow(1).unwrap();
+        init_allocator(0);
 
         let mut stable_vec = SVec::new();
         let count = 10u64;
 
         for i in 0..count {
             let it = Test {
-                a: Nat::from(i),
+                a: i,
                 b: format!("Str {}", i),
             };
 
@@ -329,7 +301,7 @@ mod tests {
 
         for i in 0..count {
             let it = Test {
-                a: Nat::from(i),
+                a: i,
                 b: format!("String of the element {}", i),
             };
 
@@ -341,7 +313,7 @@ mod tests {
         for i in 0..count {
             let it = stable_vec.pop().unwrap();
 
-            assert_eq!(it.a, Nat::from(count - 1 - i));
+            assert_eq!(it.a, count - 1 - i);
             assert_eq!(it.b, format!("String of the element {}", count - 1 - i));
         }
 
@@ -349,7 +321,7 @@ mod tests {
 
         for i in 0..count {
             let it = Test {
-                a: Nat::from(i),
+                a: i,
                 b: format!("Str {}", i),
             };
 

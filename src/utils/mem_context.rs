@@ -100,7 +100,7 @@ pub mod stable {
     }
 
     pub fn clear() {
-        CONTEXT.replace(TestMemContext::default());
+        CONTEXT.with(|it| it.borrow_mut().data.clear())
     }
 
     pub fn size_pages() -> u64 {

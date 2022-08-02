@@ -1,15 +1,16 @@
 use crate::primitive::s_slice::Side;
-use crate::utils::encode::decode_one_allow_trailing;
 use crate::{allocate, deallocate, reallocate, SSlice};
+use speedy::{LittleEndian, Readable, Writable};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 
+#[derive(Readable, Writable)]
 pub struct SUnsafeCell<T>(SSlice<T>);
 
-impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> {
     pub fn new(it: &T) -> Self {
-        let bytes = encode_one(it).expect("Unable to encode");
+        let bytes = it.write_to_vec().expect("Unable to encode");
         let raw = allocate(bytes.len());
 
         raw._write_bytes(0, &bytes);
@@ -21,7 +22,7 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
         let mut bytes = vec![0u8; self.0.get_size_bytes()];
         self.0._read_bytes(0, &mut bytes);
 
-        decode_one_allow_trailing(&bytes).expect("Unable to decode")
+        T::read_from_buffer_copying_data(&bytes).expect("Unable to decode")
     }
 
     /// # Safety
@@ -29,7 +30,7 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
     /// Set can cause a reallocation that will change the location of the data.
     /// Use the return bool value to determine if the location is changed (true = you need to update).
     pub unsafe fn set(&mut self, it: &T) -> bool {
-        let bytes = encode_one(it).expect("Unable to encode");
+        let bytes = it.write_to_vec().expect("Unable to encode");
         let mut res = false;
 
         if self.0.get_size_bytes() < bytes.len() {
@@ -60,43 +61,25 @@ impl<'de, T: DeserializeOwned + CandidType> SUnsafeCell<T> {
     }
 }
 
-impl<T> CandidType for SUnsafeCell<T> {
-    fn _ty() -> Type {
-        Type::Nat64
-    }
-
-    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
-    where
-        S: Serializer,
-    {
-        self.0.idl_serialize(serializer)
-    }
-}
-
-impl<'de, T> Deserialize<'de> for SUnsafeCell<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(SUnsafeCell(SSlice::<T>::deserialize(deserializer)?))
-    }
-}
-
-impl<T: Eq + CandidType + DeserializeOwned> PartialEq<Self> for SUnsafeCell<T> {
+impl<'a, T: Eq + Readable<'a, LittleEndian> + Writable<LittleEndian>> PartialEq<Self>
+    for SUnsafeCell<T>
+{
     fn eq(&self, other: &Self) -> bool {
         self.get_cloned().eq(&other.get_cloned())
     }
 }
 
-impl<T: Eq + CandidType + DeserializeOwned> Eq for SUnsafeCell<T> {}
+impl<'a, T: Eq + Readable<'a, LittleEndian> + Writable<LittleEndian>> Eq for SUnsafeCell<T> {}
 
-impl<T: Ord + CandidType + DeserializeOwned> PartialOrd<Self> for SUnsafeCell<T> {
+impl<'a, T: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>> PartialOrd<Self>
+    for SUnsafeCell<T>
+{
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.get_cloned().partial_cmp(&other.get_cloned())
     }
 }
 
-impl<T: Ord + CandidType + DeserializeOwned> Ord for SUnsafeCell<T> {
+impl<'a, T: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>> Ord for SUnsafeCell<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.get_cloned().cmp(&other.get_cloned())
     }
@@ -148,28 +131,27 @@ impl<T: Ord + CandidType + DeserializeOwned> Ord for SUnsafeCell<T> {
     }
 }
 
-impl<T: Hash + CandidType + DeserializeOwned> Hash for SUnsafeCell<T> {
+impl<'a, T: Hash + Readable<'a, LittleEndian> + Writable<LittleEndian>> Hash for SUnsafeCell<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.get_cloned().hash(state)
     }
 }
 
-impl<T: Debug + CandidType + DeserializeOwned> Debug for SUnsafeCell<T> {
+impl<'a, T: Debug + Readable<'a, LittleEndian> + Writable<LittleEndian>> Debug for SUnsafeCell<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.get_cloned().fmt(f)
     }
 }
 
 mod tests {
+    use crate::init_allocator;
     use crate::primitive::s_unsafe_cell::SUnsafeCell;
     use crate::utils::mem_context::stable;
-    use crate::{init_allocator, stable_memory_init};
-    use candid::Nat;
-    use ic_cdk::export::candid::{CandidType, Deserialize};
+    use speedy::{Readable, Writable};
 
-    #[derive(CandidType, Deserialize, Debug, PartialEq, Eq)]
+    #[derive(Readable, Writable, Debug, PartialEq, Eq)]
     struct Test {
-        pub a: Nat,
+        pub a: u128,
         pub b: String,
     }
 
@@ -179,7 +161,7 @@ mod tests {
         init_allocator(0);
 
         let obj = Test {
-            a: Nat::from(12341231231u64),
+            a: 12341231231,
             b: String::from("The string"),
         };
 
