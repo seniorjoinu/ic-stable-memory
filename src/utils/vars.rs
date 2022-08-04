@@ -30,7 +30,7 @@ pub fn set_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name:
     unsafe {
         VARS.as_mut()
             .expect("Stable vars are not initialized yet")
-            .insert(String::from(name), val_box.as_ptr())
+            .insert(String::from(name), &val_box.as_ptr())
     };
 }
 

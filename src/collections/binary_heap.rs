@@ -21,13 +21,6 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBinaryHe
         }
     }
 
-    pub fn new_with_capacity(ty: SHeapType, capacity: u64) -> Self {
-        Self {
-            ty,
-            arr: SVec::new_with_capacity(capacity),
-        }
-    }
-
     pub fn push(&mut self, elem: &T) {
         self.arr.push(elem);
         let len = self.len();

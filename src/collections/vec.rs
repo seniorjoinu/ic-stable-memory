@@ -1,19 +1,18 @@
 use crate::primitive::s_slice::PTR_SIZE;
+use crate::utils::math::fast_log2_64;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice, SUnsafeCell};
 use speedy::{LittleEndian, Readable, Writable};
+use std::cmp::min;
 
-const STABLE_VEC_DEFAULT_CAPACITY: u64 = 4;
-const MAX_SECTOR_SIZE: usize = 2usize.pow(29); // 512MB
+const TWO_IN_29: u64 = 2u64.pow(29);
 
 struct SVecSector;
 
 #[derive(Readable, Writable)]
 struct SVecInfo {
     _len: u64,
-    _capacity: u64,
     _sectors: Vec<SSlice<SVecSector>>,
-    _sector_sizes: Vec<u32>,
 }
 
 #[derive(Readable, Writable)]
@@ -24,15 +23,9 @@ pub struct SVec<T> {
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     pub fn new() -> Self {
-        Self::new_with_capacity(STABLE_VEC_DEFAULT_CAPACITY)
-    }
-
-    pub fn new_with_capacity(capacity: u64) -> Self {
         let _info = SVecInfo {
             _len: 0,
-            _capacity: capacity,
             _sectors: Vec::new(),
-            _sector_sizes: Vec::new(),
         };
 
         Self {
@@ -44,10 +37,6 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     pub fn push(&mut self, element: &T) {
         let elem_cell = SUnsafeCell::new(element);
         let elem_ptr = unsafe { elem_cell.as_ptr() };
-
-        if self._info._sectors.is_empty() {
-            self.init_sectors();
-        }
 
         self.grow_if_needed();
         self.set_len(self.len() + 1);
@@ -76,11 +65,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     }
 
     pub fn get_cloned(&self, idx: u64) -> Option<T> {
-        if idx >= self.len() {
+        if idx >= self.len() || self.is_empty() {
             return None;
         }
 
         let (sector, offset) = self.calculate_inner_index(idx);
+
         let elem_ptr = sector._read_word(offset);
         let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
         let elem = elem_cell.get_cloned();
@@ -135,11 +125,11 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     }
 
     pub fn capacity(&self) -> u64 {
-        self._info._capacity
-    }
-
-    fn set_capacity(&mut self, new_capacity: u64) {
-        self._info._capacity = new_capacity;
+        if self._info._sectors.len() < 28 {
+            2u64.pow(self._info._sectors.len() as u32 + 2) - 4
+        } else {
+            TWO_IN_29 - 4 + TWO_IN_29 * (self._info._sectors.len() as u64 - 27)
+        }
     }
 
     pub fn len(&self) -> u64 {
@@ -154,20 +144,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         self._info._len = new_len;
     }
 
-    fn get_sector_size(&self, idx: usize) -> usize {
-        self._info._sector_sizes[idx] as usize
-    }
-
     fn get_sector(&self, idx: usize) -> &SSlice<SVecSector> {
-        &self._info._sectors[idx]
-    }
-
-    fn get_sector_mut(&mut self, idx: usize) -> &mut SSlice<SVecSector> {
-        &mut self._info._sectors[idx]
-    }
-
-    fn get_sectors_count(&self) -> usize {
-        self._info._sectors.len()
+        self._info._sectors.get(idx).unwrap()
     }
 
     pub fn is_about_to_grow(&self) -> bool {
@@ -176,68 +154,33 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
 
     fn grow_if_needed(&mut self) {
         if self.is_about_to_grow() {
-            let last_sector_size = self.get_sector_size(self.get_sectors_count() - 1);
-            let new_sector_size = if last_sector_size * 2 < MAX_SECTOR_SIZE {
-                last_sector_size * 2
-            } else {
-                MAX_SECTOR_SIZE
-            };
+            let new_sector_size =
+                2u64.pow(min(self._info._sectors.len() as u32 + 2, 29)) as usize * PTR_SIZE;
 
             let sector = allocate(new_sector_size);
-            self.set_capacity(self.capacity() + (new_sector_size / PTR_SIZE) as u64);
             self._info._sectors.push(sector);
-            self._info._sector_sizes.push(new_sector_size as u32);
         }
     }
 
-    fn calculate_inner_index(&self, idx: u64) -> (&SSlice<SVecSector>, usize) {
+    fn calculate_inner_index(&self, mut idx: u64) -> (&SSlice<SVecSector>, usize) {
         assert!(idx < self.len());
 
-        let mut idx_counter: u64 = 0;
+        let (sector_idx, offset_ptr) = if idx > TWO_IN_29 - 4 {
+            idx -= TWO_IN_29 - 4;
+            let sector_idx = 27 + (idx / TWO_IN_29) as usize;
+            let offset_ptr = (idx % TWO_IN_29) as usize;
 
-        for (sector_idx, sector_size) in self._info._sector_sizes.iter().enumerate() {
-            let elems_in_sector = (*sector_size as usize / PTR_SIZE) as u64;
-            idx_counter += elems_in_sector;
+            (sector_idx, offset_ptr)
+        } else {
+            let sector_idx = fast_log2_64(idx + 4) as usize - 2;
+            let ptrs_in_prev_sectors = 2u64.pow(sector_idx as u32 + 2) - 4;
 
-            if idx_counter > idx as u64 {
-                let sector = self.get_sector(sector_idx);
+            let offset_ptr = (idx - ptrs_in_prev_sectors) as usize;
 
-                if idx == 0 {
-                    return (sector, 0);
-                }
+            (sector_idx, offset_ptr)
+        };
 
-                // usize cast guaranteed by the fact that a single sector can only hold usize of
-                // bytes and we iterate over them one by one
-                let offset = (elems_in_sector - (idx_counter - idx as u64)) as usize * PTR_SIZE;
-
-                return (sector, offset);
-            }
-        }
-
-        // guaranteed by the len check at the beginning of the function
-        unreachable!("Unable to calculate inner index");
-    }
-
-    fn init_sectors(&mut self) {
-        let mut sectors = vec![];
-        let mut sector_sizes = vec![];
-        let mut capacity_size = self._info._capacity * PTR_SIZE as u64;
-
-        while capacity_size > MAX_SECTOR_SIZE as u64 {
-            let sector = allocate::<SVecSector>(MAX_SECTOR_SIZE);
-
-            sectors.push(sector);
-            sector_sizes.push(MAX_SECTOR_SIZE as u32);
-            capacity_size -= MAX_SECTOR_SIZE as u64;
-        }
-
-        let sector = allocate::<SVecSector>(capacity_size as usize);
-
-        sectors.push(sector);
-        sector_sizes.push(capacity_size as u32);
-
-        self._info._sectors = sectors.iter().map(|it| unsafe { it.clone() }).collect();
-        self._info._sector_sizes = sector_sizes;
+        (self.get_sector(sector_idx), offset_ptr * PTR_SIZE)
     }
 }
 
@@ -249,7 +192,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SVe
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::vec::{SVec, STABLE_VEC_DEFAULT_CAPACITY};
+    use crate::collections::vec::SVec;
     use crate::init_allocator;
     use crate::utils::mem_context::stable;
     use speedy::{Readable, Writable};
@@ -266,15 +209,13 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut stable_vec = SVec::<Test>::new();
-        assert_eq!(stable_vec.capacity(), STABLE_VEC_DEFAULT_CAPACITY);
+        let mut stable_vec = SVec::<u64>::new();
+        assert_eq!(stable_vec.capacity(), 0);
         assert_eq!(stable_vec.len(), 0);
 
-        stable_vec.drop();
-
-        stable_vec = SVec::<Test>::new_with_capacity(10_000);
-        assert_eq!(stable_vec.capacity(), 10_000);
-        assert_eq!(stable_vec.len(), 0);
+        stable_vec.push(&10);
+        assert_eq!(stable_vec.capacity(), 4);
+        assert_eq!(stable_vec.len(), 1);
 
         stable_vec.drop();
     }

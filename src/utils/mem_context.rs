@@ -1,4 +1,5 @@
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
+use std::io::Write;
 
 pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
 
@@ -50,22 +51,17 @@ impl MemContext for TestMemContext {
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory> {
         let prev_pages = self.size_pages();
         self.data
-            .extend(vec![0; PAGE_SIZE_BYTES * new_pages as usize]);
+            .resize(self.data.len() + PAGE_SIZE_BYTES * new_pages as usize, 0);
 
         Ok(prev_pages)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        for i in offset..offset + buf.len() as u64 {
-            buf[(i - offset) as usize] = self.data[i as usize]
-        }
+        buf.clone_from_slice(&self.data[offset as usize..(offset as usize + buf.len())])
     }
 
     fn write(&mut self, offset: u64, buf: &[u8]) {
-        self.data.splice(
-            (offset as usize)..(offset as usize + buf.len()),
-            Vec::from(buf),
-        );
+        self.data[(offset as usize)..(offset as usize + buf.len())].clone_from_slice(buf)
     }
 }
 

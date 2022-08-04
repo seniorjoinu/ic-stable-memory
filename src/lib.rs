@@ -41,8 +41,8 @@ pub fn reinit_allocator(offset: u64) {
     }
 }
 
-fn get_allocator() -> SSlice<StableMemoryAllocator> {
-    unsafe { STABLE_MEMORY_ALLOCATOR.as_ref().unwrap().clone() }
+fn get_allocator() -> &'static mut SSlice<StableMemoryAllocator> {
+    unsafe { STABLE_MEMORY_ALLOCATOR.as_mut().unwrap() }
 }
 
 pub fn allocate<T>(size: usize) -> SSlice<T> {

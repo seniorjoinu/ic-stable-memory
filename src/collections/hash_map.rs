@@ -1,29 +1,33 @@
 use crate::collections::vec::SVec;
 use crate::mem::allocator::EMPTY_PTR;
-use crate::primitive::s_slice::PTR_SIZE;
+use crate::primitive::s_slice::{CELL_META_SIZE, PTR_SIZE};
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
 use speedy::{LittleEndian, Readable, Writable};
 use std::collections::hash_map::DefaultHasher;
-use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 // TODO: make entry store value more efficiently
-// FIXME: there is an endless loop somewhere, run benchmarks with a lot of iterations to spot it
 
-const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 9973;
+const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 8192 - CELL_META_SIZE as u32 * 2;
 type HashMapBucket<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;
 
-#[derive(Readable, Writable, Debug)]
+#[derive(Readable, Writable)]
 struct HashMapEntry<K, V> {
     key: K,
-    val: V,
+    val: SUnsafeCell<V>,
 }
 
-impl<K, V> HashMapEntry<K, V> {
-    pub fn new(k: K, v: V) -> Self {
-        Self { key: k, val: v }
+impl<
+        'a,
+        K: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > HashMapEntry<K, V>
+{
+    pub fn new(k: K, v: &V) -> Self {
+        let val = SUnsafeCell::new(v);
+        Self { key: k, val }
     }
 }
 
@@ -79,11 +83,11 @@ impl<
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: &V) -> Option<V> {
         self.init_table();
 
         let idx = self.find_bucket_idx(&key);
-        let (offset, bucket_box_opt) = self.read_bucket(idx);
+        let bucket_box_opt = self.read_bucket(idx);
 
         let (mut bucket_box, mut bucket) = if let Some(bb) = bucket_box_opt {
             let bucket = bb.get_cloned();
@@ -93,7 +97,7 @@ impl<
             let bucket = SVec::<HashMapEntry<K, V>>::new();
             let bb = HashMapBucket::<K, V>::new(&bucket);
 
-            self.table()._write_word(offset, unsafe { bb.as_ptr() });
+            self.set_bucket(idx, &bb);
 
             (bb, bucket)
         };
@@ -107,8 +111,12 @@ impl<
             let prev_entry = bucket.get_cloned(i).unwrap();
 
             if prev_entry.key.eq(&new_entry.key) {
+                let prev_value = prev_entry.val;
+                prev = Some(prev_value.get_cloned());
+                prev_value.drop();
+
                 bucket.replace(i, &new_entry);
-                prev = Some(prev_entry.val);
+
                 found = true;
                 break;
             }
@@ -116,9 +124,8 @@ impl<
 
         if !found {
             bucket.push(&new_entry);
+            self._info._len += 1;
         }
-
-        self._info._len += 1;
 
         unsafe {
             let should_update = bucket_box.set(&bucket);
@@ -137,7 +144,7 @@ impl<
         }
 
         let idx = self.find_bucket_idx(key);
-        let (_, bucket_box_opt) = self.read_bucket(idx);
+        let bucket_box_opt = self.read_bucket(idx);
         let mut bucket_box = bucket_box_opt?;
         let mut bucket = bucket_box.get_cloned();
 
@@ -150,7 +157,10 @@ impl<
                 bucket.swap(i, bucket.len() - 1);
                 let elem = bucket.pop().unwrap();
 
-                prev = Some(elem.val);
+                prev = Some(elem.val.get_cloned());
+                elem.val.drop();
+
+                self._info._len -= 1;
                 break;
             }
         }
@@ -162,7 +172,6 @@ impl<
                 self.set_bucket(idx, &bucket_box);
             }
         }
-        self._info._len -= 1;
 
         prev
     }
@@ -177,13 +186,14 @@ impl<
         }
 
         let idx = self.find_bucket_idx(key);
-        let (_, bucket_box) = self.read_bucket(idx);
+        let bucket_box = self.read_bucket(idx);
         let bucket = bucket_box?.get_cloned();
 
         for i in 0..bucket.len() {
             let elem = bucket.get_cloned(i).unwrap();
+
             if elem.key.eq(key) {
-                return Some(elem.val);
+                return Some(elem.val.get_cloned());
             }
         }
 
@@ -200,7 +210,7 @@ impl<
 
     pub fn drop(self) {
         for i in 0..self._info._table_capacity {
-            let (_, bucket_box_opt) = self.read_bucket(i as usize);
+            let bucket_box_opt = self.read_bucket(i as usize);
             if let Some(bb) = bucket_box_opt {
                 bb.drop();
             }
@@ -232,17 +242,14 @@ impl<
             ._write_word(offset, unsafe { bucket_value.as_ptr() });
     }
 
-    fn read_bucket(&self, idx: usize) -> (usize, Option<HashMapBucket<K, V>>) {
+    fn read_bucket(&self, idx: usize) -> Option<HashMapBucket<K, V>> {
         let offset = idx * PTR_SIZE;
         let ptr = self.table()._read_word(offset);
 
         if ptr == 0 || ptr == EMPTY_PTR {
-            (offset, None)
+            None
         } else {
-            (
-                offset,
-                Some(unsafe { HashMapBucket::<K, V>::from_ptr(ptr) }),
-            )
+            Some(unsafe { HashMapBucket::<K, V>::from_ptr(ptr) })
         }
     }
 
@@ -267,14 +274,14 @@ mod tests {
         let k7 = "key7".to_string();
         let k8 = "key8".to_string();
 
-        map.insert(k1.clone(), 1);
-        map.insert(k2.clone(), 2);
-        map.insert(k3.clone(), 3);
-        map.insert(k4.clone(), 4);
-        map.insert(k5.clone(), 5);
-        map.insert(k6.clone(), 6);
-        map.insert(k7.clone(), 7);
-        map.insert(k8.clone(), 8);
+        map.insert(k1.clone(), &1);
+        map.insert(k2.clone(), &2);
+        map.insert(k3.clone(), &3);
+        map.insert(k4.clone(), &4);
+        map.insert(k5.clone(), &5);
+        map.insert(k6.clone(), &6);
+        map.insert(k7.clone(), &7);
+        map.insert(k8.clone(), &8);
 
         assert_eq!(map.get_cloned(&k1).unwrap(), 1);
         assert_eq!(map.get_cloned(&k2).unwrap(), 2);

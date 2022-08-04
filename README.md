@@ -40,7 +40,8 @@ enough (so it would be cheap to serialize/deserialize it every time you use it) 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 // !! This is important, otherwise macros won't work! !!
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-// Here we use String type, but any CandidType would work just fine
+// Here we use String type, but any other type that implements speedy::Readable 
+// and speedy::Writable will work just fine
 type MyStrings = Vec<String>;
 
 #[init]
@@ -209,45 +210,84 @@ for you anymore, even if you add it to the canister later.
 
 
 ## Benchmarks
+These benchmarks are run against testing environment, where I emulate stable memory with a huge vector.
+Performance difference in real canister should be less significant because of real stable memory.
+
 ### Vec
 ```
-"Classic vec push" 1000000 iterations: 264 ms
-"Stable vec push" 1000000 iterations: 98733 ms (x374 slower)
+"Classic vec push" 1000000 iterations: 463 ms
+"Stable vec push" 1000000 iterations: 22606 ms (x49 slower)
 
-"Classic vec pop" 1000000 iterations: 153 ms
-"Stable vec pop" 1000000 iterations: 84355 ms (x551 slower)
+"Classic vec pop" 1000000 iterations: 406 ms
+"Stable vec pop" 1000000 iterations: 11338 ms (x28 slower)
 
-"Classic vec search" 1000000 iterations: 47 ms
-"Stable vec search" 1000000 iterations: 27294 ms (x580 slower)
+"Classic vec search" 1000000 iterations: 127 ms
+"Stable vec search" 1000000 iterations: 2926 ms (x23 slower)
 ```
 
 ### Binary heap
 ```
-"Classic binary heap push" 1000000 iterations: 398 ms
-"Stable binary heap push" 1000000 iterations: 139906 ms (x352 slower)
+"Classic binary heap push" 1000000 iterations: 995 ms
+"Stable binary heap push" 1000000 iterations: 29578 ms (x29 slower)
 
-"Classic binary heap pop" 1000000 iterations: 2025 ms
-"Stable binary heap pop" 1000000 iterations: 180150 ms (x88 slower)
+"Classic binary heap pop" 1000000 iterations: 4453 ms
+"Stable binary heap pop" 1000000 iterations: 27159 ms (x6 slower)
 
-"Classic binary heap peek" 1000000 iterations: 55 ms
-"Stable binary heap peek" 1000000 iterations: 26512 ms (x482 slower)
+"Classic binary heap peek" 1000000 iterations: 133 ms
+"Stable binary heap peek" 1000000 iterations: 3314 ms (x25 slower)
 ```
 
 ### Hash map
 ```
-"Classic hash map insert" 100000 iterations: 165 ms
-"Stable hash map insert" 100000 iterations: 92284 ms (x559 slower)
+"Classic hash map insert" 100000 iterations: 224 ms
+"Stable hash map insert" 100000 iterations: 7199 ms (x32 slower)
 
-"Classic hash map remove" 100000 iterations: 86 ms
-"Stable hash map remove" 100000 iterations: 75013 ms (x872 slower)
+"Classic hash map remove" 100000 iterations: 123 ms
+"Stable hash map remove" 100000 iterations: 3618 ms (x29 slower)
 
-"Classic hash map search" 100000 iterations: 52 ms
-"Stable hash map search" 100000 iterations: 70477 ms (x1355 slower)
+"Classic hash map search" 100000 iterations: 69 ms
+"Stable hash map search" 100000 iterations: 2325 ms (x34 slower)
 ```
 
+### Hash set
+```
+"Classic hash set insert" 100000 iterations: 209 ms
+"Stable hash set insert" 100000 iterations: 5977 ms (x28 slower)
 
-## TODO
-Make it use speedy
+"Classic hash set remove" 100000 iterations: 180 ms
+"Stable hash set remove" 100000 iterations: 2724 ms (x15 slower)
+
+"Classic hash set search" 100000 iterations: 125 ms
+"Stable hash set search" 100000 iterations: 2007 ms (x16 slower)
+```
+
+### BTree map
+BTree-based collections are not optimized at all
+
+```
+"Classic btree map insert" 10000 iterations: 31 ms
+"Stable btree map insert" 10000 iterations: 8981 ms (x298 slower)
+
+"Classic btree map remove" 10000 iterations: 17 ms
+"Stable btree map remove" 10000 iterations: 19831 ms (x1166 slower)
+
+"Classic btree map search" 10000 iterations: 15 ms
+"Stable btree map search" 10000 iterations: 20710 ms (x1380 slower)
+```
+
+### BTree set
+BTree-based collections are not optimized at all
+
+```
+"Classic btree set insert" 10000 iterations: 26 ms
+"Stable btree set insert" 10000 iterations: 8920 ms (x343 slower)
+
+"Classic btree set remove" 10000 iterations: 13 ms
+"Stable btree set remove" 10000 iterations: 19601 ms (x1507 slower)
+
+"Classic btree set search" 10000 iterations: 16 ms
+"Stable btree set search" 10000 iterations: 20569 ms (x1285 slower)
+```
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.

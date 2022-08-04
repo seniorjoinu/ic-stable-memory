@@ -54,7 +54,9 @@ impl<
             Self::insert_non_full(self.degree, &mut self.root, btree_key)
         };
 
-        self.len += 1;
+        if res.is_none() {
+            self.len += 1;
+        }
 
         res
     }
@@ -154,7 +156,7 @@ impl<
 
     fn _contains_key(&self, node: &BTreeNode<K, V>, key: &K) -> bool {
         match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
-            Ok(idx) => true,
+            Ok(_) => true,
             Err(idx) => {
                 if let Some(child_cell) = node.children.get(idx) {
                     let child = child_cell.get_cloned();
@@ -204,6 +206,10 @@ impl<
                 }
             }
             Err(idx) => {
+                if node.is_leaf {
+                    return None;
+                }
+
                 let mut child = node.children[idx].get_cloned();
 
                 if child.keys.len() >= degree {
@@ -212,10 +218,10 @@ impl<
 
                     res
                 } else {
-                    let left_child_sibling = node.children[idx - 1].get_cloned();
-                    let right_child_sibling = node.children[idx + 1].get_cloned();
+                    if idx != 0 && idx + 2 < node.children.len() {
+                        let left_child_sibling = node.children[idx - 1].get_cloned();
+                        let right_child_sibling = node.children[idx + 1].get_cloned();
 
-                    if idx != 0 && idx + 1 < node.children.len() {
                         if left_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx - 1);
                         } else if right_child_sibling.keys.len() >= degree {
@@ -224,17 +230,25 @@ impl<
                             Self::delete_merge(node, idx, idx + 1);
                         }
                     } else if idx == 0 {
+                        let right_child_sibling = node.children[idx + 1].get_cloned();
+
                         if right_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx + 1);
                         } else {
                             Self::delete_merge(node, idx, idx + 1);
                         }
                     } else if idx + 1 == node.children.len() {
+                        let left_child_sibling = node.children[idx - 1].get_cloned();
+
                         if left_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx - 1);
                         } else {
                             Self::delete_merge(node, idx, idx - 1);
                         }
+                    }
+
+                    if node.is_leaf {
+                        return Self::_delete(degree, node, key);
                     }
 
                     let mut child = node.children[idx].get_cloned();
@@ -407,7 +421,8 @@ impl<
         if j > i {
             let mut child_right_sibling = node.children[j].get_cloned();
 
-            node.keys[i] = child_right_sibling.keys.remove(0);
+            child.keys.push(node.keys.remove(i));
+            node.keys.insert(i, child_right_sibling.keys.remove(0));
 
             if !child_right_sibling.children.is_empty() {
                 child.children.push(child_right_sibling.children.remove(0));
@@ -416,6 +431,7 @@ impl<
             unsafe { node.children[j].set(&child_right_sibling) };
         } else {
             let mut child_left_sibling = node.children[j].get_cloned();
+
             child.keys.insert(0, node.keys.remove(i - 1));
             node.keys
                 .insert(i - 1, child_left_sibling.keys.pop().unwrap());
@@ -632,7 +648,7 @@ mod tests {
     use crate::{init_allocator, stable};
 
     #[test]
-    fn works_as_expected() {
+    fn random_works_as_expected() {
         stable::clear();
         stable::grow(1).unwrap();
         init_allocator(0);
@@ -649,7 +665,7 @@ mod tests {
             (90, 9),
         ];
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(4);
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
 
         println!("INSERTION");
 
@@ -734,6 +750,33 @@ mod tests {
         println!();
 
         assert!(map.is_empty());
+
+        map.drop();
+    }
+
+    #[test]
+    fn sequential_works_as_expected() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(2);
+
+        println!("INSERTION");
+
+        for i in 0..10 {
+            map.insert(i, &0);
+            print_btree(&map);
+            println!();
+        }
+
+        println!("DELETION");
+
+        for i in 0..10 {
+            map.remove(&i).unwrap();
+            print_btree(&map);
+            println!();
+        }
 
         map.drop();
     }

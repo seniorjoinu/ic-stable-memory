@@ -21,7 +21,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> SHa
     }
 
     pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(value, ()).is_some()
+        self.map.insert(value, &()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {

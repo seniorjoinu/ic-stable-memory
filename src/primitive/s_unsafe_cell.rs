@@ -1,28 +1,45 @@
 use crate::primitive::s_slice::Side;
 use crate::{allocate, deallocate, reallocate, SSlice};
 use speedy::{LittleEndian, Readable, Writable};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 
 #[derive(Readable, Writable)]
-pub struct SUnsafeCell<T>(SSlice<T>);
+pub struct SUnsafeCell<T> {
+    pub(crate) slice: SSlice<T>,
+    #[speedy(skip)]
+    pub(crate) buf: RefCell<Option<Vec<u8>>>,
+}
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> {
     pub fn new(it: &T) -> Self {
-        let bytes = it.write_to_vec().expect("Unable to encode");
-        let raw = allocate(bytes.len());
+        let buf = it.write_to_vec().expect("Unable to encode");
+        let slice = allocate(buf.len());
 
-        raw._write_bytes(0, &bytes);
+        slice._write_bytes(0, &buf);
 
-        Self(raw)
+        Self {
+            slice,
+            buf: RefCell::new(Some(buf)),
+        }
     }
 
     pub fn get_cloned(&self) -> T {
-        let mut bytes = vec![0u8; self.0.get_size_bytes()];
-        self.0._read_bytes(0, &mut bytes);
+        {
+            if let Some(buf) = &*self.buf.borrow() {
+                return T::read_from_buffer_copying_data(buf).expect("Unable to decode");
+            }
+        }
 
-        T::read_from_buffer_copying_data(&bytes).expect("Unable to decode")
+        let mut buf = vec![0u8; self._allocated_size()];
+        self.slice._read_bytes(0, &mut buf);
+
+        let res = T::read_from_buffer_copying_data(&buf).expect("Unable to decode");
+        *self.buf.borrow_mut() = Some(buf);
+
+        res
     }
 
     /// # Safety
@@ -30,34 +47,41 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
     /// Set can cause a reallocation that will change the location of the data.
     /// Use the return bool value to determine if the location is changed (true = you need to update).
     pub unsafe fn set(&mut self, it: &T) -> bool {
-        let bytes = it.write_to_vec().expect("Unable to encode");
+        let buf = it.write_to_vec().expect("Unable to encode");
         let mut res = false;
 
-        if self.0.get_size_bytes() < bytes.len() {
-            self.0 = reallocate(self.0.clone(), bytes.len());
+        if self._allocated_size() < buf.len() {
+            self.slice = reallocate(self.slice.clone(), buf.len());
             res = true;
         }
 
-        self.0._write_bytes(0, &bytes);
+        self.slice._write_bytes(0, &buf);
+        *self.buf.borrow_mut() = Some(buf);
 
         res
     }
 
     pub fn _allocated_size(&self) -> usize {
-        self.0.get_size_bytes()
+        self.slice.get_size_bytes()
     }
 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         assert_ne!(ptr, 0);
-        Self(SSlice::from_ptr(ptr, Side::Start).unwrap())
+
+        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+
+        Self {
+            slice,
+            buf: RefCell::new(None),
+        }
     }
 
     pub unsafe fn as_ptr(&self) -> u64 {
-        self.0.ptr
+        self.slice.ptr
     }
 
     pub fn drop(self) {
-        deallocate(self.0)
+        deallocate(self.slice)
     }
 }
 

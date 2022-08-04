@@ -4,7 +4,7 @@ mod hash_map_benchmark {
     use crate::{init_allocator, measure, stable};
     use std::collections::HashMap;
 
-    const ITERATIONS: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
 
     #[test]
     fn body() {
@@ -39,7 +39,7 @@ mod hash_map_benchmark {
 
             measure!("Stable hash map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_hash_map.insert(i, String::from("Some short string"));
+                    stable_hash_map.insert(i, &String::from("Some short string"));
                 }
             });
 

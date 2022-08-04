@@ -1,6 +1,7 @@
+use crate::mem::allocator::EMPTY_PTR;
 use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
 use crate::utils::phantom_data::SPhantomData;
-use speedy::{Readable, Writable};
+use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::mem::size_of;
 use std::usize;
 
@@ -16,10 +17,25 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-#[derive(Readable, Writable)]
 pub struct SSlice<T> {
     pub(crate) ptr: u64,
-    pub(crate) data: SPhantomData<T>,
+    data: SPhantomData<T>,
+    pub(crate) size: usize,
+    pub(crate) allocated: bool,
+}
+
+impl<'a, T, C: Context> Readable<'a, C> for SSlice<T> {
+    fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as Context>::Error> {
+        let ptr = reader.read_u64()?;
+
+        unsafe { Ok(SSlice::<T>::from_ptr(ptr, Side::Start).unwrap()) }
+    }
+}
+
+impl<T, C: Context> Writable<C> for SSlice<T> {
+    fn write_to<W: ?Sized + Writer<C>>(&self, writer: &mut W) -> Result<(), <C as Context>::Error> {
+        writer.write_u64(self.ptr)
+    }
 }
 
 impl<T> SSlice<T> {
@@ -32,7 +48,7 @@ impl<T> SSlice<T> {
     }
 
     pub fn _write_bytes(&self, offset: usize, data: &[u8]) {
-        let (size, _) = self.get_meta();
+        let size = self.get_size_bytes();
 
         assert!(
             offset + data.len() <= size,
@@ -50,7 +66,7 @@ impl<T> SSlice<T> {
     }
 
     pub fn _read_bytes(&self, offset: usize, data: &mut [u8]) {
-        let (size, _) = self.get_meta();
+        let size = self.get_size_bytes();
 
         assert!(
             data.len() + offset <= size,
@@ -63,10 +79,10 @@ impl<T> SSlice<T> {
     }
 
     pub fn _read_word(&self, offset: usize) -> u64 {
-        let mut num = [0u8; PTR_SIZE];
-        self._read_bytes(offset, &mut num);
+        let mut buf = [0u8; PTR_SIZE];
+        self._read_bytes(offset, &mut buf);
 
-        u64::from_le_bytes(num)
+        u64::from_le_bytes(buf)
     }
 
     /// # Safety
@@ -86,6 +102,8 @@ impl<T> SSlice<T> {
         Self {
             ptr,
             data: SPhantomData::default(),
+            size,
+            allocated,
         }
     }
 
@@ -99,47 +117,42 @@ impl<T> SSlice<T> {
     /// This method may create a duplicate of the same underlying memory slice. Make sure, your logic
     /// doesn't do that.
     pub(crate) unsafe fn from_ptr(mut ptr: u64, side: Side) -> Option<Self> {
-        if ptr >= stable::size_pages() * PAGE_SIZE_BYTES as u64 {
+        if ptr >= stable::size_pages() * PAGE_SIZE_BYTES as u64 || ptr == EMPTY_PTR || ptr == 0 {
             return None;
         }
 
-        let (size_1, size_2) = match side {
+        let (size, allocated) = match side {
             Side::Start => {
-                let (size_1, _) = Self::read_meta(ptr);
-                if size_1 < CELL_MIN_SIZE {
+                let (size, allocated) = Self::read_meta(ptr);
+                if size < CELL_MIN_SIZE {
                     return None;
                 }
 
-                let (size_2, _) = Self::read_meta(ptr + (CELL_META_SIZE + size_1) as u64);
-
-                (size_1, size_2)
+                (size, allocated)
             }
             Side::End => {
                 ptr -= CELL_META_SIZE as u64;
-                let (size_2, _) = Self::read_meta(ptr);
-                if size_2 < CELL_MIN_SIZE {
+                let (size, allocated) = Self::read_meta(ptr);
+                if size < CELL_MIN_SIZE {
                     return None;
                 }
 
-                if ptr < (size_2 + CELL_META_SIZE) as u64 {
+                if ptr < (size + CELL_META_SIZE) as u64 {
                     return None;
                 }
 
-                ptr -= (size_2 + CELL_META_SIZE) as u64;
-                let (size_1, _) = Self::read_meta(ptr);
+                ptr -= (size + CELL_META_SIZE) as u64;
 
-                (size_1, size_2)
+                (size, allocated)
             }
         };
 
-        if size_1 != size_2 {
-            None
-        } else {
-            Some(Self {
-                ptr,
-                data: SPhantomData::default(),
-            })
-        }
+        Some(Self {
+            ptr,
+            data: SPhantomData::default(),
+            size,
+            allocated,
+        })
     }
 
     pub(crate) fn get_ptr(&self) -> u64 {
@@ -147,12 +160,13 @@ impl<T> SSlice<T> {
     }
 
     pub(crate) fn get_meta(&self) -> (usize, bool) {
-        Self::read_meta(self.get_ptr())
+        (self.size, self.allocated)
     }
 
     pub(crate) fn set_allocated(&mut self, allocated: bool) {
         let (size, _) = self.get_meta();
         Self::write_meta(self.get_ptr(), size, allocated);
+        self.allocated = allocated;
     }
 
     pub unsafe fn clone(&self) -> Self {
@@ -245,7 +259,7 @@ impl<T> SSlice<T> {
         assert_eq!(actual, expected);
     }
 
-    fn read_meta(ptr: u64) -> (usize, bool) {
+    pub(crate) fn read_meta(ptr: u64) -> (usize, bool) {
         let mut meta = [0u8; CELL_META_SIZE as usize];
         stable::read(ptr, &mut meta);
 

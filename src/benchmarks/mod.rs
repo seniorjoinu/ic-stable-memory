@@ -2,6 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod binary_heap;
 mod btree_map;
+mod btree_set;
 mod hash_map;
 mod hash_set;
 mod vec;
