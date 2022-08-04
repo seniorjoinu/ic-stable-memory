@@ -210,7 +210,7 @@ for you anymore, even if you add it to the canister later.
 
 
 ## Benchmarks
-These benchmarks are run against testing environment, where I emulate stable memory with a huge vector.
+These benchmarks are run on my machine against testing environment, where I emulate stable memory with a huge vector.
 Performance difference in real canister should be less significant because of real stable memory.
 
 ### Vec
