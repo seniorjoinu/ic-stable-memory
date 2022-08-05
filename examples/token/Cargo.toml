@@ -19,4 +19,5 @@ ic-cdk = "0.5.1"
 ic-cdk-macros = "0.5.1"
 serde = "1.0.137"
 candid = "0.7.14"
+speedy = "0.8.2"
 ic-stable-memory = { path = "../../../ic-stable-memory" }

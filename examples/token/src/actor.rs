@@ -4,30 +4,32 @@ use ic_cdk::{caller, print};
 use ic_cdk_macros::{heartbeat, init, post_upgrade, pre_upgrade, query, update};
 use ic_stable_memory::collections::hash_map::SHashMap;
 use ic_stable_memory::collections::vec::SVec;
+use ic_stable_memory::utils::ic_types::SPrincipal;
 use ic_stable_memory::{
-    get_allocated_size, get_free_size, s, set_max_allocation_pages, set_max_grow_pages, stable,
-    stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade, PAGE_SIZE_BYTES,
+    get_allocated_size, get_free_size, s, set_max_grow_pages, stable, stable_memory_init,
+    stable_memory_post_upgrade, stable_memory_pre_upgrade, PAGE_SIZE_BYTES,
 };
+use speedy::{Readable, Writable};
 
-type AccountBalances = SHashMap<Principal, u64>;
+type AccountBalances = SHashMap<SPrincipal, u64>;
 type TransactionLedger = SVec<HistoryEntry>;
 type TotalSupply = u64;
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, Deserialize, Readable, Writable)]
 struct HistoryEntry {
-    pub from: Option<Principal>,
-    pub to: Option<Principal>,
+    pub from: Option<SPrincipal>,
+    pub to: Option<SPrincipal>,
     pub qty: u64,
     pub timestamp: u64,
 }
 
 #[update]
-fn mint(to: Principal, qty: u64) {
+fn mint(to: SPrincipal, qty: u64) {
     // update balances
     let mut balances = s!(AccountBalances);
     let balance = balances.get_cloned(&to).unwrap_or_default();
 
-    balances.insert(to, balance + qty);
+    balances.insert(to, &(balance + qty));
 
     s! { AccountBalances = balances };
 
@@ -49,18 +51,18 @@ fn mint(to: Principal, qty: u64) {
 }
 
 #[update]
-fn transfer(to: Principal, qty: u64) {
-    let from = caller();
+fn transfer(to: SPrincipal, qty: u64) {
+    let from = SPrincipal(caller());
 
     // update balances
     let mut balances = s!(AccountBalances);
 
     let from_balance = balances.get_cloned(&from).unwrap_or_default();
     assert!(from_balance >= qty, "Insufficient funds");
-    balances.insert(from, from_balance - qty);
+    balances.insert(from, &(from_balance - qty));
 
     let to_balance = balances.get_cloned(&to).unwrap_or_default();
-    balances.insert(to, to_balance + qty);
+    balances.insert(to, &(to_balance + qty));
 
     s! { AccountBalances = balances };
 
@@ -79,14 +81,14 @@ fn transfer(to: Principal, qty: u64) {
 
 #[update]
 fn burn(qty: u64) {
-    let from = caller();
+    let from = SPrincipal(caller());
 
     // update balances
     let mut balances = s!(AccountBalances);
     let from_balance = balances.get_cloned(&from).unwrap_or_default();
     assert!(from_balance >= qty, "Insufficient funds");
 
-    balances.insert(from, from_balance - qty);
+    balances.insert(from, &(from_balance - qty));
     s! { AccountBalances = balances };
 
     let total_supply = s!(TotalSupply);
@@ -106,7 +108,7 @@ fn burn(qty: u64) {
 }
 
 #[query]
-fn balance_of(of: Principal) -> u64 {
+fn balance_of(of: SPrincipal) -> u64 {
     s!(AccountBalances).get_cloned(&of).unwrap_or_default()
 }
 
@@ -169,7 +171,7 @@ fn post_upgrade() {
 #[heartbeat]
 fn tick() {
     for _ in 0..100 {
-        mint(Principal::management_canister(), 1000);
+        mint(SPrincipal(Principal::management_canister()), 1000);
     }
 }
 

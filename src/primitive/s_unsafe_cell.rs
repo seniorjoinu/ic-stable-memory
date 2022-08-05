@@ -167,6 +167,7 @@ impl<'a, T: Debug + Readable<'a, LittleEndian> + Writable<LittleEndian>> Debug f
     }
 }
 
+#[cfg(test)]
 mod tests {
     use crate::init_allocator;
     use crate::primitive::s_unsafe_cell::SUnsafeCell;
@@ -179,6 +180,7 @@ mod tests {
         pub b: String,
     }
 
+    #[test]
     fn candid_membox_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();

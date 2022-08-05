@@ -1,6 +1,6 @@
 [package]
 name = "ic-stable-memory"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Александр Втюрин <senior.joinu@gmail.com>"]
 edition = "2021"
 description = "Internet Computer's stable memory collections and tools"
@@ -14,3 +14,5 @@ path = "./src/lib.rs"
 [dependencies]
 ic-cdk = "0.5.5"
 speedy = "0.8.2"
+candid = "0.7.15"
+serde = "1.0.142"
