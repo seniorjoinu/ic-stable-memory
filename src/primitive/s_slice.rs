@@ -117,7 +117,7 @@ impl<T> SSlice<T> {
     /// This method may create a duplicate of the same underlying memory slice. Make sure, your logic
     /// doesn't do that.
     pub(crate) unsafe fn from_ptr(mut ptr: u64, side: Side) -> Option<Self> {
-        if ptr >= stable::size_pages() * PAGE_SIZE_BYTES as u64 || ptr == EMPTY_PTR || ptr == 0 {
+        if ptr >= stable::size_pages() * PAGE_SIZE_BYTES as u64 || ptr == EMPTY_PTR {
             return None;
         }
 
