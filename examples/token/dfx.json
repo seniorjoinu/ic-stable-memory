@@ -7,7 +7,7 @@
       "type": "custom"
     }
   },
-  "dfx": "0.10.1",
+  "dfx": "0.11.1",
   "networks": {
     "local": {
       "bind": "127.0.0.1:8000",

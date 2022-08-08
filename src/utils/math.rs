@@ -14,7 +14,7 @@ pub fn fast_log2_64(mut value: u64) -> u64 {
     value |= value >> 16;
     value |= value >> 32;
 
-    TAB64[(((value - (value >> 1)) * 0x07EDD5E59A4E28C2) >> 58) as usize]
+    TAB64[((Wrapping(value - (value >> 1)) * Wrapping(0x07EDD5E59A4E28C2)) >> 58).0 as usize]
 }
 
 const TAB32: [u32; 32] = [
@@ -29,7 +29,7 @@ pub fn fast_log2_32(mut value: u32) -> u32 {
     value |= value >> 8;
     value |= value >> 16;
 
-    TAB32[((value * 0x07C4ACDD) >> 27) as usize]
+    TAB32[((Wrapping(value) * Wrapping(0x07C4ACDD)) >> 27).0 as usize]
 }
 
 pub fn fast_log2(value: usize) -> u32 {

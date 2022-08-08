@@ -31,7 +31,8 @@ impl<'de> Deserialize<'de> for SPrincipal {
 
 impl<'a, C: Context> Readable<'a, C> for SPrincipal {
     fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
-        let mut buf = [0u8; 29];
+        let len = reader.read_u32()?;
+        let mut buf = vec![0u8; len as usize];
         reader.read_bytes(&mut buf)?;
 
         Ok(SPrincipal(Principal::from_slice(&buf)))
@@ -43,12 +44,32 @@ impl<C: Context> Writable<C> for SPrincipal {
         &self,
         writer: &mut T,
     ) -> Result<(), <C as speedy::Context>::Error> {
-        writer.write_bytes(self.0.as_slice())
+        let slice = self.0.as_slice();
+
+        writer.write_u32(slice.len() as u32)?;
+        writer.write_bytes(slice)
     }
 }
 
 impl Display for SPrincipal {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::ic_types::SPrincipal;
+    use candid::Principal;
+    use speedy::{Readable, Writable};
+
+    #[test]
+    fn works_fine() {
+        let p = SPrincipal(Principal::management_canister());
+        let p_s = p.write_to_vec().expect("unable to write");
+
+        let p1 = SPrincipal::read_from_buffer(&p_s).expect("unable to read");
+
+        assert_eq!(p, p1);
     }
 }
