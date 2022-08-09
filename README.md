@@ -21,7 +21,7 @@ With this Rust library you can:
 # cargo.toml
 
 [dependencies]
-ic-stable-memory = "0.2.0"
+ic-stable-memory = "0.2.3"
 ```
 
 ## Quick example
