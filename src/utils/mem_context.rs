@@ -1,5 +1,5 @@
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
-use std::io::Write;
+use std::cmp::min;
 
 pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
 
@@ -40,28 +40,96 @@ impl MemContext for StableMemContext {
 
 #[derive(Default, Clone)]
 pub(crate) struct TestMemContext {
-    pub data: Vec<u8>,
+    pub pages: Vec<[u8; PAGE_SIZE_BYTES]>,
 }
 
 impl MemContext for TestMemContext {
     fn size_pages(&self) -> u64 {
-        self.data.len() as u64 / PAGE_SIZE_BYTES as u64
+        self.pages.len() as u64
     }
 
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory> {
         let prev_pages = self.size_pages();
-        self.data
-            .resize(self.data.len() + PAGE_SIZE_BYTES * new_pages as usize, 0);
+
+        for _ in 0..new_pages {
+            self.pages.push([0u8; PAGE_SIZE_BYTES]);
+        }
 
         Ok(prev_pages)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        buf.clone_from_slice(&self.data[offset as usize..(offset as usize + buf.len())])
+        let start_page_idx = (offset / PAGE_SIZE_BYTES as u64) as usize;
+        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES as u64) as usize;
+        let start_page_size = min(PAGE_SIZE_BYTES - start_page_inner_idx, buf.len());
+
+        let (pages_in_between, last_page_size) = if start_page_size == buf.len() {
+            (0usize, 0usize)
+        } else {
+            (
+                (buf.len() - start_page_size) / PAGE_SIZE_BYTES,
+                (buf.len() - start_page_size) % PAGE_SIZE_BYTES,
+            )
+        };
+
+        // read first page
+        buf[0..start_page_size].copy_from_slice(
+            &self.pages[start_page_idx]
+                [start_page_inner_idx..(start_page_inner_idx + start_page_size)],
+        );
+
+        // read pages in-between
+        for i in 0..pages_in_between {
+            buf[(start_page_size + i * PAGE_SIZE_BYTES)
+                ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES)]
+                .copy_from_slice(&self.pages[start_page_idx + i + 1]);
+        }
+
+        // read last pages
+        if last_page_size == 0 {
+            return;
+        }
+
+        buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES)
+            ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES + last_page_size)]
+            .copy_from_slice(&self.pages[start_page_idx + pages_in_between + 1][0..last_page_size]);
     }
 
     fn write(&mut self, offset: u64, buf: &[u8]) {
-        self.data[(offset as usize)..(offset as usize + buf.len())].clone_from_slice(buf)
+        let start_page_idx = (offset / PAGE_SIZE_BYTES as u64) as usize;
+        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES as u64) as usize;
+        let start_page_size = min(PAGE_SIZE_BYTES - start_page_inner_idx, buf.len());
+
+        let (pages_in_between, last_page_size) = if start_page_size == buf.len() {
+            (0usize, 0usize)
+        } else {
+            (
+                (buf.len() - start_page_size) / PAGE_SIZE_BYTES,
+                (buf.len() - start_page_size) % PAGE_SIZE_BYTES,
+            )
+        };
+
+        // write to first page
+        self.pages[start_page_idx][start_page_inner_idx..(start_page_inner_idx + start_page_size)]
+            .copy_from_slice(&buf[0..start_page_size]);
+
+        // write to pages in-between
+        for i in 0..pages_in_between {
+            self.pages[start_page_idx + i + 1].copy_from_slice(
+                &buf[(start_page_size + i * PAGE_SIZE_BYTES)
+                    ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES)],
+            );
+        }
+
+        // write to last page
+        if last_page_size == 0 {
+            return;
+        }
+
+        self.pages[start_page_idx + pages_in_between + 1][0..last_page_size].copy_from_slice(
+            &buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES)
+                ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES + last_page_size)],
+        );
     }
 }
 
@@ -96,7 +164,7 @@ pub mod stable {
     }
 
     pub fn clear() {
-        CONTEXT.with(|it| it.borrow_mut().data.clear())
+        CONTEXT.with(|it| it.borrow_mut().pages.clear())
     }
 
     pub fn size_pages() -> u64 {
