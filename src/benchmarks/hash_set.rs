@@ -7,6 +7,7 @@ mod hash_set_benchmark {
     const ITERATIONS: usize = 100_000;
 
     #[test]
+    #[ignore]
     fn body() {
         {
             let mut classic_hash_set = HashSet::new();

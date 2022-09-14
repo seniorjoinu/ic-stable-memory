@@ -7,6 +7,7 @@ mod btree_map_benchmark {
     const ITERATIONS: usize = 10_000;
 
     #[test]
+    #[ignore]
     fn body() {
         {
             let mut classic_btree_map = BTreeMap::new();
@@ -45,7 +46,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree map search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.get(&i).unwrap();
+                    stable_btree_map.get_cloned(&i).unwrap();
                 }
             });
 

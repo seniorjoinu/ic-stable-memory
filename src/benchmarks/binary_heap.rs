@@ -7,6 +7,7 @@ mod binary_heap_benchmark {
     const ITERATIONS: usize = 1_000_000;
 
     #[test]
+    #[ignore]
     fn body() {
         {
             let mut classic_binary_heap = BinaryHeap::new();

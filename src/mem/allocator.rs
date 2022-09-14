@@ -323,7 +323,7 @@ impl SSlice<StableMemoryAllocator> {
         );
     }
 
-    pub fn get_custom_data_ptr(&mut self, idx: usize) -> u64 {
+    pub fn get_custom_data_ptr(&self, idx: usize) -> u64 {
         assert!(idx < CUSTOM_DATA_PTRS_COUNT);
 
         self._read_word(

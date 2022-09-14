@@ -1,7 +1,6 @@
 use crate::SUnsafeCell;
 use speedy::{LittleEndian, Readable, Writable};
 use std::cmp::Ordering;
-use std::fmt::Debug;
 
 const DEFAULT_BTREE_DEGREE: usize = 4096;
 
@@ -78,7 +77,7 @@ impl<
         }
     }
 
-    pub fn get(&self, key: &K) -> Option<V> {
+    pub fn get_cloned(&self, key: &K) -> Option<V> {
         self._get(&self.root, key)
     }
 
@@ -206,6 +205,8 @@ impl<
                 }
             }
             Err(idx) => {
+                let mut merged = false;
+
                 if node.is_leaf {
                     return None;
                 }
@@ -218,7 +219,7 @@ impl<
 
                     res
                 } else {
-                    if idx != 0 && idx + 2 < node.children.len() {
+                    if idx != 0 && idx + 1 < node.children.len() {
                         let left_child_sibling = node.children[idx - 1].get_cloned();
                         let right_child_sibling = node.children[idx + 1].get_cloned();
 
@@ -228,6 +229,7 @@ impl<
                             Self::delete_sibling(node, idx, idx + 1);
                         } else {
                             Self::delete_merge(node, idx, idx + 1);
+                            merged = true;
                         }
                     } else if idx == 0 {
                         let right_child_sibling = node.children[idx + 1].get_cloned();
@@ -236,6 +238,7 @@ impl<
                             Self::delete_sibling(node, idx, idx + 1);
                         } else {
                             Self::delete_merge(node, idx, idx + 1);
+                            merged = true;
                         }
                     } else if idx + 1 == node.children.len() {
                         let left_child_sibling = node.children[idx - 1].get_cloned();
@@ -244,10 +247,11 @@ impl<
                             Self::delete_sibling(node, idx, idx - 1);
                         } else {
                             Self::delete_merge(node, idx, idx - 1);
+                            merged = true;
                         }
                     }
 
-                    if node.is_leaf {
+                    if merged {
                         return Self::_delete(degree, node, key);
                     }
 
@@ -267,16 +271,6 @@ impl<
         key: &K,
         idx: usize,
     ) -> Option<V> {
-        let idx_key = node.keys[idx].get_cloned();
-
-        if node.is_leaf && idx_key.key.eq(key) {
-            let btree_key_cell = node.keys.remove(idx);
-            let btree_key = btree_key_cell.get_cloned();
-            btree_key_cell.drop();
-
-            return Some(btree_key.drop());
-        }
-
         let mut left_child = node.children[idx].get_cloned();
         let mut right_child = node.children[idx + 1].get_cloned();
 
@@ -304,17 +298,7 @@ impl<
             Some(btree_key.drop())
         } else {
             Self::delete_merge(node, idx, idx + 1);
-
-            if node.is_root {
-                Self::_delete(degree, node, key)
-            } else {
-                let mut left_child = node.children[idx].get_cloned();
-                let res = Self::delete_internal_node(degree, &mut left_child, key, degree - 1);
-
-                unsafe { node.children[idx].set(&left_child) };
-
-                res
-            }
+            Self::_delete(degree, node, key)
         }
     }
 
@@ -348,7 +332,7 @@ impl<
             return child.keys.remove(0);
         }
 
-        let grand_child = child.children[1].get_cloned();
+        let grand_child = child.children[0].get_cloned();
 
         if grand_child.keys.len() >= degree {
             Self::delete_sibling(child, 0, 1);
@@ -356,7 +340,7 @@ impl<
             Self::delete_merge(child, 0, 1);
         }
 
-        let mut grand_child = child.children[1].get_cloned();
+        let mut grand_child = child.children[0].get_cloned();
         let res = Self::delete_successor(degree, &mut grand_child);
 
         unsafe { child.children[0].set(&grand_child) };
@@ -561,91 +545,99 @@ impl<
     }
 }
 
-fn btree_to_sorted_vec<
-    'a,
-    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Clone,
-    V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
->(
-    btree_node: &BTreeNode<K, V>,
-    vec: &mut Vec<(K, V)>,
-) {
-    for i in 0..btree_node.keys.len() {
-        if let Some(child) = btree_node.children.get(i).map(|it| it.get_cloned()) {
-            btree_to_sorted_vec(&child, vec);
-        }
-        let btree_key = &btree_node.keys[i].get_cloned();
-        vec.push((btree_key.key.clone(), btree_key.value_cell.get_cloned()));
-    }
-
-    if let Some(child) = btree_node
-        .children
-        .get(btree_node.keys.len())
-        .map(|it| it.get_cloned())
-    {
-        btree_to_sorted_vec(&child, vec);
-    }
-}
-
-fn print_btree<
-    'a,
-    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
-    V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
->(
-    btree: &SBTreeMap<K, V>,
-) {
-    let mut nodes_1 = print_btree_level(&btree.root);
-    println!();
-
-    loop {
-        let mut nodes_2 = vec![];
-
-        for node in &nodes_1 {
-            let res = print_btree_level(node);
-
-            for n in res {
-                nodes_2.push(n);
-            }
-        }
-
-        println!();
-
-        if nodes_2.is_empty() {
-            break;
-        }
-
-        nodes_1 = nodes_2;
-    }
-}
-
-fn print_btree_level<
-    'a,
-    K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
-    V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
->(
-    btree_node: &BTreeNode<K, V>,
-) -> Vec<BTreeNode<K, V>> {
-    let mut children = vec![];
-
-    print!(
-        "{:?}",
-        btree_node
-            .keys
-            .iter()
-            .map(|it| (it.get_cloned().key, it.get_cloned().value_cell.get_cloned()))
-            .collect::<Vec<_>>()
-    );
-
-    for ch in &btree_node.children {
-        children.push(ch.get_cloned());
-    }
-
-    children
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::{btree_to_sorted_vec, print_btree, SBTreeMap};
+    use crate::collections::btree_map::{BTreeKey, BTreeNode, SBTreeMap};
     use crate::{init_allocator, stable};
+    use speedy::{LittleEndian, Readable, Writable};
+    use std::cmp::min;
+    use std::fmt::Debug;
+
+    #[ignore]
+    fn btree_to_sorted_vec<
+        'a,
+        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Clone,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    >(
+        btree_node: &BTreeNode<K, V>,
+        vec: &mut Vec<(K, V)>,
+    ) {
+        for i in 0..btree_node.keys.len() {
+            if let Some(child) = btree_node.children.get(i).map(|it| it.get_cloned()) {
+                btree_to_sorted_vec(&child, vec);
+            }
+            let btree_key = &btree_node.keys[i].get_cloned();
+            vec.push((btree_key.key.clone(), btree_key.value_cell.get_cloned()));
+        }
+
+        if let Some(child) = btree_node
+            .children
+            .get(btree_node.keys.len())
+            .map(|it| it.get_cloned())
+        {
+            btree_to_sorted_vec(&child, vec);
+        }
+    }
+
+    #[ignore]
+    fn print_btree<
+        'a,
+        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+    >(
+        btree: &SBTreeMap<K, V>,
+    ) {
+        let mut nodes_1 = print_btree_level(&btree.root);
+        println!();
+
+        loop {
+            let mut nodes_2 = vec![];
+
+            for node in &nodes_1 {
+                let res = print_btree_level(node);
+
+                for n in res {
+                    nodes_2.push(n);
+                }
+            }
+
+            println!();
+
+            if nodes_2.is_empty() {
+                break;
+            }
+
+            nodes_1 = nodes_2;
+        }
+    }
+
+    #[ignore]
+    fn print_btree_level<
+        'a,
+        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+    >(
+        btree_node: &BTreeNode<K, V>,
+    ) -> Vec<BTreeNode<K, V>> {
+        let mut children = vec![];
+
+        print!(
+            "( is_leaf: {}, is_root: {} - {:?} )",
+            btree_node.is_leaf,
+            btree_node.is_root,
+            btree_node
+                .keys
+                .iter()
+                .map(|it| (it.get_cloned().key, it.get_cloned().value_cell.get_cloned()))
+                .collect::<Vec<_>>()
+        );
+
+        for ch in &btree_node.children {
+            children.push(ch.get_cloned());
+        }
+
+        children
+    }
 
     #[test]
     fn random_works_as_expected() {
@@ -779,5 +771,158 @@ mod tests {
         }
 
         map.drop();
+    }
+
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::new();
+
+        let prev = map.insert(1, &10);
+        assert!(prev.is_none());
+
+        let val = map.get_cloned(&1).unwrap();
+        assert_eq!(val, 10);
+        assert!(map.contains_key(&1));
+
+        map.insert(2, &20);
+        map.insert(3, &30);
+        map.insert(4, &40);
+        map.insert(5, &50);
+
+        let val = map.insert(3, &130).unwrap();
+        assert_eq!(val, 30);
+
+        assert!(!map.contains_key(&99));
+        assert!(map.remove(&99).is_none());
+
+        map.drop();
+
+        let map = SBTreeMap::<u64, u64>::default();
+    }
+
+    #[test]
+    fn deletion_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(5);
+
+        for i in 0..50 {
+            map.insert(i + 10, &i);
+        }
+
+        let val = map.insert(13, &130).unwrap();
+        assert_eq!(val, 3);
+
+        let val1 = map.get_cloned(&13).unwrap();
+        assert_eq!(val1, 130);
+
+        assert!(!map.contains_key(&99));
+        assert!(map.remove(&99).is_none());
+
+        map.insert(13, &3);
+        assert_eq!(map.remove(&16).unwrap(), 6);
+
+        map.insert(16, &6);
+        map.insert(9, &90);
+
+        assert_eq!(map.remove(&16).unwrap(), 6);
+
+        map.insert(16, &6);
+        assert_eq!(map.remove(&9).unwrap(), 90);
+        assert_eq!(map.remove(&53).unwrap(), 43);
+
+        map.insert(60, &70);
+        map.insert(61, &71);
+        assert_eq!(map.remove(&58).unwrap(), 48);
+
+        map.drop();
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(5);
+
+        for i in 0..50 {
+            map.insert(i * 2, &i);
+        }
+
+        map.insert(85, &1);
+        assert_eq!(map.remove(&88).unwrap(), 44);
+
+        map.drop();
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+
+        for i in 0..50 {
+            map.insert(i * 2, &i);
+        }
+
+        map.remove(&94);
+        map.remove(&96);
+        map.remove(&98);
+
+        assert_eq!(map.remove(&88).unwrap(), 44);
+
+        map.insert(81, &1);
+        map.insert(83, &1);
+        map.insert(94, &1);
+        map.insert(85, &1);
+
+        assert_eq!(map.remove(&86).unwrap(), 43);
+
+        map.insert(71, &1);
+        map.insert(73, &1);
+        map.insert(75, &1);
+        map.insert(77, &1);
+        map.insert(79, &1);
+
+        map.insert(47, &1);
+        map.insert(49, &1);
+        map.insert(51, &1);
+        map.insert(53, &1);
+        map.insert(55, &1);
+        map.insert(57, &1);
+        map.insert(59, &1);
+        map.insert(61, &1);
+        map.insert(63, &1);
+        map.insert(65, &1);
+        map.insert(67, &1);
+        map.insert(69, &1);
+
+        print_btree(&map);
+
+        map.drop();
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+
+        for i in 150..300 {
+            map.insert(i, &i);
+        }
+        for i in 0..150 {
+            map.insert(i, &i);
+        }
+
+        assert_eq!(map.remove(&203).unwrap(), 203);
+        assert_eq!(map.remove(&80).unwrap(), 80);
+
+        print_btree(&map);
+
+        map.drop();
+    }
+
+    #[test]
+    fn keys_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let key1 = BTreeKey::new(10, &20);
+        let key2 = BTreeKey::new(20, &20);
+
+        assert!(key1 < key2);
+        assert!(min(key1, key2) == BTreeKey::new(10, &20));
     }
 }

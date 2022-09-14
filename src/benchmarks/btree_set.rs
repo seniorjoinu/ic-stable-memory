@@ -7,6 +7,7 @@ mod btree_map_benchmark {
     const ITERATIONS: usize = 10_000;
 
     #[test]
+    #[ignore]
     fn body() {
         {
             let mut classic_btree_set = BTreeSet::new();

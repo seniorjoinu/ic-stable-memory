@@ -174,6 +174,25 @@ mod tests {
     use crate::utils::mem_context::stable;
     use speedy::{Readable, Writable};
 
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut c = SUnsafeCell::new(&123);
+        let size = c._allocated_size();
+        assert!(size > 0);
+
+        let d = c.get_cloned();
+        assert_eq!(d, 123);
+
+        let realloc = unsafe { c.set(&1000) };
+        assert!(!realloc);
+
+        c.drop();
+    }
+
     #[derive(Readable, Writable, Debug, PartialEq, Eq)]
     struct Test {
         pub a: u128,
@@ -181,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn candid_membox_works_fine() {
+    fn speedy_membox_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();
         init_allocator(0);
@@ -195,5 +214,18 @@ mod tests {
         let obj1 = membox.get_cloned();
 
         assert_eq!(obj, obj1);
+    }
+
+    #[test]
+    fn to_ptr_from_ptr_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let c = SUnsafeCell::new(&123);
+        let c_ptr = unsafe { c.as_ptr() };
+        let c1 = unsafe { SUnsafeCell::<i32>::from_ptr(c_ptr) };
+
+        assert_eq!(c, c1);
     }
 }

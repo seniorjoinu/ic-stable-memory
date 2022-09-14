@@ -7,6 +7,7 @@ mod vec_benchmark {
     const ITERATIONS: usize = 1_000_000;
 
     #[test]
+    #[ignore]
     fn body() {
         {
             let mut classic_vec = Vec::new();

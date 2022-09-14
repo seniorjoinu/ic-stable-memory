@@ -1,5 +1,6 @@
 use candid::types::{Serializer, Type};
-use candid::{CandidType, Deserialize, Principal};
+use candid::{CandidType, Deserialize, Nat, Principal};
+use num_bigint::BigUint;
 use serde::Deserializer;
 use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::fmt::{Display, Formatter};
@@ -52,6 +53,59 @@ impl<C: Context> Writable<C> for SPrincipal {
 }
 
 impl Display for SPrincipal {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SNat(pub Nat);
+
+impl CandidType for SNat {
+    fn _ty() -> Type {
+        Nat::_ty()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.idl_serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SNat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(SNat(Nat::deserialize(deserializer)?))
+    }
+}
+
+impl<'a, C: Context> Readable<'a, C> for SNat {
+    fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
+        let len = reader.read_u32()?;
+        let mut buf = vec![0u8; len as usize];
+        reader.read_bytes(&mut buf)?;
+
+        Ok(SNat(Nat::from(BigUint::from_bytes_le(&buf))))
+    }
+}
+
+impl<C: Context> Writable<C> for SNat {
+    fn write_to<T: ?Sized + Writer<C>>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), <C as speedy::Context>::Error> {
+        let slice = self.0 .0.to_bytes_le();
+
+        writer.write_u32(slice.len() as u32)?;
+        writer.write_bytes(&slice)
+    }
+}
+
+impl Display for SNat {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }

@@ -186,7 +186,9 @@ mod tests {
         stable_memory_init(true, 0);
 
         let example = vec![10u32, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        let mut max_heap = SBinaryHeap::<u32>::new(SHeapType::Max);
+        let mut max_heap = SBinaryHeap::<u32>::default();
+
+        assert!(max_heap.is_empty());
 
         // insert example values in random order
         max_heap.push(&80);
@@ -199,6 +201,8 @@ mod tests {
         max_heap.push(&20);
         max_heap.push(&40);
         max_heap.push(&30);
+
+        assert_eq!(max_heap.peek().unwrap(), 100);
 
         let mut probe = vec![];
 
@@ -217,6 +221,8 @@ mod tests {
         // probe should be the same as example
         assert_eq!(probe, example, "Invalid elements order (max)");
 
+        max_heap.drop();
+
         // it should also work for the min heap
         let example = vec![100u32, 90, 90, 80, 70, 50, 40, 30, 20, 10];
         let mut min_heap = SBinaryHeap::<u32>::new(SHeapType::Min);
@@ -232,6 +238,8 @@ mod tests {
         min_heap.push(&20);
         min_heap.push(&40);
         min_heap.push(&30);
+
+        assert_eq!(min_heap.peek().unwrap(), 10);
 
         let mut probe = vec![];
 
@@ -249,5 +257,7 @@ mod tests {
 
         // probe should be the same as example
         assert_eq!(probe, example, "Invalid elements order (min)");
+
+        min_heap.drop();
     }
 }

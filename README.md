@@ -294,3 +294,6 @@ This is an emerging software, so any help is greatly appreciated.
 Feel free to propose PR's, architecture tips, bug reports or any other feedback.
 
 You can reach me out via [Telegram](https://t.me/joinu14), if I don't answer here for too long.
+
+## Test coverage
+`cargo tarpaulin`
