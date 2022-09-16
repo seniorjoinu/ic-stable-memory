@@ -11,10 +11,6 @@ pub(crate) trait MemContext {
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory>;
     fn read(&self, offset: u64, buf: &mut [u8]);
     fn write(&mut self, offset: u64, buf: &[u8]);
-
-    fn offset_exists(&self, offset: u64) -> bool {
-        self.size_pages() * PAGE_SIZE_BYTES as u64 >= offset
-    }
 }
 
 #[derive(Clone)]
@@ -181,5 +177,24 @@ pub mod stable {
 
     pub fn write(offset: u64, buf: &[u8]) {
         CONTEXT.with(|it| it.borrow_mut().write(offset, buf))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{stable, PAGE_SIZE_BYTES};
+
+    #[test]
+    fn big_reads_writes_work_fine() {
+        stable::clear();
+        stable::grow(10).unwrap();
+
+        let buf = [10u8; PAGE_SIZE_BYTES * 10];
+        stable::write(0, &buf);
+
+        let mut buf1 = [0u8; PAGE_SIZE_BYTES * 10 - 50];
+        stable::read(25, &mut buf1);
+
+        assert_eq!(buf[25..PAGE_SIZE_BYTES * 10 - 25], buf1);
     }
 }

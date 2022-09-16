@@ -1,6 +1,6 @@
 THIS IS __NOT__ A BATTLE-TESTED SOFTWARE; USE AT YOUR OWN RISK
 
-![test coverage 72.64%](https://badgen.net/badge/coverage/72.64%25/yellow)
+![test coverage 72.64%](https://badgen.net/badge/coverage/95.72%25/green)
 
 # IC Stable Memory
 
@@ -295,5 +295,6 @@ Feel free to propose PR's, architecture tips, bug reports or any other feedback.
 
 You can reach me out via [Telegram](https://t.me/joinu14), if I don't answer here for too long.
 
-## Test coverage
-`cargo tarpaulin`
+## Test coverage check
+* `cargo install tarpaulin`
+* `cargo tarpaulin`

@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 
 const DEFAULT_BTREE_DEGREE: usize = 4096;
 
-/// FIXME: OOMs work really bad - I can't put my finger on that recursion
 #[derive(Readable, Writable)]
 pub struct SBTreeMap<K, V> {
     root: BTreeNode<K, V>,
@@ -548,9 +547,10 @@ impl<
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::{BTreeKey, BTreeNode, SBTreeMap};
+    use crate::utils::isoprint;
     use crate::{init_allocator, stable};
     use speedy::{LittleEndian, Readable, Writable};
-    use std::cmp::min;
+    use std::cmp::{max, min};
     use std::fmt::Debug;
 
     #[ignore]
@@ -588,7 +588,7 @@ mod tests {
         btree: &SBTreeMap<K, V>,
     ) {
         let mut nodes_1 = print_btree_level(&btree.root);
-        println!();
+        isoprint("");
 
         loop {
             let mut nodes_2 = vec![];
@@ -601,7 +601,7 @@ mod tests {
                 }
             }
 
-            println!();
+            isoprint("");
 
             if nodes_2.is_empty() {
                 break;
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(val, 10);
         assert!(map.contains_key(&1));
 
-        map.insert(2, &20);
+        assert!(map.insert(2, &20).is_none());
         map.insert(3, &30);
         map.insert(4, &40);
         map.insert(5, &50);
@@ -914,15 +914,65 @@ mod tests {
     }
 
     #[test]
+    fn complex_deletes_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+
+        for i in 0..75 {
+            map.insert(i, &i);
+        }
+
+        for i in 0..75 {
+            map.insert(150 - i, &i);
+        }
+
+        for i in 0..150 {
+            let j = if i % 2 == 0 { i } else { 150 - i };
+
+            if j % 3 == 0 {
+                map.remove(&j);
+            }
+        }
+
+        map.drop();
+
+        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+
+        for i in 0..150 {
+            map.insert(150 - i, &i);
+        }
+
+        for i in 0..150 {
+            map.remove(&(150 - i));
+        }
+
+        map.drop();
+    }
+
+    #[test]
     fn keys_work_fine() {
         stable::clear();
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let key1 = BTreeKey::new(10, &20);
-        let key2 = BTreeKey::new(20, &20);
+        assert!(BTreeKey::new(10, &20) < BTreeKey::new(20, &20));
+        assert!(min(BTreeKey::new(10, &20), BTreeKey::new(20, &20)) == BTreeKey::new(10, &20));
+        assert!(max(BTreeKey::new(10, &20), BTreeKey::new(20, &20)) == BTreeKey::new(20, &20));
 
-        assert!(key1 < key2);
-        assert!(min(key1, key2) == BTreeKey::new(10, &20));
+        assert!(
+            BTreeKey::new(9, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
+                == BTreeKey::new(10, &20)
+        );
+        assert!(
+            BTreeKey::new(21, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
+                == BTreeKey::new(20, &20)
+        );
+        assert!(
+            BTreeKey::new(15, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
+                == BTreeKey::new(15, &20)
+        );
     }
 }

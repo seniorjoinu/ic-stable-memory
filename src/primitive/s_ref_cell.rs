@@ -13,6 +13,7 @@ enum SRefCellState {
 #[derive(Readable, Writable)]
 pub struct SRefCell<T> {
     inner_ptr: u64,
+    // TODO: state is ignored by now
     state: SRefCellState,
     _marker: SPhantomData<T>,
 }
@@ -34,6 +35,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
         }
     }
 
+    // TODO: transform into borrow
     pub fn get_cloned(&self) -> T {
         let slice_of_inner_ptr =
             unsafe { SSlice::<u64>::from_ptr(self.inner_ptr, Side::Start).unwrap() };
@@ -46,7 +48,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
         T::read_from_buffer_copying_data(&buf).unwrap()
     }
 
-    pub fn set(&mut self, it: &T) {
+    // TODO: transform into borrow_mut
+    pub fn set(&self, it: &T) {
         let buf = it.write_to_vec().unwrap();
 
         let slice_of_inner_ptr =
@@ -64,5 +67,43 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
         };
 
         slice_of_data._write_bytes(0, &buf);
+    }
+
+    pub fn drop(self) {
+        let slice_of_inner_ptr =
+            unsafe { SSlice::<u64>::from_ptr(self.inner_ptr, Side::Start).unwrap() };
+        let ptr = slice_of_inner_ptr._read_word(0);
+        let slice_of_data = unsafe { SSlice::<T>::from_ptr(ptr, Side::Start).unwrap() };
+
+        deallocate(slice_of_data);
+        deallocate(slice_of_inner_ptr);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::primitive::s_ref_cell::SRefCell;
+    use crate::{init_allocator, stable};
+
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let refcell = SRefCell::new(&String::from("one"));
+        assert_eq!(refcell.get_cloned(), String::from("one"));
+
+        refcell.set(&String::from("two"));
+
+        refcell.set(&String::from(
+            "two three four five six seven eight nine ten",
+        ));
+        assert_eq!(
+            refcell.get_cloned(),
+            String::from("two three four five six seven eight nine ten")
+        );
+
+        refcell.drop();
     }
 }

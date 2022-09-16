@@ -112,10 +112,7 @@ impl<'a, T: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>> Ord for S
     where
         Self: Sized,
     {
-        let self_val = self.get_cloned();
-        let other_val = other.get_cloned();
-
-        if other_val > self_val {
+        if other > self {
             other
         } else {
             self
@@ -126,10 +123,7 @@ impl<'a, T: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>> Ord for S
     where
         Self: Sized,
     {
-        let self_val = self.get_cloned();
-        let other_val = other.get_cloned();
-
-        if other_val < self_val {
+        if other < self {
             other
         } else {
             self
@@ -140,18 +134,13 @@ impl<'a, T: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>> Ord for S
     where
         Self: Sized,
     {
-        let self_val = self.get_cloned();
-        let min_val = min.get_cloned();
-        if min_val > self_val {
-            return min;
+        if self < min {
+            min
+        } else if self > max {
+            max
+        } else {
+            self
         }
-
-        let max_val = max.get_cloned();
-        if max_val < self_val {
-            return max;
-        }
-
-        self
     }
 }
 
@@ -173,6 +162,9 @@ mod tests {
     use crate::primitive::s_unsafe_cell::SUnsafeCell;
     use crate::utils::mem_context::stable;
     use speedy::{Readable, Writable};
+    use std::cmp::{max, min};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hash;
 
     #[test]
     fn basic_flow_works_fine() {
@@ -227,5 +219,55 @@ mod tests {
         let c1 = unsafe { SUnsafeCell::<i32>::from_ptr(c_ptr) };
 
         assert_eq!(c, c1);
+    }
+
+    #[test]
+    fn coverage_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut cell = SUnsafeCell::new(&String::from("one"));
+        let should_reallocate_parent =
+            unsafe { cell.set(&String::from("two three four five six")) };
+        assert!(should_reallocate_parent);
+
+        let mut cell1 = SUnsafeCell::new(&String::from("ten eleven tvelwe"));
+
+        cell.cmp(&cell1);
+
+        assert_eq!(
+            max(
+                SUnsafeCell::new(&String::from("one")),
+                SUnsafeCell::new(&String::from("ten eleven tvelwe"))
+            ),
+            SUnsafeCell::new(&String::from("ten eleven tvelwe"))
+        );
+        assert_eq!(
+            min(
+                SUnsafeCell::new(&String::from("two three four five six")),
+                SUnsafeCell::new(&String::from("ten eleven tvelwe"))
+            ),
+            SUnsafeCell::new(&String::from("ten eleven tvelwe"))
+        );
+
+        assert_eq!(
+            SUnsafeCell::new(&9).clamp(SUnsafeCell::new(&10), SUnsafeCell::new(&20)),
+            SUnsafeCell::new(&10)
+        );
+        assert_eq!(
+            SUnsafeCell::new(&21).clamp(SUnsafeCell::new(&10), SUnsafeCell::new(&20)),
+            SUnsafeCell::new(&20)
+        );
+        assert_eq!(
+            SUnsafeCell::new(&15).clamp(SUnsafeCell::new(&10), SUnsafeCell::new(&20)),
+            SUnsafeCell::new(&15)
+        );
+
+        let cell = SUnsafeCell::new(&String::from("one"));
+        let mut hasher = DefaultHasher::new();
+        cell.hash(&mut hasher);
+
+        format!("{:?}", cell);
     }
 }

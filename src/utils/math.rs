@@ -6,6 +6,7 @@ const TAB64: [u64; 64] = [
     45, 25, 31, 35, 16, 9, 12, 44, 24, 15, 8, 23, 7, 6, 5,
 ];
 
+#[ignore]
 pub fn fast_log2_64(mut value: u64) -> u64 {
     value |= value >> 1;
     value |= value >> 2;
@@ -22,6 +23,7 @@ const TAB32: [u32; 32] = [
     27, 23, 6, 26, 5, 4, 31,
 ];
 
+#[ignore]
 pub fn fast_log2_32(mut value: u32) -> u32 {
     value |= value >> 1;
     value |= value >> 2;
@@ -32,6 +34,7 @@ pub fn fast_log2_32(mut value: u32) -> u32 {
     TAB32[((Wrapping(value) * Wrapping(0x07C4ACDD)) >> 27).0 as usize]
 }
 
+#[ignore]
 pub fn fast_log2(value: usize) -> u32 {
     if usize::MAX == u32::MAX as usize {
         fast_log2_32(value as u32) as u32

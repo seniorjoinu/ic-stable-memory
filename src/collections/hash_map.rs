@@ -154,7 +154,9 @@ impl<
             let elem = bucket.get_cloned(i).unwrap();
 
             if elem.key.eq(key) {
-                bucket.swap(i, bucket.len() - 1);
+                if i < bucket.len() - 1 {
+                    bucket.swap(i, bucket.len() - 1);
+                }
                 let elem = bucket.pop().unwrap();
 
                 prev = Some(elem.val.get_cloned());
@@ -165,11 +167,14 @@ impl<
             }
         }
 
-        unsafe {
-            let should_update = bucket_box.set(&bucket);
+        if prev.is_some() {
+            unsafe {
+                let should_update = bucket_box.set(&bucket);
 
-            if should_update {
-                self.set_bucket(idx, &bucket_box);
+                // yea, this won't trigger with current vec's implementation
+                if should_update {
+                    self.set_bucket(idx, &bucket_box);
+                }
             }
         }
 
@@ -209,6 +214,10 @@ impl<
     }
 
     pub fn drop(self) {
+        if self._info._table.is_none() {
+            return;
+        }
+
         for i in 0..self._info._table_capacity {
             let bucket_box_opt = self.read_bucket(i as usize);
             if let Some(bb) = bucket_box_opt {
@@ -333,5 +342,41 @@ mod tests {
 
         let map = SHashMap::new_with_capacity(3);
         test_body(map);
+    }
+
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::<u64, u64>::default();
+
+        assert!(map.remove(&10).is_none());
+        assert!(map.get_cloned(&10).is_none());
+
+        assert!(map.insert(1, &1).is_none());
+        assert!(map.insert(2, &2).is_none());
+        assert!(map.insert(3, &3).is_none());
+        assert_eq!(map.insert(1, &10).unwrap(), 1);
+
+        assert!(map.remove(&5).is_none());
+        assert_eq!(map.remove(&1).unwrap(), 10);
+
+        assert!(map.contains_key(&2));
+        assert!(!map.contains_key(&5));
+
+        map.drop();
+
+        let mut map = SHashMap::<u64, u64>::new_with_capacity(3);
+        for i in 0..100 {
+            map.insert(i, &i);
+        }
+
+        for i in 0..100 {
+            assert_eq!(map.remove(&(99 - i)).unwrap(), 99 - i);
+        }
+
+        map.drop();
     }
 }

@@ -50,12 +50,7 @@ impl<T> SSlice<T> {
     pub fn _write_bytes(&self, offset: usize, data: &[u8]) {
         let size = self.get_size_bytes();
 
-        assert!(
-            offset + data.len() <= size,
-            "MemBox overflow (max {}, provided {})",
-            size,
-            offset + data.len()
-        );
+        assert!(offset + data.len() <= size);
 
         stable::write(self.get_ptr() + (CELL_META_SIZE + offset) as u64, data);
     }
@@ -68,12 +63,7 @@ impl<T> SSlice<T> {
     pub fn _read_bytes(&self, offset: usize, data: &mut [u8]) {
         let size = self.get_size_bytes();
 
-        assert!(
-            data.len() + offset <= size,
-            "MemBox overflow (max {}, provided {})",
-            size,
-            data.len() + offset
-        );
+        assert!(data.len() + offset <= size);
 
         stable::read(self.get_ptr() + (CELL_META_SIZE + offset) as u64, data);
     }
@@ -88,20 +78,17 @@ impl<T> SSlice<T> {
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox`, before creating.
     pub(crate) unsafe fn new(ptr: u64, size: usize, allocated: bool) -> Self {
-        assert!(
-            size >= CELL_MIN_SIZE,
-            "Size lesser than {} ({})",
-            CELL_MIN_SIZE,
-            size
-        );
+        assert!(size >= CELL_MIN_SIZE);
         assert!(size < ALLOCATED, "Size is bigger than {} ({})", FREE, size);
         assert!(ptr < stable::size_pages() * PAGE_SIZE_BYTES as u64);
 
         Self::write_meta(ptr, size, allocated);
 
+        let data = SPhantomData::default();
+
         Self {
             ptr,
-            data: SPhantomData::default(),
+            data,
             size,
             allocated,
         }
@@ -147,12 +134,15 @@ impl<T> SSlice<T> {
             }
         };
 
-        Some(Self {
+        let data = SPhantomData::default();
+        let it = Self {
             ptr,
-            data: SPhantomData::default(),
+            data,
             size,
             allocated,
-        })
+        };
+
+        Some(it)
     }
 
     pub(crate) fn get_ptr(&self) -> u64 {
@@ -180,12 +170,7 @@ impl<T> SSlice<T> {
     /// # Safety
     /// Make sure there are no duplicates of this `MemBox` left before splitting.
     pub(crate) unsafe fn split(self, size_first: usize) -> Result<(Self, Self), Self> {
-        assert!(
-            size_first >= CELL_MIN_SIZE,
-            "Size lesser than {} ({})",
-            CELL_MIN_SIZE,
-            size_first
-        );
+        assert!(size_first >= CELL_MIN_SIZE);
 
         let (size, allocated) = self.get_meta();
         self.assert_allocated(false, Some(allocated));

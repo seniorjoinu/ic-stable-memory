@@ -1,9 +1,10 @@
 use crate::primitive::s_slice::{Side, CELL_MIN_SIZE, PTR_SIZE};
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
+use crate::utils::{isoprint, isotrap};
 use crate::SSlice;
 use ic_cdk::api::call::call_raw;
-use ic_cdk::{id, print, spawn, trap};
+use ic_cdk::{id, spawn};
 use std::fmt::{Debug, Formatter};
 use std::usize;
 
@@ -71,7 +72,7 @@ impl SSlice<StableMemoryAllocator> {
 
         let free_membox = match self.pop_allocated_membox(size) {
             Ok(m) => m,
-            Err(_) => trap(format!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size()).as_str())
+            Err(_) => isotrap!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size())
         };
 
         self.handle_free_buffer();
@@ -460,7 +461,7 @@ impl SSlice<StableMemoryAllocator> {
             return;
         }
 
-        print(
+        isoprint(
             format!(
                 "Low on stable memory, triggering {}()...",
                 LOW_ON_MEMORY_HOOK_NAME
@@ -468,16 +469,18 @@ impl SSlice<StableMemoryAllocator> {
             .as_str(),
         );
 
-        spawn(async {
-            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &EMPTY_ARGS, 0)
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "Unable to trigger {}(), failing silently...",
-                        LOW_ON_MEMORY_HOOK_NAME
-                    )
-                });
-        });
+        if cfg!(wasm) {
+            spawn(async {
+                call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &EMPTY_ARGS, 0)
+                    .await
+                    .unwrap_or_else(|_| {
+                        isotrap!(
+                            "Unable to trigger {}(), failing silently...",
+                            LOW_ON_MEMORY_HOOK_NAME
+                        )
+                    });
+            });
+        }
 
         self.set_on_low_executed_flag(true);
     }
@@ -604,9 +607,12 @@ impl Debug for SSlice<Free> {
 
 #[cfg(test)]
 mod tests {
-    use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
+    use crate::mem::allocator::{
+        DEFAULT_MAX_ALLOCATION_PAGES, DEFAULT_MAX_GROW_PAGES, SEG_CLASS_PTRS_COUNT,
+    };
     use crate::utils::mem_context::stable;
-    use crate::{SSlice, StableMemoryAllocator};
+    use crate::{deinit_allocator, init_allocator, isoprint, SSlice, StableMemoryAllocator};
+    use std::panic;
 
     #[test]
     fn initialization_works_fine() {
@@ -680,6 +686,64 @@ mod tests {
             }
 
             assert_eq!(sma.get_allocated_size(), 0);
+        }
+    }
+
+    #[test]
+    fn basic_flow_works_fine() {
+        unsafe {
+            stable::clear();
+            stable::grow(1).unwrap();
+
+            let mut allocator = SSlice::<StableMemoryAllocator>::init(0);
+            assert!(SSlice::<StableMemoryAllocator>::reinit(100).is_none());
+
+            allocator.set_max_allocation_pages(1);
+            allocator.set_max_grow_pages(1);
+            let membox1 = allocator.allocate::<()>(100);
+
+            let it = panic::catch_unwind(move || {
+                allocator.allocate::<()>(2usize.pow(16) + 1);
+            });
+            assert!(it.is_err());
+
+            let mut allocator = SSlice::<StableMemoryAllocator>::reinit(0).unwrap();
+
+            allocator.set_max_grow_pages(DEFAULT_MAX_GROW_PAGES);
+            allocator.set_max_allocation_pages(DEFAULT_MAX_ALLOCATION_PAGES);
+
+            let membox2 = allocator.allocate::<()>(100);
+            let membox3 = allocator.allocate::<()>(100);
+
+            allocator.deallocate(membox3);
+
+            isoprint(format!("{:?}", &allocator).as_str());
+        }
+    }
+
+    #[test]
+    fn random_deallocations_work_fine() {
+        unsafe {
+            stable::clear();
+            stable::grow(1).unwrap();
+
+            let mut allocator = SSlice::<StableMemoryAllocator>::init(0);
+
+            let mut b = Vec::new();
+
+            for i in 1..151 {
+                b.push(Some(allocator.allocate::<()>(8 * i)));
+            }
+
+            for i in 0..75 {
+                let j = if i % 2 == 0 { i } else { 149 - i };
+                let it = b.remove(j).unwrap();
+                b.insert(j, None);
+
+                allocator.deallocate(it);
+
+                format!("{:?}", &allocator);
+            }
         }
     }
 }

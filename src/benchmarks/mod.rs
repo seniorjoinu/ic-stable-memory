@@ -7,6 +7,7 @@ mod hash_map;
 mod hash_set;
 mod vec;
 
+#[ignore]
 pub fn now_milli() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

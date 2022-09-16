@@ -1,6 +1,6 @@
 use candid::types::{Serializer, Type};
-use candid::{CandidType, Deserialize, Nat, Principal};
-use num_bigint::BigUint;
+use candid::{CandidType, Deserialize, Int, Nat, Principal};
+use num_bigint::{BigInt, BigUint, Sign};
 use serde::Deserializer;
 use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::fmt::{Display, Formatter};
@@ -111,19 +111,128 @@ impl Display for SNat {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SInt(pub Int);
+
+impl CandidType for SInt {
+    fn _ty() -> Type {
+        Int::_ty()
+    }
+
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.idl_serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SInt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(SInt(Int::deserialize(deserializer)?))
+    }
+}
+
+impl<'a, C: Context> Readable<'a, C> for SInt {
+    fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
+        let sign_byte = reader.read_u8()?;
+        let sign = match sign_byte {
+            0 => Sign::Plus,
+            1 => Sign::Minus,
+            2 => Sign::NoSign,
+            _ => unreachable!(""),
+        };
+
+        let len = reader.read_u32()?;
+        let mut buf = vec![0u8; len as usize];
+        reader.read_bytes(&mut buf)?;
+
+        Ok(SInt(Int::from(BigInt::from_bytes_le(sign, &buf))))
+    }
+}
+
+impl<C: Context> Writable<C> for SInt {
+    fn write_to<T: ?Sized + Writer<C>>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), <C as speedy::Context>::Error> {
+        let (sign, slice) = self.0 .0.to_bytes_le();
+
+        let sign_byte = match sign {
+            Sign::Plus => 0u8,
+            Sign::Minus => 1u8,
+            Sign::NoSign => 2u8,
+        };
+
+        writer.write_u8(sign_byte)?;
+        writer.write_u32(slice.len() as u32)?;
+        writer.write_bytes(&slice)
+    }
+}
+
+impl Display for SInt {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::utils::ic_types::SPrincipal;
-    use candid::Principal;
+    use crate::utils::ic_types::{SInt, SNat, SPrincipal};
+    use candid::{decode_one, encode_one, Int, Nat, Principal};
     use speedy::{Readable, Writable};
 
     #[test]
-    fn works_fine() {
+    fn sprincipal_works_fine() {
         let p = SPrincipal(Principal::management_canister());
         let p_s = p.write_to_vec().expect("unable to write");
 
         let p1 = SPrincipal::read_from_buffer(&p_s).expect("unable to read");
 
         assert_eq!(p, p1);
+
+        let p_c = encode_one(&p).unwrap();
+        let p2 = decode_one::<SPrincipal>(&p_c).unwrap();
+
+        assert_eq!(p, p2);
+
+        println!("{}", p);
+    }
+
+    #[test]
+    fn snat_works_fine() {
+        let n = SNat(Nat::from(10));
+        let n_s = n.write_to_vec().unwrap();
+
+        let n1 = SNat::read_from_buffer(&n_s).unwrap();
+
+        assert_eq!(n, n1);
+
+        let n_c = encode_one(&n).unwrap();
+        let n2 = decode_one::<SNat>(&n_c).unwrap();
+
+        assert_eq!(n, n2);
+
+        println!("{}", n);
+    }
+
+    #[test]
+    fn sint_works_fine() {
+        let n = SInt(Int::from(10));
+        let n_s = n.write_to_vec().unwrap();
+
+        let n1 = SInt::read_from_buffer(&n_s).unwrap();
+
+        assert_eq!(n, n1);
+
+        let n_c = encode_one(&n).unwrap();
+        let n2 = decode_one::<SInt>(&n_c).unwrap();
+
+        assert_eq!(n, n2);
+
+        println!("{}", n);
     }
 }

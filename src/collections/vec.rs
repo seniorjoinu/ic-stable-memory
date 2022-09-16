@@ -95,12 +95,9 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     }
 
     pub fn swap(&mut self, idx1: u64, idx2: u64) {
-        assert!(idx1 < self.len(), "Out of bounds");
-        assert!(idx2 < self.len(), "Out of bounds");
-
-        if self.is_empty() || self.len() == 1 {
-            return;
-        }
+        assert!(idx1 < self.len(), "idx1 out of bounds");
+        assert!(idx2 < self.len(), "idx2 out of bounds");
+        assert!(idx1 != idx2, "Indices should differ");
 
         let (sector1, offset1) = self.calculate_inner_index(idx1);
         let (sector2, offset2) = self.calculate_inner_index(idx2);
@@ -193,8 +190,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SVe
 #[cfg(test)]
 mod tests {
     use crate::collections::vec::SVec;
-    use crate::init_allocator;
     use crate::utils::mem_context::stable;
+    use crate::{init_allocator, set_max_allocation_pages, set_max_grow_pages};
     use speedy::{Readable, Writable};
 
     #[derive(Readable, Writable, Debug)]
@@ -270,5 +267,22 @@ mod tests {
         }
 
         stable_vec.drop();
+    }
+
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut v = SVec::<u64>::default();
+        assert!(v.get_cloned(100).is_none());
+
+        v.push(&10);
+        v.push(&20);
+
+        assert_eq!(v.replace(0, &11), 10);
+
+        v.drop();
     }
 }

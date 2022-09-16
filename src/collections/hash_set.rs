@@ -52,3 +52,37 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> Def
         SHashSet::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::collections::hash_set::SHashSet;
+    use crate::{init_allocator, stable};
+
+    #[test]
+    fn basic_flow_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut set = SHashSet::<u64>::default();
+
+        assert!(set.is_empty());
+
+        assert!(!set.insert(10));
+        assert!(!set.insert(20));
+        assert!(set.insert(10));
+
+        assert!(set.contains(&10));
+        assert!(!set.contains(&100));
+
+        assert_eq!(set.len(), 2);
+
+        assert!(!set.remove(&100));
+        assert!(set.remove(&10));
+
+        set.drop();
+
+        let mut set = SHashSet::<u64>::new_with_capacity(10);
+        set.drop();
+    }
+}
