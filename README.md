@@ -1,6 +1,6 @@
 THIS IS __NOT__ A BATTLE-TESTED SOFTWARE; USE AT YOUR OWN RISK
 
-![test coverage 72.64%](https://badgen.net/badge/coverage/95.72%25/green)
+![test coverage 95.72%](https://badgen.net/badge/coverage/95.72%25/green)
 
 # IC Stable Memory
 
@@ -287,6 +287,82 @@ BTree-based collections are not optimized at all
 
 "Classic btree set search" 10000 iterations: 16 ms
 "Stable btree set search" 10000 iterations: 20569 ms (x1285 slower)
+```
+
+## Performance counter canister
+There is also a performance counter canister that I use to benchmark this library.
+It can measure the amount of computations being performed during various operations over collections.
+
+### Vec
+```
+› standard_vec_push(100000) -> (45807839)
+› stable_vec_push(100000) -> (1040131571) --- x22 more operations
+
+› standard_vec_get(100000) -> (43799772)
+› stable_vec_get(100000) -> (219771252) --- x5 more operations
+
+› standard_vec_pop(100000) -> (4000207)
+› stable_vec_pop(100000) -> (535598950) --- x133 more operations
+```
+
+### Binary heap
+```
+› standard_binary_heap_push(100000) -> (57167475)
+› stable_binary_heap_push(100000) -> (1546389616) --- x27 more operations
+
+› standard_binary_heap_peek(100000) -> (1900207)
+› stable_binary_heap_peek(100000) -> (170915502) --- x89 more operations
+
+› standard_binary_heap_pop(100000) -> (71568548)
+› stable_binary_heap_pop(100000) -> ERROR: gas limit reached
+```
+
+### Hash map
+```
+› standard_hash_map_insert(100000) -> (149435570)
+› stable_hash_map_insert(100000) -> (4469212068) --- x29 more operations
+
+› standard_hash_map_get(100000) -> (66979460)
+› stable_hash_map_get(100000) -> (2269847152) --- x33 more operations
+
+› standard_hash_map_remove(100000) -> (71598538)
+› stable_hash_map_remove(100000) -> (2747512630) --- x38 more operations
+```
+
+### Hash set
+```
+› standard_hash_set_insert(100000) -> (147637898)
+› stable_hash_set_insert(100000) -> (3926004598) --- x26 more operations
+
+› standard_hash_set_contains(100000) -> (64871426)
+› stable_hash_set_contains(100000) -> (2268756428) --- x34 more operations
+
+› standard_hash_set_remove(100000) -> (71589898)
+› stable_hash_set_remove(100000) -> (2722430999) --- x38 more operations
+```
+
+### BTree map
+```
+› standard_btree_map_insert(5000) -> (3786833)
+› stable_btree_map_insert(5000) -> (91545892) --- x24 more operations
+
+› standard_btree_map_get(5000) -> (3169044)
+› stable_btree_map_get(5000) -> (49909234) --- x15 more operations
+
+› standard_btree_map_remove(5000) -> (7500781)
+› stable_btree_map_remove(5000) -> (1578852022) --- x210 more operations
+```
+
+### BTree set
+```
+› standard_btree_set_insert(5000) -> (7032817)
+› stable_btree_set_insert(5000) -> (85273404) --- x12 more operations
+
+› standard_btree_set_contains(5000) -> (3103785)
+› stable_btree_set_contains(5000) -> (40595322) --- x13 more operations
+
+› standard_btree_set_remove(5000) -> (5003229)
+› stable_btree_set_remove(5000) -> (1578369655) --- x315 more operations
 ```
 
 ## Contribution

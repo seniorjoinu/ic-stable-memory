@@ -1,9 +1,9 @@
 {
   "canisters": {
-    "stable-token": {
+    "performance-counter": {
       "build": "./build.sh",
       "candid": "./can.did",
-      "wasm": "target/wasm32-unknown-unknown/release/stable-token-opt.wasm",
+      "wasm": "target/wasm32-unknown-unknown/release/performance-counter-opt.wasm",
       "type": "custom"
     }
   },

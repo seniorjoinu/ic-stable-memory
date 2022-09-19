@@ -1,0 +1,23 @@
+[package]
+name = "performance-counter"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+codegen-units = 1
+strip = true
+lto = true
+opt-level = 'z'
+panic = 'abort'
+
+[lib]
+path = "src/actor.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+ic-cdk = "0.5.6"
+ic-cdk-macros = "0.5.6"
+serde = "1.0.144"
+candid = "0.7.16"
+speedy = "0.8.3"
+ic-stable-memory = { path = "../../../ic-stable-memory" }
