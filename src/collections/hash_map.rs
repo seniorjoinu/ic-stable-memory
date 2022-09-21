@@ -233,6 +233,9 @@ impl<
             let capacity_bytes = self._info._table_capacity as usize * PTR_SIZE;
             let table = allocate(capacity_bytes);
 
+            // we have to initialize this memory
+            table._write_bytes(0, &vec![0u8; table.get_size_bytes()]);
+
             self._info._table = Some(table);
         }
     }

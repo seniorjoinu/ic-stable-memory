@@ -1,3 +1,5 @@
+#![feature(thread_local)]
+
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use primitive::s_slice::SSlice;
@@ -15,152 +17,123 @@ use crate::utils::vars::deinit_vars;
 pub use crate::utils::vars::{init_vars, reinit_vars};
 use crate::utils::{isoprint, MemMetrics};
 
-thread_local! {
-    static STABLE_MEMORY_ALLOCATOR: RefCell<Option<SSlice<StableMemoryAllocator>>> = RefCell::new(None);
-}
+#[thread_local]
+static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);
 
 pub fn init_allocator(offset: u64) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if it.borrow().is_none() {
-            let allocator = unsafe { SSlice::<StableMemoryAllocator>::init(offset) };
+    if STABLE_MEMORY_ALLOCATOR.borrow().is_none() {
+        let allocator = unsafe { StableMemoryAllocator::init(offset) };
 
-            *it.borrow_mut() = Some(allocator);
-        } else {
-            unreachable!("StableMemoryAllocator can only be initialized once");
-        }
-    });
-}
-
-pub fn reinit_allocator(offset: u64) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if it.borrow().is_none() {
-            let allocator = unsafe { SSlice::<StableMemoryAllocator>::reinit(offset).unwrap() };
-
-            *it.borrow_mut() = Some(allocator);
-        } else {
-            unreachable!("StableMemoryAllocator can only be initialized once");
-        }
-    });
+        *STABLE_MEMORY_ALLOCATOR.borrow_mut() = Some(allocator);
+    } else {
+        unreachable!("StableMemoryAllocator can only be initialized once");
+    }
 }
 
 pub fn deinit_allocator() {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if it.borrow().is_some() {
-            *it.borrow_mut() = None;
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = STABLE_MEMORY_ALLOCATOR.take() {
+        alloc.store().unwrap();
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
+}
+
+pub fn reinit_allocator(offset: u64) {
+    if STABLE_MEMORY_ALLOCATOR.borrow().is_none() {
+        let allocator = unsafe { StableMemoryAllocator::reinit(offset).unwrap() };
+
+        *STABLE_MEMORY_ALLOCATOR.borrow_mut() = Some(allocator);
+    } else {
+        unreachable!("StableMemoryAllocator can only be initialized once");
+    }
 }
 
 pub fn allocate<T>(size: usize) -> SSlice<T> {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.allocate(size)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.allocate(size)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn deallocate<T>(membox: SSlice<T>) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.deallocate(membox)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.deallocate(membox)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn reallocate<T>(membox: SSlice<T>, new_size: usize) -> SSlice<T> {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.reallocate(membox, new_size)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.reallocate(membox, new_size)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn set_max_allocation_pages(pages: u32) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.set_max_allocation_pages(pages)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.set_max_allocation_pages(pages)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn get_max_allocation_pages() -> u32 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_max_allocation_pages()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
+        alloc.get_max_allocation_pages()
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn set_max_grow_pages(pages: u64) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.set_max_grow_pages(pages)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.set_max_grow_pages(pages)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn get_max_grow_pages() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_max_grow_pages()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
+        alloc.get_max_grow_pages()
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn get_allocated_size() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_allocated_size()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
+        alloc.get_allocated_size()
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn get_free_size() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_free_size()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
+        alloc.get_free_size()
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.set_custom_data_ptr(idx, data_ptr)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.set_custom_data_ptr(idx, data_ptr)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn _get_custom_data_ptr(idx: usize) -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_custom_data_ptr(idx)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
+        alloc.get_custom_data_ptr(idx)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn get_mem_metrics() -> MemMetrics {
@@ -172,13 +145,11 @@ pub fn get_mem_metrics() -> MemMetrics {
 }
 
 pub fn _debug_print_allocator() {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow_mut() {
-            isoprint(format!("{:?}", alloc).as_str());
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
+    if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        isoprint(format!("{:?}", alloc).as_str());
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
 }
 
 pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
@@ -202,7 +173,7 @@ pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
 
 #[cfg(test)]
 mod tests {
-    use crate::mem::allocator::{DEFAULT_MAX_ALLOCATION_PAGES, DEFAULT_MAX_GROW_PAGES};
+    use crate::mem::allocator::{DEFAULT_MAX_ALLOCATION_PAGES, DEFAULT_MAX_GROW_PAGES, EMPTY_PTR};
     use crate::{
         _debug_print_allocator, _get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate,
         get_allocated_size, get_free_size, get_max_allocation_pages, get_max_grow_pages,
@@ -232,7 +203,9 @@ mod tests {
         assert!(get_allocated_size() > 0);
         assert!(get_free_size() > 0);
 
-        assert_eq!(_get_custom_data_ptr(1), 0);
+        _debug_print_allocator();
+
+        assert_eq!(_get_custom_data_ptr(1), EMPTY_PTR);
         _set_custom_data_ptr(1, 100);
         assert_eq!(_get_custom_data_ptr(1), 100);
 

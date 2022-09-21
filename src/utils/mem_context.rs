@@ -34,9 +34,15 @@ impl MemContext for StableMemContext {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub(crate) struct TestMemContext {
     pub pages: Vec<[u8; PAGE_SIZE_BYTES]>,
+}
+
+impl TestMemContext {
+    const fn default() -> Self {
+        Self { pages: Vec::new() }
+    }
 }
 
 impl MemContext for TestMemContext {
@@ -153,30 +159,29 @@ pub mod stable {
 #[cfg(not(target_family = "wasm"))]
 pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
-    thread_local! {
-        static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
-    }
+    #[thread_local]
+    static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
 
     pub fn clear() {
-        CONTEXT.with(|it| it.borrow_mut().pages.clear())
+        CONTEXT.borrow_mut().pages.clear()
     }
 
     pub fn size_pages() -> u64 {
-        CONTEXT.with(|it| it.borrow().size_pages())
+        CONTEXT.borrow().size_pages()
     }
 
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
-        CONTEXT.with(|it| it.borrow_mut().grow(new_pages))
+        CONTEXT.borrow_mut().grow(new_pages)
     }
 
     pub fn read(offset: u64, buf: &mut [u8]) {
-        CONTEXT.with(|it| it.borrow().read(offset, buf))
+        CONTEXT.borrow().read(offset, buf)
     }
 
     pub fn write(offset: u64, buf: &[u8]) {
-        CONTEXT.with(|it| it.borrow_mut().write(offset, buf))
+        CONTEXT.borrow_mut().write(offset, buf)
     }
 }
 
