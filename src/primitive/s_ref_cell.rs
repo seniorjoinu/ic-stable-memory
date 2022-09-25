@@ -1,4 +1,5 @@
-use crate::primitive::s_slice::{Side, PTR_SIZE};
+use crate::mem::s_slice::{Side, PTR_SIZE};
+use crate::mem::Anyway;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, reallocate, SSlice};
 use speedy::{LittleEndian, Readable, Writable};
@@ -22,10 +23,10 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
     pub fn new(it: &T) -> Self {
         let buf = it.write_to_vec().unwrap();
 
-        let slice_of_data = allocate::<T>(buf.len());
+        let slice_of_data = allocate(buf.len());
         slice_of_data._write_bytes(0, &buf);
 
-        let slice_of_inner_ptr = allocate::<u64>(PTR_SIZE);
+        let slice_of_inner_ptr = allocate(PTR_SIZE);
         slice_of_inner_ptr._write_word(0, slice_of_data.ptr);
 
         Self {
@@ -37,10 +38,9 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
 
     // TODO: transform into borrow
     pub fn get_cloned(&self) -> T {
-        let slice_of_inner_ptr =
-            unsafe { SSlice::<u64>::from_ptr(self.inner_ptr, Side::Start).unwrap() };
+        let slice_of_inner_ptr = SSlice::from_ptr(self.inner_ptr, Side::Start).unwrap();
         let ptr = slice_of_inner_ptr._read_word(0);
-        let slice_of_data = unsafe { SSlice::<T>::from_ptr(ptr, Side::Start).unwrap() };
+        let slice_of_data = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; slice_of_data.get_size_bytes()];
         slice_of_data._read_bytes(0, &mut buf);
@@ -52,13 +52,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
     pub fn set(&self, it: &T) {
         let buf = it.write_to_vec().unwrap();
 
-        let slice_of_inner_ptr =
-            unsafe { SSlice::<u64>::from_ptr(self.inner_ptr, Side::Start).unwrap() };
+        let slice_of_inner_ptr = SSlice::from_ptr(self.inner_ptr, Side::Start).unwrap();
         let ptr = slice_of_inner_ptr._read_word(0);
-        let slice_of_data = unsafe { SSlice::<T>::from_ptr(ptr, Side::Start).unwrap() };
+        let slice_of_data = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         let slice_of_data = if buf.len() > slice_of_data.get_size_bytes() {
-            let it = reallocate(slice_of_data, buf.len());
+            let it = reallocate(slice_of_data, buf.len()).anyway();
             slice_of_inner_ptr._write_word(0, it.ptr);
 
             it
@@ -70,10 +69,9 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SRefCell<T> {
     }
 
     pub fn drop(self) {
-        let slice_of_inner_ptr =
-            unsafe { SSlice::<u64>::from_ptr(self.inner_ptr, Side::Start).unwrap() };
+        let slice_of_inner_ptr = SSlice::from_ptr(self.inner_ptr, Side::Start).unwrap();
         let ptr = slice_of_inner_ptr._read_word(0);
-        let slice_of_data = unsafe { SSlice::<T>::from_ptr(ptr, Side::Start).unwrap() };
+        let slice_of_data = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         deallocate(slice_of_data);
         deallocate(slice_of_inner_ptr);

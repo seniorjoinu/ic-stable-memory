@@ -1,6 +1,6 @@
 use crate::collections::vec::SVec;
 use crate::mem::allocator::EMPTY_PTR;
-use crate::primitive::s_slice::{CELL_META_SIZE, PTR_SIZE};
+use crate::mem::s_slice::{BLOCK_META_SIZE, PTR_SIZE};
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 
 // TODO: make entry store value more efficiently
 
-const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 8192 - CELL_META_SIZE as u32 * 2;
+const STABLE_HASH_MAP_DEFAULT_CAPACITY: u32 = 8192 - BLOCK_META_SIZE as u32 * 2;
 type HashMapBucket<K, V> = SUnsafeCell<SVec<HashMapEntry<K, V>>>;
 
 #[derive(Readable, Writable)]
@@ -38,7 +38,7 @@ struct SMapTable;
 struct SHashMapInfo {
     _len: u64,
     _table_capacity: u32,
-    _table: Option<SSlice<SMapTable>>,
+    _table: Option<SSlice>,
 }
 
 #[derive(Readable, Writable)]
@@ -265,7 +265,7 @@ impl<
         }
     }
 
-    fn table(&self) -> SSlice<SMapTable> {
+    fn table(&self) -> SSlice {
         unsafe { self._info._table.as_ref().unwrap().clone() }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
-use primitive::s_slice::SSlice;
+use mem::s_slice::SSlice;
 use std::cell::RefCell;
 
 mod benchmarks;
@@ -32,7 +32,7 @@ pub fn init_allocator(offset: u64) {
 
 pub fn deinit_allocator() {
     if let Some(alloc) = STABLE_MEMORY_ALLOCATOR.take() {
-        alloc.store().unwrap();
+        alloc.store();
     } else {
         unreachable!("StableMemoryAllocator is not initialized");
     }
@@ -40,7 +40,7 @@ pub fn deinit_allocator() {
 
 pub fn reinit_allocator(offset: u64) {
     if STABLE_MEMORY_ALLOCATOR.borrow().is_none() {
-        let allocator = unsafe { StableMemoryAllocator::reinit(offset).unwrap() };
+        let allocator = unsafe { StableMemoryAllocator::reinit(offset) };
 
         *STABLE_MEMORY_ALLOCATOR.borrow_mut() = Some(allocator);
     } else {
@@ -48,7 +48,7 @@ pub fn reinit_allocator(offset: u64) {
     }
 }
 
-pub fn allocate<T>(size: usize) -> SSlice<T> {
+pub fn allocate(size: usize) -> SSlice {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.allocate(size)
     } else {
@@ -56,17 +56,17 @@ pub fn allocate<T>(size: usize) -> SSlice<T> {
     }
 }
 
-pub fn deallocate<T>(membox: SSlice<T>) {
+pub fn deallocate(slice: SSlice) {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
-        alloc.deallocate(membox)
+        alloc.deallocate(slice)
     } else {
         unreachable!("StableMemoryAllocator is not initialized");
     }
 }
 
-pub fn reallocate<T>(membox: SSlice<T>, new_size: usize) -> SSlice<T> {
+pub fn reallocate(slice: SSlice, new_size: usize) -> Result<SSlice, SSlice> {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
-        alloc.reallocate(membox, new_size)
+        alloc.reallocate(slice, new_size)
     } else {
         unreachable!("StableMemoryAllocator is not initialized");
     }
@@ -174,6 +174,7 @@ pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
 #[cfg(test)]
 mod tests {
     use crate::mem::allocator::{DEFAULT_MAX_ALLOCATION_PAGES, DEFAULT_MAX_GROW_PAGES, EMPTY_PTR};
+    use crate::mem::Anyway;
     use crate::{
         _debug_print_allocator, _get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate,
         get_allocated_size, get_free_size, get_max_allocation_pages, get_max_grow_pages,
@@ -187,8 +188,8 @@ mod tests {
         stable_memory_pre_upgrade();
         stable_memory_post_upgrade(0);
 
-        let b = allocate::<()>(100);
-        let b = reallocate(b, 200);
+        let b = allocate(100);
+        let b = reallocate(b, 200).anyway();
         deallocate(b);
 
         assert_eq!(get_max_grow_pages(), DEFAULT_MAX_GROW_PAGES);

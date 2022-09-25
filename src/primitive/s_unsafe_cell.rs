@@ -1,4 +1,5 @@
-use crate::primitive::s_slice::Side;
+use crate::mem::s_slice::Side;
+use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, reallocate, SSlice};
 use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
@@ -8,7 +9,8 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Readable, Writable)]
 pub struct SUnsafeCell<T> {
-    pub(crate) slice: SSlice<T>,
+    pub(crate) slice: SSlice,
+    _marker: SPhantomData<T>,
     #[speedy(skip)]
     pub(crate) buf: RefCell<Option<Vec<u8>>>,
 }
@@ -22,6 +24,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
 
         Self {
             slice,
+            _marker: SPhantomData::default(),
             buf: RefCell::new(Some(buf)),
         }
     }
@@ -51,8 +54,13 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         let mut res = false;
 
         if self._allocated_size() < buf.len() {
-            self.slice = reallocate(self.slice.clone(), buf.len());
-            res = true;
+            self.slice = match reallocate(self.slice.clone(), buf.len()) {
+                Ok(s) => s,
+                Err(s) => {
+                    res = true;
+                    s
+                }
+            }
         }
 
         self.slice._write_bytes(0, &buf);
@@ -72,6 +80,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
 
         Self {
             slice,
+            _marker: SPhantomData::default(),
             buf: RefCell::new(None),
         }
     }

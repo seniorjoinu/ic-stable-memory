@@ -1,4 +1,4 @@
-use crate::primitive::s_slice::PTR_SIZE;
+use crate::mem::s_slice::PTR_SIZE;
 use crate::utils::math::fast_log2_64;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice, SUnsafeCell};
@@ -12,7 +12,7 @@ struct SVecSector;
 #[derive(Readable, Writable)]
 struct SVecInfo {
     _len: u64,
-    _sectors: Vec<SSlice<SVecSector>>,
+    _sectors: Vec<SSlice>,
 }
 
 #[derive(Readable, Writable)]
@@ -141,7 +141,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         self._info._len = new_len;
     }
 
-    fn get_sector(&self, idx: usize) -> &SSlice<SVecSector> {
+    fn get_sector(&self, idx: usize) -> &SSlice {
         self._info._sectors.get(idx).unwrap()
     }
 
@@ -159,7 +159,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         }
     }
 
-    fn calculate_inner_index(&self, mut idx: u64) -> (&SSlice<SVecSector>, usize) {
+    fn calculate_inner_index(&self, mut idx: u64) -> (&SSlice, usize) {
         assert!(idx < self.len());
 
         let (sector_idx, offset_ptr) = if idx > TWO_IN_29 - 4 {
