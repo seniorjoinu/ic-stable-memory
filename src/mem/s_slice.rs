@@ -24,32 +24,49 @@ pub struct SSlice {
 }
 
 impl SSlice {
-    pub(crate) fn new(ptr: u64, size: usize) -> Self {
-        Self::write_size(ptr, size);
+    pub(crate) fn new(ptr: u64, size: usize, write_size: bool) -> Self {
+        if write_size {
+            Self::write_size(ptr, size);
+        }
 
         Self { ptr, size }
     }
 
-    pub(crate) fn from_ptr(ptr: u64, side: Side) -> Option<Self> {
+    pub(crate) fn from_ptr(ptr: u64, side: Side, check_sizes: bool) -> Option<Self> {
         match side {
             Side::Start => {
                 let size_1 = Self::read_size(ptr)?;
+
+                if !check_sizes {
+                    return Some(Self::new(ptr, size_1, false));
+                }
+
                 let size_2 = Self::read_size(ptr + (BLOCK_META_SIZE + size_1) as u64)?;
 
                 if size_1 == size_2 {
-                    Some(Self::new(ptr, size_1))
+                    Some(Self::new(ptr, size_1, false))
                 } else {
                     None
                 }
             }
             Side::End => {
                 let size_1 = Self::read_size(ptr - BLOCK_META_SIZE as u64)?;
+
+                if !check_sizes {
+                    return Some(Self::new(
+                        ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
+                        size_1,
+                        false,
+                    ));
+                }
+
                 let size_2 = Self::read_size(ptr - (BLOCK_META_SIZE * 2 + size_1) as u64)?;
 
                 if size_1 == size_2 {
                     Some(Self::new(
                         ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
                         size_1,
+                        false,
                     ))
                 } else {
                     None
@@ -145,7 +162,7 @@ mod tests {
         stable::clear();
         stable::grow(10).expect("Unable to grow");
 
-        let m1 = SSlice::new(0, 100);
+        let m1 = SSlice::new(0, 100, true);
 
         let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let b = vec![1u8, 3, 3, 7];

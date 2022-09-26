@@ -1,5 +1,5 @@
 use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, BLOCK_MIN_TOTAL_SIZE, FREE, PTR_SIZE};
-use crate::{stable, SSlice, _debug_print_allocator, PAGE_SIZE_BYTES};
+use crate::{stable, SSlice};
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct FreeBlock {
@@ -24,7 +24,7 @@ impl FreeBlock {
     }
 
     pub fn to_allocated(self) -> SSlice {
-        SSlice::new(self.ptr, self.size)
+        SSlice::new(self.ptr, self.size, true)
     }
 
     pub fn from_ptr(

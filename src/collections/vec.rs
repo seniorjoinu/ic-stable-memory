@@ -1,7 +1,9 @@
-use crate::mem::s_slice::PTR_SIZE;
+use crate::mem::allocator::EMPTY_PTR;
+use crate::mem::s_slice::{Side, PTR_SIZE};
+use crate::mem::Anyway;
 use crate::utils::math::fast_log2_64;
 use crate::utils::phantom_data::SPhantomData;
-use crate::{allocate, deallocate, SSlice, SUnsafeCell};
+use crate::{allocate, deallocate, reallocate, SSlice, SUnsafeCell};
 use speedy::{LittleEndian, Readable, Writable};
 use std::cmp::min;
 
@@ -10,7 +12,8 @@ const TWO_IN_29: u64 = 2u64.pow(29);
 #[derive(Readable, Writable)]
 struct SVecInfo {
     _len: u64,
-    _sectors: Vec<SSlice>,
+    _sectors: Option<SSlice>,
+    _sectors_len: usize,
 }
 
 #[derive(Readable, Writable)]
@@ -20,10 +23,11 @@ pub struct SVec<T> {
 }
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         let _info = SVecInfo {
             _len: 0,
-            _sectors: Vec::new(),
+            _sectors: None,
+            _sectors_len: 0,
         };
 
         Self {
@@ -39,7 +43,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         self.grow_if_needed();
         self.set_len(self.len() + 1);
 
-        let (sector, offset) = self.calculate_inner_index(self.len() - 1);
+        let (sector_idx, offset) = self.calculate_inner_index(self.len() - 1);
+        let sector = self.get_or_create_sector(sector_idx);
 
         sector._write_word(offset, elem_ptr);
     }
@@ -51,7 +56,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         }
 
         let idx = len - 1;
-        let (sector, offset) = self.calculate_inner_index(idx);
+        let (sector_idx, offset) = self.calculate_inner_index(idx);
+        let sector = self.get_sector(sector_idx);
         let elem_ptr = sector._read_word(offset);
         self.set_len(idx);
 
@@ -67,7 +73,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
             return None;
         }
 
-        let (sector, offset) = self.calculate_inner_index(idx);
+        let (sector_idx, offset) = self.calculate_inner_index(idx);
+        let sector = self.get_sector(sector_idx);
 
         let elem_ptr = sector._read_word(offset);
         let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
@@ -81,7 +88,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         let new_elem_cell = SUnsafeCell::new(element);
         let new_elem_ptr = unsafe { new_elem_cell.as_ptr() };
 
-        let (sector, offset) = self.calculate_inner_index(idx);
+        let (sector_idx, offset) = self.calculate_inner_index(idx);
+        let sector = self.get_sector(sector_idx);
 
         let prev_elem_ptr = sector._read_word(offset);
         let prev_elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(prev_elem_ptr) };
@@ -97,8 +105,11 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         assert!(idx2 < self.len(), "idx2 out of bounds");
         assert!(idx1 != idx2, "Indices should differ");
 
-        let (sector1, offset1) = self.calculate_inner_index(idx1);
-        let (sector2, offset2) = self.calculate_inner_index(idx2);
+        let (sector1_idx, offset1) = self.calculate_inner_index(idx1);
+        let sector1 = self.get_sector(sector1_idx);
+
+        let (sector2_idx, offset2) = self.calculate_inner_index(idx2);
+        let sector2 = self.get_sector(sector2_idx);
 
         let elem_ptr_1 = sector1._read_word(offset1);
         let elem_ptr_2 = sector2._read_word(offset2);
@@ -114,16 +125,18 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
             }
         }
 
-        for sector in self._info._sectors {
+        for idx in 0..(self._info._sectors_len / PTR_SIZE) {
+            let sector = self.get_sector(idx);
+
             deallocate(sector);
         }
     }
 
     pub fn capacity(&self) -> u64 {
-        if self._info._sectors.len() < 28 {
-            2u64.pow(self._info._sectors.len() as u32 + 2) - 4
+        if let Some(sectors_slice) = self._info._sectors {
+            (sectors_slice.size / PTR_SIZE) as u64
         } else {
-            TWO_IN_29 - 4 + TWO_IN_29 * (self._info._sectors.len() as u64 - 27)
+            0
         }
     }
 
@@ -139,8 +152,34 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         self._info._len = new_len;
     }
 
-    fn get_sector(&self, idx: usize) -> &SSlice {
-        self._info._sectors.get(idx).unwrap()
+    fn get_sector(&self, idx: usize) -> SSlice {
+        assert!(idx < self._info._sectors_len);
+
+        let sectors = self._info._sectors.as_ref().unwrap();
+        let sector_ptr = sectors._read_word(idx * PTR_SIZE);
+
+        SSlice::from_ptr(sector_ptr, Side::Start, false).unwrap()
+    }
+
+    fn get_or_create_sector(&mut self, idx: usize) -> SSlice {
+        assert!(idx <= self._info._sectors_len);
+
+        if idx == self._info._sectors_len {
+            let sectors = self._info._sectors.as_ref().unwrap();
+
+            let new_sector_size =
+                2u64.pow(min(self._info._sectors_len as u32 + 2, 29)) as usize * PTR_SIZE;
+
+            let sector = allocate(new_sector_size);
+
+            sectors._write_word(idx * PTR_SIZE, sector.ptr);
+
+            self._info._sectors_len += 1;
+
+            sector
+        } else {
+            self.get_sector(idx)
+        }
     }
 
     pub fn is_about_to_grow(&self) -> bool {
@@ -149,15 +188,17 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
 
     fn grow_if_needed(&mut self) {
         if self.is_about_to_grow() {
-            let new_sector_size =
-                2u64.pow(min(self._info._sectors.len() as u32 + 2, 29)) as usize * PTR_SIZE;
+            if let Some(sslice) = self._info._sectors {
+                let sslice = reallocate(sslice, sslice.size * 2).anyway();
 
-            let sector = allocate(new_sector_size);
-            self._info._sectors.push(sector);
+                self._info._sectors = Some(sslice)
+            } else {
+                self._info._sectors = Some(allocate(4 * PTR_SIZE));
+            }
         }
     }
 
-    fn calculate_inner_index(&self, mut idx: u64) -> (&SSlice, usize) {
+    fn calculate_inner_index(&self, mut idx: u64) -> (usize, usize) {
         assert!(idx < self.len());
 
         let (sector_idx, offset_ptr) = if idx > TWO_IN_29 - 4 {
@@ -175,7 +216,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
             (sector_idx, offset_ptr)
         };
 
-        (self.get_sector(sector_idx), offset_ptr * PTR_SIZE)
+        (sector_idx, offset_ptr * PTR_SIZE)
     }
 }
 

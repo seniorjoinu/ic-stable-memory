@@ -5,10 +5,10 @@ pub struct SPhantomData<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T> Default for SPhantomData<T> {
-    fn default() -> Self {
+impl<T> SPhantomData<T> {
+    pub(crate) const fn default() -> Self {
         Self {
-            _marker: PhantomData::default(),
+            _marker: PhantomData {},
         }
     }
 }

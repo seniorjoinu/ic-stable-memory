@@ -76,7 +76,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         assert_ne!(ptr, 0);
 
-        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(ptr, Side::Start, false).unwrap();
 
         Self {
             slice,

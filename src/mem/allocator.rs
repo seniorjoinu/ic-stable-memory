@@ -66,7 +66,7 @@ impl StableMemoryAllocator {
     /// Invoke only once during `init()` canister function execution
     /// Execution more than once will lead to undefined behavior
     pub(crate) unsafe fn init(offset: u64) -> Self {
-        let allocator_slice = SSlice::new(offset, Self::SIZE);
+        let allocator_slice = SSlice::new(offset, Self::SIZE, true);
         let mut allocator = StableMemoryAllocator::new(offset);
 
         allocator_slice._write_bytes(0, &vec![0; Self::SIZE]);
@@ -87,7 +87,7 @@ impl StableMemoryAllocator {
     }
 
     pub(crate) fn store(self) {
-        let slice = SSlice::from_ptr(self.offset, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(self.offset, Side::Start, false).unwrap();
         let mut offset = 0;
 
         slice._write_bytes(offset, &MAGIC);
@@ -134,7 +134,7 @@ impl StableMemoryAllocator {
     /// It's fine to call this function more than once, but remember that using multiple copies of
     /// a single allocator can lead to race condition in an asynchronous scenario
     pub(crate) unsafe fn reinit(ptr: u64) -> Self {
-        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(ptr, Side::Start, true).unwrap();
         let mut offset = 0;
 
         let mut magic = [0u8; MAGIC.len()];
@@ -321,10 +321,6 @@ impl StableMemoryAllocator {
             tail.set_next_free_ptr(free_block.ptr);
             free_block.set_free_ptrs(tail_ptr, EMPTY_PTR);
         }
-
-        assert!(free_block.ptr >= 1045);
-        assert!(free_block.get_prev_free_ptr() >= 1045);
-        assert!(free_block.get_next_free_ptr() >= 1045);
     }
 
     fn pop_free_block(&mut self, size: usize) -> Result<FreeBlock, OutOfMemory> {
