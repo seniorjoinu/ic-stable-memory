@@ -237,9 +237,13 @@ mod tests {
         init_allocator(0);
 
         let mut cell = SUnsafeCell::new(&String::from("one"));
-        let should_reallocate_parent =
-            unsafe { cell.set(&String::from("two three four five six")) };
-        assert!(should_reallocate_parent);
+        let should_reallocate_parent = unsafe {
+            cell.set(&String::from(
+                "two three four five six seven eight nine ten eleven twelve",
+            ))
+        };
+        // because no more blocks are allocated - can allocate inplace
+        assert!(!should_reallocate_parent);
 
         let mut cell1 = SUnsafeCell::new(&String::from("ten eleven tvelwe"));
 

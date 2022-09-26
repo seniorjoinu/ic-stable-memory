@@ -7,8 +7,6 @@ use std::cmp::min;
 
 const TWO_IN_29: u64 = 2u64.pow(29);
 
-struct SVecSector;
-
 #[derive(Readable, Writable)]
 struct SVecInfo {
     _len: u64,

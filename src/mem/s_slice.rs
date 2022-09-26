@@ -1,8 +1,6 @@
-use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
-use crate::utils::mem_context::{stable, PAGE_SIZE_BYTES};
-use crate::utils::phantom_data::SPhantomData;
-use speedy::{Context, Readable, Reader, Writable, Writer};
+use crate::utils::mem_context::stable;
+use speedy::{Readable, Writable};
 use std::mem::size_of;
 use std::usize;
 
@@ -22,7 +20,6 @@ pub(crate) enum Side {
 #[derive(Debug, Copy, Clone, Readable, Writable)]
 pub struct SSlice {
     pub ptr: u64,
-    #[speedy(skip)]
     pub size: usize,
 }
 

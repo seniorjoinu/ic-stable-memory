@@ -252,29 +252,28 @@ impl StableMemoryAllocator {
                 true,
             ) {
                 let seg_class_id = get_seg_class_id(next_neighbor.size);
-                let target_size = free_block.size + next_neighbor.size;
+                let target_size = free_block.size + next_neighbor.size + BLOCK_META_SIZE * 2;
 
                 if target_size >= new_size && target_size < new_size + BLOCK_MIN_TOTAL_SIZE {
-                    self.eject_from_freelist(seg_class_id, &free_block);
+                    self.eject_from_freelist(seg_class_id, &next_neighbor);
 
                     let total_allocated = self.get_allocated_size();
                     self.set_allocated_size(
                         total_allocated + free_block.get_total_size_bytes() as u64,
                     );
 
-                    let new_block =
-                        FreeBlock::new(free_block.ptr, target_size + BLOCK_META_SIZE * 2, true);
+                    let new_block = FreeBlock::new(free_block.ptr, target_size, true);
 
                     return Ok(new_block.to_allocated());
                 }
 
                 if target_size >= new_size + BLOCK_MIN_TOTAL_SIZE {
-                    self.eject_from_freelist(seg_class_id, &free_block);
+                    self.eject_from_freelist(seg_class_id, &next_neighbor);
 
                     let block_1 = FreeBlock::new(free_block.ptr, new_size, true);
                     let block_2 = FreeBlock::new_total_size(
                         block_1.get_next_neighbor_ptr(),
-                        free_block.size - new_size,
+                        target_size - new_size,
                     );
 
                     self.push_free_block(block_2, false);
@@ -387,8 +386,8 @@ impl StableMemoryAllocator {
             }
         }
 
-        let mut pages_to_grow = (size / PAGE_SIZE_BYTES) as u64;
-        if size % PAGE_SIZE_BYTES != 0 {
+        let mut pages_to_grow = ((size + BLOCK_META_SIZE * 2) / PAGE_SIZE_BYTES) as u64;
+        if (size + BLOCK_META_SIZE * 2) % PAGE_SIZE_BYTES != 0 {
             pages_to_grow += 1;
         }
 
