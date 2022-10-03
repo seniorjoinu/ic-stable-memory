@@ -1,4 +1,4 @@
-use crate::collections::vec::SVec;
+use crate::collections::vec::vec_indirect::SVec;
 use speedy::{LittleEndian, Readable, Writable};
 
 #[derive(Readable, Writable)]

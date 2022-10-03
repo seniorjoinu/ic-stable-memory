@@ -5,8 +5,16 @@ pub struct SPhantomData<T> {
     _marker: PhantomData<T>,
 }
 
+impl<T> Default for SPhantomData<T> {
+    fn default() -> Self {
+        Self {
+            _marker: PhantomData::default(),
+        }
+    }
+}
+
 impl<T> SPhantomData<T> {
-    pub(crate) const fn default() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             _marker: PhantomData {},
         }
@@ -15,7 +23,7 @@ impl<T> SPhantomData<T> {
 
 impl<'a, C: Context, T> Readable<'a, C> for SPhantomData<T> {
     fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
-        Ok(SPhantomData::default())
+        Ok(SPhantomData::new())
     }
 }
 

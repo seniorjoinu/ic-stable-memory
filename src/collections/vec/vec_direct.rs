@@ -1,54 +1,47 @@
-use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::s_slice::{Side, PTR_SIZE};
+use crate::mem::s_slice::{SSlice, Side, PTR_SIZE};
 use crate::mem::Anyway;
 use crate::utils::math::fast_log2_64;
 use crate::utils::phantom_data::SPhantomData;
-use crate::{allocate, deallocate, reallocate, SSlice, SUnsafeCell};
-use speedy::{LittleEndian, Readable, Writable};
+use crate::utils::{any_as_u8_slice, u8_slice_as_any, NotReference};
+use crate::{allocate, deallocate, reallocate};
+use speedy::{Readable, Writable};
 use std::cmp::min;
+use std::mem::size_of;
 
 const TWO_IN_29: u64 = 2u64.pow(29);
 
 #[derive(Readable, Writable)]
-struct SVecInfo {
-    _len: u64,
-    _sectors: Option<SSlice>,
-    _sectors_len: usize,
-}
-
-#[derive(Readable, Writable)]
-pub struct SVec<T> {
-    _info: SVecInfo,
+pub struct SVecDirect<T> {
+    len: u64,
+    sectors_len: usize,
+    sectors: Option<SSlice>,
+    #[speedy(skip)]
     _data: SPhantomData<T>,
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
+impl<T: Copy + NotReference> SVecDirect<T> {
     pub const fn new() -> Self {
-        let _info = SVecInfo {
-            _len: 0,
-            _sectors: None,
-            _sectors_len: 0,
-        };
-
         Self {
-            _info,
-            _data: SPhantomData::default(),
+            len: 0,
+            sectors_len: 0,
+            sectors: None,
+            _data: SPhantomData::new(),
         }
     }
 
     pub fn push(&mut self, element: &T) {
-        let elem_cell = SUnsafeCell::new(element);
-        let elem_ptr = unsafe { elem_cell.as_ptr() };
-
         self.grow_if_needed();
         self.set_len(self.len() + 1);
 
         let (sector_idx, offset) = self.calculate_inner_index(self.len() - 1);
-        let sector = self.get_or_create_sector(sector_idx);
+        let sector_ptr = self.get_or_create_sector(sector_idx);
 
-        sector._write_word(offset, elem_ptr);
+        let elem_bytes = unsafe { any_as_u8_slice(element) };
+
+        SSlice::_write_bytes(sector_ptr, offset, elem_bytes);
     }
 
+    // TODO: POP IS TOO SLOW (13x slower)
     pub fn pop(&mut self) -> Option<T> {
         let len = self.len();
         if len == 0 {
@@ -57,15 +50,15 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
 
         let idx = len - 1;
         let (sector_idx, offset) = self.calculate_inner_index(idx);
-        let sector = self.get_sector(sector_idx);
-        let elem_ptr = sector._read_word(offset);
+        let sector_ptr = self.get_sector(sector_idx);
+
         self.set_len(idx);
 
-        let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
-        let elem = elem_cell.get_cloned();
-        elem_cell.drop();
+        let mut elem_bytes = vec![0u8; size_of::<T>()];
 
-        Some(elem)
+        SSlice::_read_bytes(sector_ptr, offset, &mut elem_bytes);
+
+        Some(unsafe { u8_slice_as_any(&elem_bytes) })
     }
 
     pub fn get_cloned(&self, idx: u64) -> Option<T> {
@@ -74,30 +67,27 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         }
 
         let (sector_idx, offset) = self.calculate_inner_index(idx);
-        let sector = self.get_sector(sector_idx);
+        let sector_ptr = self.get_sector(sector_idx);
 
-        let elem_ptr = sector._read_word(offset);
-        let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
-        let elem = elem_cell.get_cloned();
+        let mut elem_bytes = vec![0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut elem_bytes);
 
-        Some(elem)
+        Some(unsafe { u8_slice_as_any(&elem_bytes) })
     }
 
     pub fn replace(&mut self, idx: u64, element: &T) -> T {
         assert!(idx < self.len(), "Out of bounds");
-        let new_elem_cell = SUnsafeCell::new(element);
-        let new_elem_ptr = unsafe { new_elem_cell.as_ptr() };
 
         let (sector_idx, offset) = self.calculate_inner_index(idx);
-        let sector = self.get_sector(sector_idx);
+        let sector_ptr = self.get_sector(sector_idx);
 
-        let prev_elem_ptr = sector._read_word(offset);
-        let prev_elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(prev_elem_ptr) };
-        let prev_elem = prev_elem_cell.get_cloned();
+        let mut prev_elem_bytes = vec![0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut prev_elem_bytes);
 
-        sector._write_word(offset, new_elem_ptr);
+        let new_elem_bytes = unsafe { any_as_u8_slice(element) };
+        SSlice::_write_bytes(sector_ptr, offset, new_elem_bytes);
 
-        prev_elem
+        unsafe { u8_slice_as_any(&prev_elem_bytes) }
     }
 
     pub fn swap(&mut self, idx1: u64, idx2: u64) {
@@ -106,34 +96,35 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         assert!(idx1 != idx2, "Indices should differ");
 
         let (sector1_idx, offset1) = self.calculate_inner_index(idx1);
-        let sector1 = self.get_sector(sector1_idx);
+        let sector1_ptr = self.get_sector(sector1_idx);
+
+        let mut elem1_bytes = vec![0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector1_ptr, offset1, &mut elem1_bytes);
 
         let (sector2_idx, offset2) = self.calculate_inner_index(idx2);
-        let sector2 = self.get_sector(sector2_idx);
+        let sector2_ptr = self.get_sector(sector2_idx);
 
-        let elem_ptr_1 = sector1._read_word(offset1);
-        let elem_ptr_2 = sector2._read_word(offset2);
+        let mut elem2_bytes = vec![0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector2_ptr, offset2, &mut elem2_bytes);
 
-        sector1._write_word(offset1, elem_ptr_2);
-        sector2._write_word(offset2, elem_ptr_1);
+        SSlice::_write_bytes(sector1_ptr, offset1, &elem2_bytes);
+        SSlice::_write_bytes(sector2_ptr, offset2, &elem1_bytes);
     }
 
-    pub fn drop(mut self) {
-        loop {
-            if self.pop().is_none() {
-                break;
-            }
-        }
-
-        for idx in 0..(self._info._sectors_len / PTR_SIZE) {
+    pub fn drop(self) {
+        for idx in 0..(self.sectors_len / PTR_SIZE) {
             let sector = self.get_sector(idx);
 
-            deallocate(sector);
+            deallocate(SSlice::from_ptr(sector, Side::Start).unwrap());
+        }
+
+        if let Some(sectors) = self.sectors {
+            deallocate(sectors);
         }
     }
 
     pub fn capacity(&self) -> u64 {
-        if let Some(sectors_slice) = self._info._sectors {
+        if let Some(sectors_slice) = self.sectors {
             (sectors_slice.size / PTR_SIZE) as u64
         } else {
             0
@@ -141,42 +132,41 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
     }
 
     pub fn len(&self) -> u64 {
-        self._info._len
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self._info._len == 0
+        self.len == 0
     }
 
     fn set_len(&mut self, new_len: u64) {
-        self._info._len = new_len;
+        self.len = new_len;
     }
 
-    fn get_sector(&self, idx: usize) -> SSlice {
-        assert!(idx < self._info._sectors_len);
+    fn get_sector(&self, idx: usize) -> u64 {
+        assert!(idx < self.sectors_len);
 
-        let sectors = self._info._sectors.as_ref().unwrap();
-        let sector_ptr = sectors._read_word(idx * PTR_SIZE);
+        let sectors = self.sectors.as_ref().unwrap();
 
-        SSlice::from_ptr(sector_ptr, Side::Start, false).unwrap()
+        sectors.read_word(idx * PTR_SIZE)
     }
 
-    fn get_or_create_sector(&mut self, idx: usize) -> SSlice {
-        assert!(idx <= self._info._sectors_len);
+    fn get_or_create_sector(&mut self, idx: usize) -> u64 {
+        assert!(idx <= self.sectors_len);
 
-        if idx == self._info._sectors_len {
-            let sectors = self._info._sectors.as_ref().unwrap();
+        if idx == self.sectors_len {
+            let sectors = self.sectors.as_ref().unwrap();
 
             let new_sector_size =
-                2u64.pow(min(self._info._sectors_len as u32 + 2, 29)) as usize * PTR_SIZE;
+                2u64.pow(min(self.sectors_len as u32 + 2, 29)) as usize * size_of::<T>();
 
             let sector = allocate(new_sector_size);
 
-            sectors._write_word(idx * PTR_SIZE, sector.ptr);
+            sectors.write_word(idx * PTR_SIZE, sector.ptr);
 
-            self._info._sectors_len += 1;
+            self.sectors_len += 1;
 
-            sector
+            sector.ptr
         } else {
             self.get_sector(idx)
         }
@@ -188,12 +178,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
 
     fn grow_if_needed(&mut self) {
         if self.is_about_to_grow() {
-            if let Some(sslice) = self._info._sectors {
+            if let Some(sslice) = self.sectors {
                 let sslice = reallocate(sslice, sslice.size * 2).anyway();
 
-                self._info._sectors = Some(sslice)
+                self.sectors = Some(sslice)
             } else {
-                self._info._sectors = Some(allocate(4 * PTR_SIZE));
+                self.sectors = Some(allocate(4 * PTR_SIZE));
             }
         }
     }
@@ -216,11 +206,11 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
             (sector_idx, offset_ptr)
         };
 
-        (sector_idx, offset_ptr * PTR_SIZE)
+        (sector_idx, offset_ptr * size_of::<T>())
     }
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SVec<T> {
+impl<T: Copy + NotReference> Default for SVecDirect<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -228,15 +218,14 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SVe
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::vec::SVec;
+    use crate::collections::vec::vec_direct::SVecDirect;
+    use crate::init_allocator;
     use crate::utils::mem_context::stable;
-    use crate::{init_allocator, set_max_allocation_pages, set_max_grow_pages};
-    use speedy::{Readable, Writable};
 
-    #[derive(Readable, Writable, Debug)]
+    #[derive(Copy, Clone, Debug)]
     struct Test {
         a: u64,
-        b: String,
+        b: bool,
     }
 
     #[test]
@@ -245,7 +234,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut stable_vec = SVec::<u64>::new();
+        let mut stable_vec = SVecDirect::<u64>::new();
         assert_eq!(stable_vec.capacity(), 0);
         assert_eq!(stable_vec.len(), 0);
 
@@ -262,14 +251,11 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut stable_vec = SVec::new();
+        let mut stable_vec = SVecDirect::new();
         let count = 10u64;
 
         for i in 0..count {
-            let it = Test {
-                a: i,
-                b: format!("Str {}", i),
-            };
+            let it = Test { a: i, b: true };
 
             stable_vec.push(&it);
         }
@@ -277,10 +263,7 @@ mod tests {
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
 
         for i in 0..count {
-            let it = Test {
-                a: i,
-                b: format!("String of the element {}", i),
-            };
+            let it = Test { a: i, b: false };
 
             stable_vec.replace(i, &it);
         }
@@ -291,16 +274,13 @@ mod tests {
             let it = stable_vec.pop().unwrap();
 
             assert_eq!(it.a, count - 1 - i);
-            assert_eq!(it.b, format!("String of the element {}", count - 1 - i));
+            assert!(!it.b);
         }
 
         assert_eq!(stable_vec.len(), 0, "Invalid len after pop");
 
         for i in 0..count {
-            let it = Test {
-                a: i,
-                b: format!("Str {}", i),
-            };
+            let it = Test { a: i, b: true };
 
             stable_vec.push(&it);
         }
@@ -314,7 +294,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut v = SVec::<u64>::default();
+        let mut v = SVecDirect::<u64>::default();
         assert!(v.get_cloned(100).is_none());
 
         v.push(&10);

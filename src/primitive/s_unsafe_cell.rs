@@ -10,6 +10,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Readable, Writable)]
 pub struct SUnsafeCell<T> {
     pub(crate) slice: SSlice,
+    #[speedy(skip)]
     _marker: SPhantomData<T>,
     #[speedy(skip)]
     pub(crate) buf: RefCell<Option<Vec<u8>>>,
@@ -20,11 +21,11 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         let buf = it.write_to_vec().expect("Unable to encode");
         let slice = allocate(buf.len());
 
-        slice._write_bytes(0, &buf);
+        slice.write_bytes(0, &buf);
 
         Self {
             slice,
-            _marker: SPhantomData::default(),
+            _marker: SPhantomData::new(),
             buf: RefCell::new(Some(buf)),
         }
     }
@@ -37,7 +38,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         }
 
         let mut buf = vec![0u8; self._allocated_size()];
-        self.slice._read_bytes(0, &mut buf);
+        self.slice.read_bytes(0, &mut buf);
 
         let res = T::read_from_buffer_copying_data(&buf).expect("Unable to decode");
         *self.buf.borrow_mut() = Some(buf);
@@ -54,7 +55,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         let mut res = false;
 
         if self._allocated_size() < buf.len() {
-            self.slice = match reallocate(self.slice.clone(), buf.len()) {
+            self.slice = match reallocate(self.slice, buf.len()) {
                 Ok(s) => s,
                 Err(s) => {
                     res = true;
@@ -63,7 +64,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
             }
         }
 
-        self.slice._write_bytes(0, &buf);
+        self.slice.write_bytes(0, &buf);
         *self.buf.borrow_mut() = Some(buf);
 
         res
@@ -76,11 +77,11 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         assert_ne!(ptr, 0);
 
-        let slice = SSlice::from_ptr(ptr, Side::Start, false).unwrap();
+        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         Self {
             slice,
-            _marker: SPhantomData::default(),
+            _marker: SPhantomData::new(),
             buf: RefCell::new(None),
         }
     }

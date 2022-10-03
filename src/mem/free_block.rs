@@ -31,7 +31,6 @@ impl FreeBlock {
         ptr: u64,
         side: Side,
         size_1_opt: Option<usize>,
-        check_sizes: bool,
     ) -> Option<Self> {
         match side {
             Side::Start => {
@@ -40,17 +39,8 @@ impl FreeBlock {
                 } else {
                     Self::read_size(ptr)?
                 };
-                if !check_sizes {
-                    return Some(Self::new(ptr, size_1, false));
-                }
-
-                let size_2 = Self::read_size(ptr + (BLOCK_META_SIZE + size_1) as u64)?;
-
-                if size_1 == size_2 {
-                    Some(Self::new(ptr, size_1, false))
-                } else {
-                    None
-                }
+                
+                Some(Self::new(ptr, size_1, false))
             }
             Side::End => {
                 let size_1 = if let Some(s) = size_1_opt {
@@ -58,31 +48,27 @@ impl FreeBlock {
                 } else {
                     Self::read_size(ptr - BLOCK_META_SIZE as u64)?
                 };
-
-                if !check_sizes {
-                    return Some(Self::new(
-                        ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
-                        size_1,
-                        false,
-                    ));
-                }
-
-                let size_2 = Self::read_size(ptr - (BLOCK_META_SIZE * 2 + size_1) as u64)?;
-
-                if size_1 == size_2 {
-                    Some(Self::new(
-                        ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
-                        size_1,
-                        false,
-                    ))
-                } else {
-                    None
-                }
+                
+                Some(Self::new(
+                    ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
+                    size_1,
+                    false,
+                ))
             }
         }
     }
+    
+    pub(crate) fn validate(&self) -> Option<()> {
+        let size_2 = Self::read_size(self.ptr + (BLOCK_META_SIZE + self.size) as u64)?;
 
-    pub fn persist(&mut self) {
+        if self.size == size_2 {
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn persist(&mut self) {
         if self.transient {
             Self::write_size(self.ptr, self.size);
 
@@ -126,28 +112,28 @@ impl FreeBlock {
         }
     }
 
-    pub fn set_free_ptrs(&self, prev_ptr: u64, next_ptr: u64) {
+    pub fn set_free_ptrs(ptr: u64, prev_ptr: u64, next_ptr: u64) {
         let mut buf = [0u8; 2 * PTR_SIZE];
         buf[0..PTR_SIZE].copy_from_slice(&prev_ptr.to_le_bytes());
         buf[PTR_SIZE..PTR_SIZE * 2].copy_from_slice(&next_ptr.to_le_bytes());
 
-        self._write_bytes(0, &buf)
+        stable::write(ptr + PTR_SIZE as u64, &buf);
     }
 
-    pub fn set_prev_free_ptr(&self, prev_ptr: u64) {
-        self._write_word(0, prev_ptr);
+    pub fn set_prev_free_ptr(ptr: u64, prev_ptr: u64) {
+        stable::write_word(ptr + PTR_SIZE as u64, prev_ptr);
     }
 
-    pub fn get_prev_free_ptr(&self) -> u64 {
-        self._read_word(0)
+    pub fn get_prev_free_ptr(ptr: u64) -> u64 {
+        stable::read_word(ptr + PTR_SIZE as u64)
     }
 
-    pub fn set_next_free_ptr(&self, next_ptr: u64) {
-        self._write_word(PTR_SIZE, next_ptr);
+    pub fn set_next_free_ptr(ptr: u64, next_ptr: u64) {
+        stable::write_word(ptr + (PTR_SIZE * 2) as u64, next_ptr);
     }
 
-    pub fn get_next_free_ptr(&self) -> u64 {
-        self._read_word(PTR_SIZE)
+    pub fn get_next_free_ptr(ptr: u64) -> u64 {
+        stable::read_word(ptr + (PTR_SIZE * 2) as u64)
     }
 
     pub fn get_total_size_bytes(&self) -> usize {
@@ -182,7 +168,7 @@ impl FreeBlock {
         let mut meta = [0u8; PTR_SIZE];
         stable::read(ptr, &mut meta);
 
-        let encoded_size = usize::from_le_bytes(meta);
+        let encoded_size = u64::from_le_bytes(meta);
         let mut size = encoded_size;
 
         let allocated = if encoded_size & ALLOCATED == ALLOCATED {
@@ -195,12 +181,12 @@ impl FreeBlock {
         if allocated {
             None
         } else {
-            Some(size)
+            Some(size as usize)
         }
     }
 
     fn write_size(ptr: u64, size: usize) {
-        let encoded_size = size & FREE;
+        let encoded_size = size as u64 & FREE;
 
         let meta = encoded_size.to_le_bytes();
 

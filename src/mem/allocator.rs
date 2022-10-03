@@ -23,8 +23,8 @@ pub(crate) type SegClassId = u32;
 #[derive(Debug)]
 pub(crate) struct StableMemoryAllocator {
     offset: u64,
-    seg_class_heads: [u64; SEG_CLASS_PTRS_COUNT as usize],
-    seg_class_tails: [u64; SEG_CLASS_PTRS_COUNT as usize],
+    seg_class_heads: [Option<FreeBlock>; SEG_CLASS_PTRS_COUNT as usize],
+    seg_class_tails: [Option<FreeBlock>; SEG_CLASS_PTRS_COUNT as usize],
     free_size: u64,
     allocated_size: u64,
     max_allocation_pages: u32,
@@ -48,8 +48,8 @@ impl StableMemoryAllocator {
     fn new(offset: u64) -> Self {
         Self {
             offset,
-            seg_class_heads: [EMPTY_PTR; SEG_CLASS_PTRS_COUNT as usize],
-            seg_class_tails: [EMPTY_PTR; SEG_CLASS_PTRS_COUNT as usize],
+            seg_class_heads: [None; SEG_CLASS_PTRS_COUNT as usize],
+            seg_class_tails: [None; SEG_CLASS_PTRS_COUNT as usize],
             free_size: 0,
             allocated_size: 0,
             max_allocation_pages: DEFAULT_MAX_ALLOCATION_PAGES,
@@ -69,7 +69,7 @@ impl StableMemoryAllocator {
         let allocator_slice = SSlice::new(offset, Self::SIZE, true);
         let mut allocator = StableMemoryAllocator::new(offset);
 
-        allocator_slice._write_bytes(0, &vec![0; Self::SIZE]);
+        allocator_slice.write_bytes(0, &vec![0; Self::SIZE]);
 
         assert!(allocator.max_ptr - allocator.min_ptr < u32::MAX as u64);
         assert!(allocator.max_ptr - allocator.min_ptr >= BLOCK_MIN_TOTAL_SIZE as u64);
@@ -87,32 +87,40 @@ impl StableMemoryAllocator {
     }
 
     pub(crate) fn store(self) {
-        let slice = SSlice::from_ptr(self.offset, Side::Start, false).unwrap();
+        let slice = SSlice::from_ptr(self.offset, Side::Start).unwrap();
         let mut offset = 0;
 
-        slice._write_bytes(offset, &MAGIC);
+        slice.write_bytes(offset, &MAGIC);
         offset += MAGIC.len();
 
         for i in 0..SEG_CLASS_PTRS_COUNT as usize {
-            slice._write_word(offset, self.seg_class_heads[i]);
+            if let Some(free_block) = self.seg_class_heads[i] {
+                slice.write_word(offset, free_block.ptr);
+            } else {
+                slice.write_word(offset, EMPTY_PTR);
+            }
             offset += PTR_SIZE;
         }
 
         for i in 0..SEG_CLASS_PTRS_COUNT as usize {
-            slice._write_word(offset, self.seg_class_tails[i]);
+            if let Some(free_block) = self.seg_class_tails[i] {
+                slice.write_word(offset, free_block.ptr);
+            } else {
+                slice.write_word(offset, EMPTY_PTR);
+            }
             offset += PTR_SIZE;
         }
 
-        slice._write_word(offset, self.free_size);
+        slice.write_word(offset, self.free_size);
         offset += PTR_SIZE;
 
-        slice._write_word(offset, self.allocated_size);
+        slice.write_word(offset, self.allocated_size);
         offset += PTR_SIZE;
 
-        slice._write_word(offset, self.max_allocation_pages as u64);
+        slice.write_word(offset, self.max_allocation_pages as u64);
         offset += PTR_SIZE;
 
-        slice._write_word(offset, self.max_grow_pages);
+        slice.write_word(offset, self.max_grow_pages);
         offset += PTR_SIZE;
 
         let flag = if self.on_low_stable_memory_callback_executed {
@@ -120,11 +128,11 @@ impl StableMemoryAllocator {
         } else {
             0u8
         };
-        slice._write_bytes(offset, &[flag; 1]);
+        slice.write_bytes(offset, &[flag; 1]);
         offset += 1;
 
         for i in 0..CUSTOM_DATA_PTRS_COUNT {
-            slice._write_word(offset, self.custom_data_ptrs[i]);
+            slice.write_word(offset, self.custom_data_ptrs[i]);
             offset += PTR_SIZE;
         }
     }
@@ -134,47 +142,63 @@ impl StableMemoryAllocator {
     /// It's fine to call this function more than once, but remember that using multiple copies of
     /// a single allocator can lead to race condition in an asynchronous scenario
     pub(crate) unsafe fn reinit(ptr: u64) -> Self {
-        let slice = SSlice::from_ptr(ptr, Side::Start, true).unwrap();
+        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+        slice.validate().unwrap();
+        
         let mut offset = 0;
 
         let mut magic = [0u8; MAGIC.len()];
-        slice._read_bytes(offset, &mut magic);
+        slice.read_bytes(offset, &mut magic);
         assert_eq!(magic, MAGIC);
 
         offset += MAGIC.len();
 
-        let mut seg_class_heads = [EMPTY_PTR; SEG_CLASS_PTRS_COUNT as usize];
-        for ptr in &mut seg_class_heads {
-            *ptr = slice._read_word(offset);
+        let mut seg_class_heads = [None; SEG_CLASS_PTRS_COUNT as usize];
+        for free_block in &mut seg_class_heads {
+            let ptr = slice.read_word(offset);
+
+            *free_block = if ptr == EMPTY_PTR {
+                None
+            } else {
+                FreeBlock::from_ptr(ptr, Side::Start, None)
+            };
+
             offset += PTR_SIZE;
         }
 
-        let mut seg_class_tails = [EMPTY_PTR; SEG_CLASS_PTRS_COUNT as usize];
-        for ptr in &mut seg_class_tails {
-            *ptr = slice._read_word(offset);
+        let mut seg_class_tails = [None; SEG_CLASS_PTRS_COUNT as usize];
+        for free_block in &mut seg_class_tails {
+            let ptr = slice.read_word(offset);
+
+            *free_block = if ptr == EMPTY_PTR {
+                None
+            } else {
+                FreeBlock::from_ptr(ptr, Side::Start, None)
+            };
+
             offset += PTR_SIZE;
         }
 
-        let free_size = slice._read_word(offset);
+        let free_size = slice.read_word(offset);
         offset += PTR_SIZE;
 
-        let allocated_size = slice._read_word(offset);
+        let allocated_size = slice.read_word(offset);
         offset += PTR_SIZE;
 
-        let max_allocation_pages = slice._read_word(offset) as u32;
+        let max_allocation_pages = slice.read_word(offset) as u32;
         offset += PTR_SIZE;
 
-        let max_grow_pages = slice._read_word(offset);
+        let max_grow_pages = slice.read_word(offset);
         offset += PTR_SIZE;
 
         let mut flag = [0u8; 1];
-        slice._read_bytes(offset, &mut flag);
+        slice.read_bytes(offset, &mut flag);
         let on_low_stable_memory_callback_executed = flag[0] == 1;
         offset += 1;
 
         let mut custom_data_ptrs = [0u64; CUSTOM_DATA_PTRS_COUNT];
         for ptr in &mut custom_data_ptrs {
-            *ptr = slice._read_word(offset);
+            *ptr = slice.read_word(offset);
             offset += PTR_SIZE;
         }
 
@@ -224,11 +248,11 @@ impl StableMemoryAllocator {
             Ok(s) => Ok(s),
             Err(slice) => {
                 let mut data = vec![0u8; slice.get_size_bytes()];
-                slice._read_bytes(0, &mut data);
+                slice.read_bytes(0, &mut data);
 
                 self.deallocate(slice);
                 let new_slice = self.allocate(new_size);
-                new_slice._write_bytes(0, &data);
+                new_slice.write_bytes(0, &data);
 
                 Err(new_slice)
             }
@@ -244,48 +268,52 @@ impl StableMemoryAllocator {
 
         let next_neighbor_free_size_1_opt =
             free_block.check_neighbor_is_also_free(Side::End, self.min_ptr, self.max_ptr);
+        
         if let Some(next_neighbor_free_size_1) = next_neighbor_free_size_1_opt {
             if let Some(next_neighbor) = FreeBlock::from_ptr(
                 free_block.get_next_neighbor_ptr(),
                 Side::Start,
-                Some(next_neighbor_free_size_1),
-                true,
+                Some(next_neighbor_free_size_1)
             ) {
-                let seg_class_id = get_seg_class_id(next_neighbor.size);
-                let target_size = free_block.size + next_neighbor.size + BLOCK_META_SIZE * 2;
+                if next_neighbor.validate().is_some() {
+                    let seg_class_id = get_seg_class_id(next_neighbor.size);
+                    let target_size = free_block.size + next_neighbor.size + BLOCK_META_SIZE * 2;
 
-                if target_size >= new_size && target_size < new_size + BLOCK_MIN_TOTAL_SIZE {
-                    self.eject_from_freelist(seg_class_id, &next_neighbor);
+                    if target_size >= new_size && target_size < new_size + BLOCK_MIN_TOTAL_SIZE {
+                        self.eject_from_freelist(seg_class_id, &next_neighbor);
 
-                    let total_allocated = self.get_allocated_size();
-                    self.set_allocated_size(
-                        total_allocated + free_block.get_total_size_bytes() as u64,
-                    );
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + free_block.get_total_size_bytes() as u64,
+                        );
 
-                    let new_block = FreeBlock::new(free_block.ptr, target_size, true);
+                        let new_block = FreeBlock::new(free_block.ptr, target_size, true);
 
-                    return Ok(new_block.to_allocated());
+                        return Ok(new_block.to_allocated());
+                    }
+
+                    if target_size >= new_size + BLOCK_MIN_TOTAL_SIZE {
+                        self.eject_from_freelist(seg_class_id, &next_neighbor);
+
+                        let block_1 = FreeBlock::new(free_block.ptr, new_size, true);
+                        let block_2 = FreeBlock::new_total_size(
+                            block_1.get_next_neighbor_ptr(),
+                            target_size - new_size,
+                        );
+
+                        self.push_free_block(block_2, false);
+
+                        let total_allocated = self.get_allocated_size();
+                        self.set_allocated_size(
+                            total_allocated + block_1.get_total_size_bytes() as u64,
+                        );
+
+                        return Ok(block_1.to_allocated());
+                    }
+
+                    return Err(slice);
                 }
-
-                if target_size >= new_size + BLOCK_MIN_TOTAL_SIZE {
-                    self.eject_from_freelist(seg_class_id, &next_neighbor);
-
-                    let block_1 = FreeBlock::new(free_block.ptr, new_size, true);
-                    let block_2 = FreeBlock::new_total_size(
-                        block_1.get_next_neighbor_ptr(),
-                        target_size - new_size,
-                    );
-
-                    self.push_free_block(block_2, false);
-
-                    let total_allocated = self.get_allocated_size();
-                    self.set_allocated_size(
-                        total_allocated + block_1.get_total_size_bytes() as u64,
-                    );
-
-                    return Ok(block_1.to_allocated());
-                }
-
+                
                 return Err(slice);
             }
 
@@ -307,19 +335,18 @@ impl StableMemoryAllocator {
 
         let seg_class_id = get_seg_class_id(free_block.size);
 
-        if self.seg_class_heads[seg_class_id] == EMPTY_PTR {
-            self.set_seg_class_head(seg_class_id, free_block.ptr);
-            self.set_seg_class_tail(seg_class_id, free_block.ptr);
+        if self.seg_class_heads[seg_class_id].is_none() {
+            self.set_seg_class_head(seg_class_id, Some(free_block));
+            self.set_seg_class_tail(seg_class_id, Some(free_block));
 
-            free_block.set_free_ptrs(EMPTY_PTR, EMPTY_PTR);
+            FreeBlock::set_free_ptrs(free_block.ptr, EMPTY_PTR, EMPTY_PTR);
         } else {
-            let tail_ptr = self.seg_class_tails[seg_class_id];
-            let tail = FreeBlock::from_ptr(tail_ptr, Side::Start, None, false).unwrap();
+            let tail = self.seg_class_tails[seg_class_id].unwrap();
 
-            self.set_seg_class_tail(seg_class_id, free_block.ptr);
+            self.set_seg_class_tail(seg_class_id, Some(free_block));
 
-            tail.set_next_free_ptr(free_block.ptr);
-            free_block.set_free_ptrs(tail_ptr, EMPTY_PTR);
+            FreeBlock::set_next_free_ptr(tail.ptr, free_block.ptr);
+            FreeBlock::set_free_ptrs(free_block.ptr, tail.ptr, EMPTY_PTR);
         }
     }
 
@@ -359,9 +386,9 @@ impl StableMemoryAllocator {
                     return Ok(block_1);
                 }
 
-                let next_ptr = free_block.get_next_free_ptr();
+                let next_ptr = FreeBlock::get_next_free_ptr(free_block.ptr);
                 if next_ptr != EMPTY_PTR {
-                    free_block_opt = FreeBlock::from_ptr(next_ptr, Side::Start, None, false);
+                    free_block_opt = FreeBlock::from_ptr(next_ptr, Side::Start, None);
                 } else {
                     seg_class_id += 1;
 
@@ -430,43 +457,39 @@ impl StableMemoryAllocator {
 
     fn eject_from_freelist(&mut self, seg_class_id: usize, free_block: &FreeBlock) {
         // if block is the head of it's segregation class
-        if self.seg_class_heads[seg_class_id] == free_block.ptr {
+        if self.seg_class_heads[seg_class_id].unwrap().ptr == free_block.ptr {
             // if it is also the tail
-            if self.seg_class_tails[seg_class_id] == free_block.ptr {
-                self.set_seg_class_head(seg_class_id, EMPTY_PTR);
-                self.set_seg_class_tail(seg_class_id, EMPTY_PTR);
+            if self.seg_class_tails[seg_class_id].unwrap().ptr == free_block.ptr {
+                self.set_seg_class_head(seg_class_id, None);
+                self.set_seg_class_tail(seg_class_id, None);
             } else {
                 // there should be next
-                let next_free_block_ptr = free_block.get_next_free_ptr();
-                let next =
-                    FreeBlock::from_ptr(next_free_block_ptr, Side::Start, None, false).unwrap();
+                let next_free_block_ptr = FreeBlock::get_next_free_ptr(free_block.ptr);
+                let new_head = FreeBlock::from_ptr(next_free_block_ptr, Side::Start, None);
 
                 // next is the head now
-                self.set_seg_class_head(seg_class_id, next_free_block_ptr);
-                next.set_prev_free_ptr(EMPTY_PTR);
+                self.set_seg_class_head(seg_class_id, new_head);
+                FreeBlock::set_prev_free_ptr(next_free_block_ptr, EMPTY_PTR);
             }
 
             // if block is the tail of it's class, but not the head
-        } else if self.seg_class_tails[seg_class_id] == free_block.ptr {
+        } else if self.seg_class_tails[seg_class_id].unwrap().ptr == free_block.ptr {
             // there should be prev
-            let prev_ptr = free_block.get_prev_free_ptr();
-            let prev = FreeBlock::from_ptr(prev_ptr, Side::Start, None, false).unwrap();
+            let prev_ptr = FreeBlock::get_prev_free_ptr(free_block.ptr);
+            let new_tail = FreeBlock::from_ptr(prev_ptr, Side::Start, None);
 
-            self.set_seg_class_tail(seg_class_id, prev_ptr);
-            prev.set_next_free_ptr(EMPTY_PTR);
+            self.set_seg_class_tail(seg_class_id, new_tail);
+            FreeBlock::set_next_free_ptr(prev_ptr, EMPTY_PTR);
 
             // if the block is somewhere in between
         } else {
             // it should have both: prev and next
-            let prev_ptr = free_block.get_prev_free_ptr();
-            let prev = FreeBlock::from_ptr(prev_ptr, Side::Start, None, false).unwrap();
-
-            let next_ptr = free_block.get_next_free_ptr();
-            let next = FreeBlock::from_ptr(next_ptr, Side::Start, None, false).unwrap();
+            let prev_ptr = FreeBlock::get_prev_free_ptr(free_block.ptr);
+            let next_ptr = FreeBlock::get_next_free_ptr(free_block.ptr);
 
             // just link together next and prev
-            prev.set_next_free_ptr(next.ptr);
-            next.set_prev_free_ptr(prev.ptr);
+            FreeBlock::set_next_free_ptr(prev_ptr, next_ptr);
+            FreeBlock::set_prev_free_ptr(next_ptr, prev_ptr);
         }
 
         let total_free = self.get_free_size();
@@ -488,16 +511,19 @@ impl StableMemoryAllocator {
                 prev_neighbor_ptr,
                 Side::End,
                 Some(prev_neighbor_free_size_1),
-                true,
             ) {
-                let seg_class_id = get_seg_class_id(prev_neighbor.size);
-                self.eject_from_freelist(seg_class_id, &prev_neighbor);
+                if prev_neighbor.validate().is_some() {
+                    let seg_class_id = get_seg_class_id(prev_neighbor.size);
+                    self.eject_from_freelist(seg_class_id, &prev_neighbor);
 
-                FreeBlock::new(
-                    prev_neighbor.ptr,
-                    prev_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
-                    true,
-                )
+                    FreeBlock::new(
+                        prev_neighbor.ptr,
+                        prev_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
+                        true,
+                    )
+                } else {
+                    free_block
+                }
             } else {
                 free_block
             }
@@ -510,16 +536,19 @@ impl StableMemoryAllocator {
                 next_neighbor_ptr,
                 Side::Start,
                 Some(next_neighbor_free_size_1),
-                true,
             ) {
-                let seg_class_id = get_seg_class_id(next_neighbor.size);
-                self.eject_from_freelist(seg_class_id, &next_neighbor);
+                if next_neighbor.validate().is_some() {
+                    let seg_class_id = get_seg_class_id(next_neighbor.size);
+                    self.eject_from_freelist(seg_class_id, &next_neighbor);
 
-                FreeBlock::new(
-                    free_block.ptr,
-                    next_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
-                    true,
-                )
+                    FreeBlock::new(
+                        free_block.ptr,
+                        next_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
+                        true,
+                    )
+                } else {
+                    free_block
+                }
             } else {
                 free_block
             }
@@ -604,20 +633,15 @@ impl StableMemoryAllocator {
     }
 
     fn get_seg_class_head(&self, id: usize) -> Option<FreeBlock> {
-        let ptr = self.seg_class_heads[id];
-        if ptr == EMPTY_PTR {
-            return None;
-        }
-
-        FreeBlock::from_ptr(ptr, Side::Start, None, false)
+        self.seg_class_heads[id]
     }
 
-    fn set_seg_class_head(&mut self, id: usize, head_ptr: u64) {
-        self.seg_class_heads[id] = head_ptr;
+    fn set_seg_class_head(&mut self, id: usize, new_head: Option<FreeBlock>) {
+        self.seg_class_heads[id] = new_head;
     }
 
-    fn set_seg_class_tail(&mut self, id: usize, tail_ptr: u64) {
-        self.seg_class_tails[id] = tail_ptr;
+    fn set_seg_class_tail(&mut self, id: usize, new_tail: Option<FreeBlock>) {
+        self.seg_class_tails[id] = new_tail;
     }
 
     pub(crate) fn get_allocated_size(&self) -> u64 {

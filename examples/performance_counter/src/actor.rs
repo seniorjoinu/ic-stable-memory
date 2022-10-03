@@ -6,7 +6,8 @@ use ic_stable_memory::collections::btree_map::SBTreeMap;
 use ic_stable_memory::collections::btree_set::SBTreeSet;
 use ic_stable_memory::collections::hash_map::SHashMap;
 use ic_stable_memory::collections::hash_set::SHashSet;
-use ic_stable_memory::collections::vec::SVec;
+use ic_stable_memory::collections::vec::vec_direct::SVecDirect;
+use ic_stable_memory::collections::vec::vec_indirect::SVec;
 use ic_stable_memory::{
     s, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
 };
@@ -22,6 +23,8 @@ static mut STANDARD_BTREEMAP: Option<BTreeMap<u64, u64>> = None;
 static mut STANDARD_BTREESET: Option<BTreeSet<u64>> = None;
 
 type StableVec = SVec<u64>;
+type StableVecDirect = SVecDirect<u64>;
+
 type StableBinaryHeap = SBinaryHeap<u64>;
 type StableHashMap = SHashMap<u64, u64>;
 type StableHashSet = SHashSet<u64>;
@@ -35,6 +38,8 @@ fn init() {
     stable_memory_init(true, 0);
 
     s! { StableVec = SVec::new() };
+    s! { StableVecDirect = SVecDirect::new() };
+
     s! { StableBinaryHeap = SBinaryHeap::new(SHeapType::Max) };
     s! { StableHashMap = SHashMap::new() };
     s! { StableHashSet = SHashSet::new() };
@@ -119,6 +124,24 @@ fn _a2_stable_vec_push(count: u32) -> u64 {
     after - before
 }
 
+#[update]
+fn _a3_stable_direct_vec_push(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut vec = s!(StableVecDirect);
+    let seed = time();
+
+    for _ in 0..count {
+        vec.push(&get_random_u64(seed));
+    }
+
+    s! { StableVecDirect = vec };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
 #[query]
 fn _b1_standard_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
@@ -142,6 +165,22 @@ fn _b2_stable_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let vec = s!(StableVec);
+
+    for _ in 0..count {
+        let idx = get_random_u64(time()) % vec.len();
+        vec.get_cloned(idx).unwrap();
+    }
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[query]
+fn _b3_stable_direct_vec_get(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let vec = s!(StableVecDirect);
 
     for _ in 0..count {
         let idx = get_random_u64(time()) % vec.len();
@@ -181,6 +220,23 @@ fn _c2_stable_vec_pop(count: u32) -> u64 {
     }
 
     s! { StableVec = vec };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[update]
+fn _c3_stable_direct_vec_pop(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut vec = s!(StableVecDirect);
+
+    for _ in 0..count {
+        vec.pop();
+    }
+
+    s! { StableVecDirect = vec };
 
     let after = performance_counter(0);
 

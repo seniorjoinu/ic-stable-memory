@@ -1,4 +1,4 @@
-use crate::collections::vec::SVec;
+use crate::collections::vec::vec_indirect::SVec;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{BLOCK_META_SIZE, PTR_SIZE};
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
@@ -78,8 +78,8 @@ impl<
 
         Self {
             _info,
-            _k: SPhantomData::default(),
-            _v: SPhantomData::default(),
+            _k: SPhantomData::new(),
+            _v: SPhantomData::new(),
         }
     }
 
@@ -234,7 +234,7 @@ impl<
             let table = allocate(capacity_bytes);
 
             // we have to initialize this memory
-            table._write_bytes(0, &vec![0u8; table.get_size_bytes()]);
+            table.write_bytes(0, &vec![0u8; table.get_size_bytes()]);
 
             self._info._table = Some(table);
         }
@@ -251,12 +251,12 @@ impl<
     fn set_bucket(&mut self, idx: usize, bucket_value: &HashMapBucket<K, V>) {
         let offset = idx * PTR_SIZE;
         self.table()
-            ._write_word(offset, unsafe { bucket_value.as_ptr() });
+            .write_word(offset, unsafe { bucket_value.as_ptr() });
     }
 
     fn read_bucket(&self, idx: usize) -> Option<HashMapBucket<K, V>> {
         let offset = idx * PTR_SIZE;
-        let ptr = self.table()._read_word(offset);
+        let ptr = self.table().read_word(offset);
 
         if ptr == 0 || ptr == EMPTY_PTR {
             None

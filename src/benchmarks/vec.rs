@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod vec_benchmark {
-    use crate::collections::vec::SVec;
+    use crate::collections::vec::vec_direct::SVecDirect;
+    use crate::collections::vec::vec_indirect::SVec;
     use crate::measure;
     use crate::{init_allocator, stable};
 
@@ -8,7 +9,7 @@ mod vec_benchmark {
 
     #[test]
     #[ignore]
-    fn body() {
+    fn body_indirect() {
         {
             let mut classic_vec = Vec::new();
 
@@ -41,6 +42,58 @@ mod vec_benchmark {
             measure!("Stable vec push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
                     stable_vec.push(&String::from("Some short string"));
+                }
+            });
+
+            measure!("Stable vec search", ITERATIONS, {
+                for i in 0..ITERATIONS as u64 {
+                    stable_vec.get_cloned(i).unwrap();
+                }
+            });
+
+            measure!("Stable vec pop", ITERATIONS, {
+                for _ in 0..ITERATIONS {
+                    stable_vec.pop().unwrap();
+                }
+            });
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn body_direct() {
+        {
+            let mut classic_vec = Vec::new();
+
+            measure!("Classic vec push", ITERATIONS, {
+                for i in 0..ITERATIONS {
+                    classic_vec.push(i);
+                }
+            });
+
+            measure!("Classic vec search", ITERATIONS, {
+                for i in 0..ITERATIONS {
+                    classic_vec.get(i).unwrap();
+                }
+            });
+
+            measure!("Classic vec pop", ITERATIONS, {
+                for _ in 0..ITERATIONS {
+                    classic_vec.pop().unwrap();
+                }
+            });
+        }
+
+        {
+            stable::clear();
+            stable::grow(1).unwrap();
+            init_allocator(0);
+
+            let mut stable_vec = SVecDirect::new();
+
+            measure!("Stable vec push", ITERATIONS, {
+                for i in 0..ITERATIONS {
+                    stable_vec.push(&i);
                 }
             });
 

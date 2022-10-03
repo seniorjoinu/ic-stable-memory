@@ -179,7 +179,7 @@ for you anymore, even if you add it to the canister later.
 ## Collections
 
 ### SVec
-[source code](./src/collections/vec.rs)
+[source code](./src/collections/vec_direct)
 
 // TODO: API
 
