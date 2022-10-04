@@ -192,7 +192,7 @@ impl<
 
         let idx = self.find_bucket_idx(key);
         let bucket_box = self.read_bucket(idx);
-        let bucket = bucket_box?.get_cloned();
+        let mut bucket = bucket_box?.get_cloned();
 
         for i in 0..bucket.len() {
             let elem = bucket.get_cloned(i).unwrap();

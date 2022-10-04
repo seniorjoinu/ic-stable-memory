@@ -164,7 +164,8 @@ fn _b1_standard_vec_get(count: u32) -> u64 {
 fn _b2_stable_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
-    let vec = s!(StableVec);
+    let mut vec = s!(StableVec);
+    vec.precache_sectors();
 
     for _ in 0..count {
         let idx = get_random_u64(time()) % vec.len();
@@ -180,7 +181,8 @@ fn _b2_stable_vec_get(count: u32) -> u64 {
 fn _b3_stable_direct_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
-    let vec = s!(StableVecDirect);
+    let mut vec = s!(StableVecDirect);
+    vec.precache_sectors();
 
     for _ in 0..count {
         let idx = get_random_u64(time()) % vec.len();
@@ -214,6 +216,7 @@ fn _c2_stable_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVec);
+    vec.precache_sectors();
 
     for _ in 0..count {
         vec.pop();
@@ -231,6 +234,7 @@ fn _c3_stable_direct_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVecDirect);
+    vec.precache_sectors();
 
     for _ in 0..count {
         vec.pop();
@@ -299,7 +303,7 @@ fn _e1_standard_binary_heap_peek(count: u32) -> u64 {
 fn _e2_stable_binary_heap_peek(count: u32) -> u64 {
     let before = performance_counter(0);
 
-    let binary_heap = s!(StableBinaryHeap);
+    let mut binary_heap = s!(StableBinaryHeap);
 
     for _ in 0..count {
         binary_heap.peek().unwrap();

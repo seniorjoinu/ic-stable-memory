@@ -45,6 +45,8 @@ mod vec_benchmark {
                 }
             });
 
+            stable_vec.precache_sectors();
+
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS as u64 {
                     stable_vec.get_cloned(i).unwrap();
@@ -96,6 +98,8 @@ mod vec_benchmark {
                     stable_vec.push(&i);
                 }
             });
+
+            stable_vec.precache_sectors();
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS as u64 {

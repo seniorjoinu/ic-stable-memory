@@ -11,7 +11,7 @@ pub struct SVec<T> {
 }
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             inner: SVecDirect::new(),
             _data: SPhantomData::new(),
@@ -35,7 +35,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         Some(elem)
     }
 
-    pub fn get_cloned(&self, idx: u64) -> Option<T> {
+    pub fn get_cloned(&mut self, idx: u64) -> Option<T> {
         let elem_ptr = self.inner.get_cloned(idx)?;
         let elem_cell = unsafe { SUnsafeCell::<T>::from_ptr(elem_ptr) };
         let elem = elem_cell.get_cloned();
@@ -85,6 +85,10 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
 
     pub fn is_about_to_grow(&self) -> bool {
         self.len() == self.capacity()
+    }
+
+    pub fn precache_sectors(&mut self) {
+        self.inner.precache_sectors();
     }
 }
 

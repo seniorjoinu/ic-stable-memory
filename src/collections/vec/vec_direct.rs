@@ -1,14 +1,22 @@
 use crate::mem::s_slice::{SSlice, Side, PTR_SIZE};
 use crate::mem::Anyway;
-use crate::utils::math::fast_log2_64;
+use crate::utils::math::{fast_log2_32, fast_log2_64};
 use crate::utils::phantom_data::SPhantomData;
 use crate::utils::{any_as_u8_slice, u8_slice_as_any, NotReference};
 use crate::{allocate, deallocate, reallocate};
 use speedy::{Readable, Writable};
 use std::cmp::min;
+use std::collections::HashMap;
 use std::mem::size_of;
 
-const TWO_IN_29: u64 = 2u64.pow(29);
+#[derive(Readable, Writable)]
+struct Buf<T>(Vec<u8>, SPhantomData<T>);
+
+impl<T> Default for Buf<T> {
+    fn default() -> Self {
+        Self(vec![0u8; size_of::<T>()], SPhantomData::default())
+    }
+}
 
 #[derive(Readable, Writable)]
 pub struct SVecDirect<T> {
@@ -16,15 +24,21 @@ pub struct SVecDirect<T> {
     sectors_len: usize,
     sectors: Option<SSlice>,
     #[speedy(skip)]
+    _sectors_cache: Vec<u64>,
+    #[speedy(skip)]
+    _buf: Buf<T>,
+    #[speedy(skip)]
     _data: SPhantomData<T>,
 }
 
 impl<T: Copy + NotReference> SVecDirect<T> {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             len: 0,
             sectors_len: 0,
             sectors: None,
+            _sectors_cache: Vec::new(),
+            _buf: Buf::default(),
             _data: SPhantomData::new(),
         }
     }
@@ -41,7 +55,6 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         SSlice::_write_bytes(sector_ptr, offset, elem_bytes);
     }
 
-    // TODO: POP IS TOO SLOW (13x slower)
     pub fn pop(&mut self) -> Option<T> {
         let len = self.len();
         if len == 0 {
@@ -54,14 +67,12 @@ impl<T: Copy + NotReference> SVecDirect<T> {
 
         self.set_len(idx);
 
-        let mut elem_bytes = vec![0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
 
-        SSlice::_read_bytes(sector_ptr, offset, &mut elem_bytes);
-
-        Some(unsafe { u8_slice_as_any(&elem_bytes) })
+        Some(unsafe { u8_slice_as_any(&self._buf.0) })
     }
 
-    pub fn get_cloned(&self, idx: u64) -> Option<T> {
+    pub fn get_cloned(&mut self, idx: u64) -> Option<T> {
         if idx >= self.len() || self.is_empty() {
             return None;
         }
@@ -69,10 +80,9 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         let (sector_idx, offset) = self.calculate_inner_index(idx);
         let sector_ptr = self.get_sector(sector_idx);
 
-        let mut elem_bytes = vec![0u8; size_of::<T>()];
-        SSlice::_read_bytes(sector_ptr, offset, &mut elem_bytes);
+        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
 
-        Some(unsafe { u8_slice_as_any(&elem_bytes) })
+        Some(unsafe { u8_slice_as_any(&self._buf.0) })
     }
 
     pub fn replace(&mut self, idx: u64, element: &T) -> T {
@@ -81,13 +91,12 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         let (sector_idx, offset) = self.calculate_inner_index(idx);
         let sector_ptr = self.get_sector(sector_idx);
 
-        let mut prev_elem_bytes = vec![0u8; size_of::<T>()];
-        SSlice::_read_bytes(sector_ptr, offset, &mut prev_elem_bytes);
+        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
 
         let new_elem_bytes = unsafe { any_as_u8_slice(element) };
         SSlice::_write_bytes(sector_ptr, offset, new_elem_bytes);
 
-        unsafe { u8_slice_as_any(&prev_elem_bytes) }
+        unsafe { u8_slice_as_any(&self._buf.0) }
     }
 
     pub fn swap(&mut self, idx1: u64, idx2: u64) {
@@ -98,8 +107,7 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         let (sector1_idx, offset1) = self.calculate_inner_index(idx1);
         let sector1_ptr = self.get_sector(sector1_idx);
 
-        let mut elem1_bytes = vec![0u8; size_of::<T>()];
-        SSlice::_read_bytes(sector1_ptr, offset1, &mut elem1_bytes);
+        SSlice::_read_bytes(sector1_ptr, offset1, &mut self._buf.0);
 
         let (sector2_idx, offset2) = self.calculate_inner_index(idx2);
         let sector2_ptr = self.get_sector(sector2_idx);
@@ -108,10 +116,10 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         SSlice::_read_bytes(sector2_ptr, offset2, &mut elem2_bytes);
 
         SSlice::_write_bytes(sector1_ptr, offset1, &elem2_bytes);
-        SSlice::_write_bytes(sector2_ptr, offset2, &elem1_bytes);
+        SSlice::_write_bytes(sector2_ptr, offset2, &self._buf.0);
     }
 
-    pub fn drop(self) {
+    pub fn drop(mut self) {
         for idx in 0..(self.sectors_len / PTR_SIZE) {
             let sector = self.get_sector(idx);
 
@@ -139,21 +147,36 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         self.len == 0
     }
 
+    pub fn is_about_to_grow(&self) -> bool {
+        self.len() == self.capacity()
+    }
+
+    pub fn precache_sectors(&mut self) {
+        if let Some(sectors) = self.sectors {
+            self._sectors_cache = Vec::new();
+
+            for i in 0..self.sectors_len {
+                self._sectors_cache
+                    .push(SSlice::_read_word(sectors.ptr, i * PTR_SIZE));
+            }
+        }
+    }
+
     fn set_len(&mut self, new_len: u64) {
         self.len = new_len;
     }
 
-    fn get_sector(&self, idx: usize) -> u64 {
-        assert!(idx < self.sectors_len);
+    fn get_sector(&mut self, idx: usize) -> u64 {
+        if idx < self._sectors_cache.len() {
+            self._sectors_cache[idx]
+        } else {
+            let sectors = self.sectors.as_ref().unwrap();
 
-        let sectors = self.sectors.as_ref().unwrap();
-
-        sectors.read_word(idx * PTR_SIZE)
+            sectors.read_word(idx * PTR_SIZE)
+        }
     }
 
     fn get_or_create_sector(&mut self, idx: usize) -> u64 {
-        assert!(idx <= self.sectors_len);
-
         if idx == self.sectors_len {
             let sectors = self.sectors.as_ref().unwrap();
 
@@ -172,10 +195,6 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         }
     }
 
-    pub fn is_about_to_grow(&self) -> bool {
-        self.len() == self.capacity()
-    }
-
     fn grow_if_needed(&mut self) {
         if self.is_about_to_grow() {
             if let Some(sslice) = self.sectors {
@@ -191,15 +210,19 @@ impl<T: Copy + NotReference> SVecDirect<T> {
     fn calculate_inner_index(&self, mut idx: u64) -> (usize, usize) {
         assert!(idx < self.len());
 
-        let (sector_idx, offset_ptr) = if idx > TWO_IN_29 - 4 {
-            idx -= TWO_IN_29 - 4;
+        if idx < 4 {
+            return (0, idx as usize * size_of::<T>());
+        }
+
+        let (sector_idx, offset_ptr) = if idx > TWO_IN_29_MINUS_4 {
+            idx -= TWO_IN_29_MINUS_4;
             let sector_idx = 27 + (idx / TWO_IN_29) as usize;
             let offset_ptr = (idx % TWO_IN_29) as usize;
 
             (sector_idx, offset_ptr)
         } else {
-            let sector_idx = fast_log2_64(idx + 4) as usize - 2;
-            let ptrs_in_prev_sectors = 2u64.pow(sector_idx as u32 + 2) - 4;
+            let sector_idx = fast_log2_32(idx as u32 + 4) as usize - 2;
+            let ptrs_in_prev_sectors = TWOS[sector_idx];
 
             let offset_ptr = (idx - ptrs_in_prev_sectors) as usize;
 
@@ -209,6 +232,44 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         (sector_idx, offset_ptr * size_of::<T>())
     }
 }
+
+const TWO_IN_2: u64 = 0;
+const TWO_IN_3: u64 = 8 - 4;
+const TWO_IN_4: u64 = 16 - 4;
+const TWO_IN_5: u64 = 32 - 4;
+const TWO_IN_6: u64 = 64 - 4;
+const TWO_IN_7: u64 = 128 - 4;
+const TWO_IN_8: u64 = 256 - 4;
+const TWO_IN_9: u64 = 512 - 4;
+const TWO_IN_10: u64 = 1024 - 4;
+const TWO_IN_11: u64 = 2048 - 4;
+const TWO_IN_12: u64 = 4096 - 4;
+const TWO_IN_13: u64 = 2u64.pow(13) - 4;
+const TWO_IN_14: u64 = 2u64.pow(14) - 4;
+const TWO_IN_15: u64 = 2u64.pow(15) - 4;
+const TWO_IN_16: u64 = 2u64.pow(16) - 4;
+const TWO_IN_17: u64 = 2u64.pow(17) - 4;
+const TWO_IN_18: u64 = 2u64.pow(18) - 4;
+const TWO_IN_19: u64 = 2u64.pow(19) - 4;
+const TWO_IN_20: u64 = 2u64.pow(20) - 4;
+const TWO_IN_21: u64 = 2u64.pow(21) - 4;
+const TWO_IN_22: u64 = 2u64.pow(22) - 4;
+const TWO_IN_23: u64 = 2u64.pow(23) - 4;
+const TWO_IN_24: u64 = 2u64.pow(24) - 4;
+const TWO_IN_25: u64 = 2u64.pow(25) - 4;
+const TWO_IN_26: u64 = 2u64.pow(26) - 4;
+const TWO_IN_27: u64 = 2u64.pow(27) - 4;
+const TWO_IN_28: u64 = 2u64.pow(28) - 4;
+
+const TWO_IN_29: u64 = 2u64.pow(29);
+const TWO_IN_29_MINUS_4: u64 = TWO_IN_29 - 4;
+
+const TWOS: [u64; 27] = [
+    TWO_IN_2, TWO_IN_3, TWO_IN_4, TWO_IN_5, TWO_IN_6, TWO_IN_7, TWO_IN_8, TWO_IN_9, TWO_IN_10,
+    TWO_IN_11, TWO_IN_12, TWO_IN_13, TWO_IN_14, TWO_IN_15, TWO_IN_16, TWO_IN_17, TWO_IN_18,
+    TWO_IN_19, TWO_IN_20, TWO_IN_21, TWO_IN_22, TWO_IN_23, TWO_IN_24, TWO_IN_25, TWO_IN_26,
+    TWO_IN_27, TWO_IN_28,
+];
 
 impl<T: Copy + NotReference> Default for SVecDirect<T> {
     fn default() -> Self {
@@ -300,6 +361,10 @@ mod tests {
         v.push(&10);
         v.push(&20);
 
+        println!("{:?}", v._buf.0);
+
+        assert_eq!(v.get_cloned(0).unwrap(), 10);
+        assert_eq!(v.get_cloned(1).unwrap(), 20);
         assert_eq!(v.replace(0, &11), 10);
 
         v.drop();

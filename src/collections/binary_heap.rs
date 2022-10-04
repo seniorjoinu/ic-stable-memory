@@ -62,7 +62,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBinaryHe
         }
     }
 
-    pub fn peek(&self) -> Option<T> {
+    pub fn peek(&mut self) -> Option<T> {
         self.arr.get_cloned(0)
     }
 
