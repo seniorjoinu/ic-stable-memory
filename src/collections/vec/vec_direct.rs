@@ -1,22 +1,12 @@
 use crate::mem::s_slice::{SSlice, Side, PTR_SIZE};
 use crate::mem::Anyway;
-use crate::utils::math::{fast_log2_32, fast_log2_64};
+use crate::utils::math::fast_log2_32;
 use crate::utils::phantom_data::SPhantomData;
-use crate::utils::{any_as_u8_slice, u8_slice_as_any, NotReference};
+use crate::utils::{any_as_u8_slice, u8_fixed_array_as_any, NotReference};
 use crate::{allocate, deallocate, reallocate};
 use speedy::{Readable, Writable};
 use std::cmp::min;
-use std::collections::HashMap;
 use std::mem::size_of;
-
-#[derive(Readable, Writable)]
-struct Buf<T>(Vec<u8>, SPhantomData<T>);
-
-impl<T> Default for Buf<T> {
-    fn default() -> Self {
-        Self(vec![0u8; size_of::<T>()], SPhantomData::default())
-    }
-}
 
 #[derive(Readable, Writable)]
 pub struct SVecDirect<T> {
@@ -26,19 +16,19 @@ pub struct SVecDirect<T> {
     #[speedy(skip)]
     _sectors_cache: Vec<u64>,
     #[speedy(skip)]
-    _buf: Buf<T>,
-    #[speedy(skip)]
     _data: SPhantomData<T>,
 }
 
-impl<T: Copy + NotReference> SVecDirect<T> {
+impl<T: Copy + NotReference> SVecDirect<T>
+where
+    [(); size_of::<T>()]: Sized,
+{
     pub fn new() -> Self {
         Self {
             len: 0,
             sectors_len: 0,
             sectors: None,
             _sectors_cache: Vec::new(),
-            _buf: Buf::default(),
             _data: SPhantomData::new(),
         }
     }
@@ -67,12 +57,13 @@ impl<T: Copy + NotReference> SVecDirect<T> {
 
         self.set_len(idx);
 
-        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
+        let mut arr = [0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut arr);
 
-        Some(unsafe { u8_slice_as_any(&self._buf.0) })
+        Some(unsafe { u8_fixed_array_as_any(arr) })
     }
 
-    pub fn get_cloned(&mut self, idx: u64) -> Option<T> {
+    pub fn get_cloned(&self, idx: u64) -> Option<T> {
         if idx >= self.len() || self.is_empty() {
             return None;
         }
@@ -80,9 +71,10 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         let (sector_idx, offset) = self.calculate_inner_index(idx);
         let sector_ptr = self.get_sector(sector_idx);
 
-        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
+        let mut arr = [0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut arr);
 
-        Some(unsafe { u8_slice_as_any(&self._buf.0) })
+        Some(unsafe { u8_fixed_array_as_any(arr) })
     }
 
     pub fn replace(&mut self, idx: u64, element: &T) -> T {
@@ -91,12 +83,13 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         let (sector_idx, offset) = self.calculate_inner_index(idx);
         let sector_ptr = self.get_sector(sector_idx);
 
-        SSlice::_read_bytes(sector_ptr, offset, &mut self._buf.0);
+        let mut arr = [0u8; size_of::<T>()];
+        SSlice::_read_bytes(sector_ptr, offset, &mut arr);
 
         let new_elem_bytes = unsafe { any_as_u8_slice(element) };
         SSlice::_write_bytes(sector_ptr, offset, new_elem_bytes);
 
-        unsafe { u8_slice_as_any(&self._buf.0) }
+        unsafe { u8_fixed_array_as_any(arr) }
     }
 
     pub fn swap(&mut self, idx1: u64, idx2: u64) {
@@ -106,20 +99,20 @@ impl<T: Copy + NotReference> SVecDirect<T> {
 
         let (sector1_idx, offset1) = self.calculate_inner_index(idx1);
         let sector1_ptr = self.get_sector(sector1_idx);
-
-        SSlice::_read_bytes(sector1_ptr, offset1, &mut self._buf.0);
+        let mut arr1 = [0u8; size_of::<T>()];
 
         let (sector2_idx, offset2) = self.calculate_inner_index(idx2);
         let sector2_ptr = self.get_sector(sector2_idx);
+        let mut arr2 = [0u8; size_of::<T>()];
 
-        let mut elem2_bytes = vec![0u8; size_of::<T>()];
-        SSlice::_read_bytes(sector2_ptr, offset2, &mut elem2_bytes);
+        SSlice::_read_bytes(sector2_ptr, offset2, &mut arr2);
+        SSlice::_read_bytes(sector1_ptr, offset1, &mut arr1);
 
-        SSlice::_write_bytes(sector1_ptr, offset1, &elem2_bytes);
-        SSlice::_write_bytes(sector2_ptr, offset2, &self._buf.0);
+        SSlice::_write_bytes(sector1_ptr, offset1, &arr2);
+        SSlice::_write_bytes(sector2_ptr, offset2, &arr1);
     }
 
-    pub fn drop(mut self) {
+    pub fn drop(self) {
         for idx in 0..(self.sectors_len / PTR_SIZE) {
             let sector = self.get_sector(idx);
 
@@ -151,7 +144,7 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         self.len() == self.capacity()
     }
 
-    pub fn precache_sectors(&mut self) {
+    pub fn recache_sectors(&mut self) {
         if let Some(sectors) = self.sectors {
             self._sectors_cache = Vec::new();
 
@@ -166,7 +159,7 @@ impl<T: Copy + NotReference> SVecDirect<T> {
         self.len = new_len;
     }
 
-    fn get_sector(&mut self, idx: usize) -> u64 {
+    fn get_sector(&self, idx: usize) -> u64 {
         if idx < self._sectors_cache.len() {
             self._sectors_cache[idx]
         } else {
@@ -186,6 +179,10 @@ impl<T: Copy + NotReference> SVecDirect<T> {
             let sector = allocate(new_sector_size);
 
             sectors.write_word(idx * PTR_SIZE, sector.ptr);
+
+            if idx == self._sectors_cache.len() {
+                self._sectors_cache.push(sector.ptr);
+            }
 
             self.sectors_len += 1;
 
@@ -208,8 +205,6 @@ impl<T: Copy + NotReference> SVecDirect<T> {
     }
 
     fn calculate_inner_index(&self, mut idx: u64) -> (usize, usize) {
-        assert!(idx < self.len());
-
         if idx < 4 {
             return (0, idx as usize * size_of::<T>());
         }
@@ -271,7 +266,10 @@ const TWOS: [u64; 27] = [
     TWO_IN_27, TWO_IN_28,
 ];
 
-impl<T: Copy + NotReference> Default for SVecDirect<T> {
+impl<T: Copy + NotReference> Default for SVecDirect<T>
+where
+    [(); size_of::<T>()]: Sized,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -360,8 +358,6 @@ mod tests {
 
         v.push(&10);
         v.push(&20);
-
-        println!("{:?}", v._buf.0);
 
         assert_eq!(v.get_cloned(0).unwrap(), 10);
         assert_eq!(v.get_cloned(1).unwrap(), 20);

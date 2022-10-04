@@ -2,6 +2,7 @@
 #![feature(auto_traits)]
 #![feature(negative_impls)]
 #![feature(const_ptr_read)]
+#![feature(generic_const_exprs)]
 
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;

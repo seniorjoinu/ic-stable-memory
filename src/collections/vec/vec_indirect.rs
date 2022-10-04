@@ -87,8 +87,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SVec<T> {
         self.len() == self.capacity()
     }
 
-    pub fn precache_sectors(&mut self) {
-        self.inner.precache_sectors();
+    pub fn recache_sectors(&mut self) {
+        self.inner.recache_sectors();
     }
 }
 

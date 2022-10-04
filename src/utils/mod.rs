@@ -60,6 +60,14 @@ pub const unsafe fn u8_slice_as_any<T: Copy>(slice: &[u8]) -> T {
     }
 }
 
+pub fn array_of_size_t<T>() -> [u8; size_of::<T>()] {
+    [0u8; size_of::<T>()]
+}
+
+pub unsafe fn u8_fixed_array_as_any<T: Copy>(arr: [u8; size_of::<T>()]) -> T {
+    *(&arr as *const [u8; size_of::<T>()] as *const T)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::{any_as_u8_slice, u8_slice_as_any};

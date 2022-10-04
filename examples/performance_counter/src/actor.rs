@@ -165,7 +165,7 @@ fn _b2_stable_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVec);
-    vec.precache_sectors();
+    vec.recache_sectors();
 
     for _ in 0..count {
         let idx = get_random_u64(time()) % vec.len();
@@ -182,7 +182,7 @@ fn _b3_stable_direct_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVecDirect);
-    vec.precache_sectors();
+    vec.recache_sectors();
 
     for _ in 0..count {
         let idx = get_random_u64(time()) % vec.len();
@@ -216,7 +216,7 @@ fn _c2_stable_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVec);
-    vec.precache_sectors();
+    vec.recache_sectors();
 
     for _ in 0..count {
         vec.pop();
@@ -234,7 +234,7 @@ fn _c3_stable_direct_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVecDirect);
-    vec.precache_sectors();
+    vec.recache_sectors();
 
     for _ in 0..count {
         vec.pop();

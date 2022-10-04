@@ -45,7 +45,7 @@ mod vec_benchmark {
                 }
             });
 
-            stable_vec.precache_sectors();
+            stable_vec.recache_sectors();
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS as u64 {
@@ -99,7 +99,7 @@ mod vec_benchmark {
                 }
             });
 
-            stable_vec.precache_sectors();
+            stable_vec.recache_sectors();
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS as u64 {
