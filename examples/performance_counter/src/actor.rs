@@ -1,10 +1,14 @@
 use ic_cdk::api::call::performance_counter;
 use ic_cdk::api::time;
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
-use ic_stable_memory::collections::binary_heap::{SBinaryHeap, SHeapType};
+use ic_stable_memory::collections::binary_heap::binary_heap_direct::{
+    SBinaryHeapDirect, SHeapType,
+};
+use ic_stable_memory::collections::binary_heap::binary_heap_indirect::SBinaryHeap;
 use ic_stable_memory::collections::btree_map::SBTreeMap;
 use ic_stable_memory::collections::btree_set::SBTreeSet;
-use ic_stable_memory::collections::hash_map::SHashMap;
+use ic_stable_memory::collections::hash_map::hash_map_direct::SHashMapDirect;
+use ic_stable_memory::collections::hash_map::hash_map_indirect::SHashMap;
 use ic_stable_memory::collections::hash_set::SHashSet;
 use ic_stable_memory::collections::vec::vec_direct::SVecDirect;
 use ic_stable_memory::collections::vec::vec_indirect::SVec;
@@ -26,7 +30,11 @@ type StableVec = SVec<u64>;
 type StableVecDirect = SVecDirect<u64>;
 
 type StableBinaryHeap = SBinaryHeap<u64>;
+type StableBinaryHeapDirect = SBinaryHeapDirect<u64>;
+
 type StableHashMap = SHashMap<u64, u64>;
+type StableHashMapDirect = SHashMapDirect<u64, u64>;
+
 type StableHashSet = SHashSet<u64>;
 type StableBTreeMap = SBTreeMap<u64, u64>;
 type StableBTreeSet = SBTreeSet<u64>;
@@ -41,7 +49,11 @@ fn init() {
     s! { StableVecDirect = SVecDirect::new() };
 
     s! { StableBinaryHeap = SBinaryHeap::new(SHeapType::Max) };
+    s! { StableBinaryHeapDirect = SBinaryHeapDirect::new(SHeapType::Max) };
+
     s! { StableHashMap = SHashMap::new() };
+    s! { StableHashMapDirect = SHashMapDirect::new() };
+
     s! { StableHashSet = SHashSet::new() };
     s! { StableBTreeMap = SBTreeMap::new() };
     s! { StableBTreeSet = SBTreeSet::new() };
@@ -282,6 +294,23 @@ fn _d2_stable_binary_heap_push(count: u32) -> u64 {
     after - before
 }
 
+#[update]
+fn _d3_stable_direct_binary_heap_push(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut binary_heap = s!(StableBinaryHeapDirect);
+
+    for _ in 0..count {
+        binary_heap.push(&get_random_u64(time()));
+    }
+
+    s! { StableBinaryHeapDirect = binary_heap };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
 #[query]
 fn _e1_standard_binary_heap_peek(count: u32) -> u64 {
     let before = performance_counter(0);
@@ -304,6 +333,23 @@ fn _e2_stable_binary_heap_peek(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeap);
+    binary_heap.recache_sectors();
+
+    for _ in 0..count {
+        binary_heap.peek().unwrap();
+    }
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[query]
+fn _e3_stable_direct_binary_heap_peek(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut binary_heap = s!(StableBinaryHeapDirect);
+    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.peek().unwrap();
@@ -336,12 +382,31 @@ fn _f2_stable_binary_heap_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeap);
+    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.pop();
     }
 
     s! { StableBinaryHeap = binary_heap };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[update]
+fn _f3_stable_direct_binary_heap_pop(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut binary_heap = s!(StableBinaryHeapDirect);
+    binary_heap.recache_sectors();
+
+    for _ in 0..count {
+        binary_heap.pop();
+    }
+
+    s! { StableBinaryHeapDirect = binary_heap };
 
     let after = performance_counter(0);
 
@@ -382,6 +447,23 @@ fn _g2_stable_hash_map_insert(count: u32) -> u64 {
     after - before
 }
 
+#[update]
+fn _g3_stable_direct_hash_map_insert(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut hash_map = s!(StableHashMapDirect);
+
+    for key in 0..count {
+        hash_map.insert(&(key as u64), &1);
+    }
+
+    s! { StableHashMapDirect = hash_map };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
 #[query]
 fn _h1_standard_hash_map_get(count: u32) -> u64 {
     let before = performance_counter(0);
@@ -404,6 +486,21 @@ fn _h2_stable_hash_map_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let hash_map = s!(StableHashMap);
+
+    for key in 0..count {
+        hash_map.get_cloned(&(key as u64)).unwrap();
+    }
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[query]
+fn _h3_stable_direct_hash_map_get(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let hash_map = s!(StableHashMapDirect);
 
     for key in 0..count {
         hash_map.get_cloned(&(key as u64)).unwrap();
@@ -442,6 +539,23 @@ fn _i2_stable_hash_map_remove(count: u32) -> u64 {
     }
 
     s! { StableHashMap = hash_map };
+
+    let after = performance_counter(0);
+
+    after - before
+}
+
+#[update]
+fn _i3_stable_direct_hash_map_remove(count: u32) -> u64 {
+    let before = performance_counter(0);
+
+    let mut hash_map = s!(StableHashMapDirect);
+
+    for key in 0..count {
+        hash_map.remove(&(key as u64));
+    }
+
+    s! { StableHashMapDirect = hash_map };
 
     let after = performance_counter(0);
 

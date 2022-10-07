@@ -1,4 +1,4 @@
-use crate::collections::hash_map::SHashMap;
+use crate::collections::hash_map::hash_map_indirect::SHashMap;
 use speedy::{LittleEndian, Readable, Writable};
 use std::hash::Hash;
 

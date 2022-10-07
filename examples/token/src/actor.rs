@@ -2,7 +2,7 @@ use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::api::time;
 use ic_cdk::{caller, print};
 use ic_cdk_macros::{heartbeat, init, post_upgrade, pre_upgrade, query, update};
-use ic_stable_memory::collections::hash_map::SHashMap;
+use ic_stable_memory::collections::hash_map_indirect::SHashMap;
 use ic_stable_memory::collections::vec_direct::SVec;
 use ic_stable_memory::utils::ic_types::SPrincipal;
 use ic_stable_memory::{

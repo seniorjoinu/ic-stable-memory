@@ -105,8 +105,8 @@ where
         let sector2_ptr = self.get_sector(sector2_idx);
         let mut arr2 = [0u8; size_of::<T>()];
 
-        SSlice::_read_bytes(sector2_ptr, offset2, &mut arr2);
         SSlice::_read_bytes(sector1_ptr, offset1, &mut arr1);
+        SSlice::_read_bytes(sector2_ptr, offset2, &mut arr2);
 
         SSlice::_write_bytes(sector1_ptr, offset1, &arr2);
         SSlice::_write_bytes(sector2_ptr, offset2, &arr1);

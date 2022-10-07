@@ -1,11 +1,6 @@
+use crate::collections::binary_heap::binary_heap_direct::SHeapType;
 use crate::collections::vec::vec_indirect::SVec;
 use speedy::{LittleEndian, Readable, Writable};
-
-#[derive(Readable, Writable)]
-pub enum SHeapType {
-    Min,
-    Max,
-}
 
 #[derive(Readable, Writable)]
 pub struct SBinaryHeap<T> {
@@ -156,6 +151,10 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBinaryHe
         }
     }
 
+    pub fn recache_sectors(&mut self) {
+        self.arr.recache_sectors();
+    }
+
     pub fn drop(self) {
         self.arr.drop();
     }
@@ -177,7 +176,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> Default f
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::binary_heap::{SBinaryHeap, SHeapType};
+    use crate::collections::binary_heap::binary_heap_indirect::{SBinaryHeap, SHeapType};
     use crate::{stable, stable_memory_init};
 
     #[test]

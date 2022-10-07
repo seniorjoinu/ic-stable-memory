@@ -13,21 +13,27 @@ service : {
 
     _d1_standard_binary_heap_push : (nat32) -> (nat64);
     _d2_stable_binary_heap_push : (nat32) -> (nat64);
+    _d3_stable_direct_binary_heap_push : (nat32) -> (nat64);
 
     _e1_standard_binary_heap_peek : (nat32) -> (nat64) query;
     _e2_stable_binary_heap_peek : (nat32) -> (nat64) query;
+    _e3_stable_direct_binary_heap_peek : (nat32) -> (nat64) query;
 
     _f1_standard_binary_heap_pop : (nat32) -> (nat64);
     _f2_stable_binary_heap_pop : (nat32) -> (nat64);
+    _f3_stable_direct_binary_heap_pop : (nat32) -> (nat64);
 
     _g1_standard_hash_map_insert : (nat32) -> (nat64);
     _g2_stable_hash_map_insert : (nat32) -> (nat64);
+    _g3_stable_direct_hash_map_insert : (nat32) -> (nat64);
 
     _h1_standard_hash_map_get : (nat32) -> (nat64) query;
     _h2_stable_hash_map_get : (nat32) -> (nat64) query;
+    _h3_stable_direct_hash_map_get : (nat32) -> (nat64) query;
 
     _i1_standard_hash_map_remove : (nat32) -> (nat64);
     _i2_stable_hash_map_remove : (nat32) -> (nat64);
+    _i3_stable_direct_hash_map_remove : (nat32) -> (nat64);
 
     _j1_standard_hash_set_insert : (nat32) -> (nat64);
     _j2_stable_hash_set_insert : (nat32) -> (nat64);

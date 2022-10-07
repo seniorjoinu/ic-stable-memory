@@ -184,7 +184,7 @@ for you anymore, even if you add it to the canister later.
 // TODO: API
 
 ### SHashMap
-[source code](./src/collections/hash_map.rs)
+[source code](./src/collections/hash_map_indirect)
 
 // TODO: API
 
@@ -194,7 +194,7 @@ for you anymore, even if you add it to the canister later.
 // TODO: API
 
 ### SBinaryHeap
-[source code](./src/collections/binary_heap.rs)
+[source code](./src/collections/binary_heap_indirect)
 
 // TODO: API
 

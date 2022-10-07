@@ -30,6 +30,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         }
     }
 
+    #[allow(clippy::uninit_vec)]
     pub fn get_cloned(&self) -> T {
         {
             if let Some(buf) = &*self.buf.borrow() {
@@ -37,7 +38,9 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
             }
         }
 
-        let mut buf = vec![0u8; self._allocated_size()];
+        let n = self._allocated_size();
+        let mut buf = Vec::with_capacity(n);
+        unsafe { buf.set_len(n) };
         self.slice.read_bytes(0, &mut buf);
 
         let res = T::read_from_buffer_copying_data(&buf).expect("Unable to decode");

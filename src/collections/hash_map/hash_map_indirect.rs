@@ -1,9 +1,9 @@
 use crate::collections::vec::vec_indirect::SVec;
 use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::s_slice::{BLOCK_META_SIZE, PTR_SIZE};
+use crate::mem::s_slice::{SSlice, BLOCK_META_SIZE, PTR_SIZE};
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::utils::phantom_data::SPhantomData;
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, reallocate};
 use speedy::{LittleEndian, Readable, Writable};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -272,7 +272,7 @@ impl<
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::hash_map::SHashMap;
+    use crate::collections::hash_map::hash_map_indirect::SHashMap;
     use crate::init_allocator;
     use crate::utils::mem_context::stable;
 

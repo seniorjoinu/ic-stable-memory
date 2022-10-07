@@ -1,4 +1,4 @@
-use crate::collections::hash_map::SHashMap;
+use crate::collections::hash_map::hash_map_indirect::SHashMap;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
 use ic_cdk::trap;
