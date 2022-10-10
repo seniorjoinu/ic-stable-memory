@@ -29,18 +29,22 @@ pub(crate) trait MemContext {
 pub(crate) struct StableMemContext;
 
 impl MemContext for StableMemContext {
+    #[inline]
     fn size_pages(&self) -> u64 {
         stable64_size()
     }
 
+    #[inline]
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory> {
         stable64_grow(new_pages).map_err(|_| OutOfMemory)
     }
 
+    #[inline]
     fn read(&self, offset: u64, buf: &mut [u8]) {
         stable64_read(offset, buf)
     }
 
+    #[inline]
     fn write(&mut self, offset: u64, buf: &[u8]) {
         stable64_write(offset, buf)
     }
@@ -58,6 +62,7 @@ impl TestMemContext {
 }
 
 impl MemContext for TestMemContext {
+    #[inline]
     fn size_pages(&self) -> u64 {
         self.pages.len() as u64
     }
@@ -151,26 +156,32 @@ impl MemContext for TestMemContext {
 pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, StableMemContext};
 
+    #[inline]
     pub fn size_pages() -> u64 {
         MemContext::size_pages(&StableMemContext)
     }
 
+    #[inline]
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
         MemContext::grow(&mut StableMemContext, new_pages)
     }
 
+    #[inline]
     pub fn read(offset: u64, buf: &mut [u8]) {
         MemContext::read(&StableMemContext, offset, buf)
     }
 
+    #[inline]
     pub fn write(offset: u64, buf: &[u8]) {
         MemContext::write(&mut StableMemContext, offset, buf)
     }
 
+    #[inline]
     pub fn read_word(offset: u64) -> u64 {
         MemContext::read_word(&StableMemContext, offset)
     }
 
+    #[inline]
     pub fn write_word(offset: u64, word: u64) {
         MemContext::write_word(&mut StableMemContext, offset, word);
     }
@@ -184,30 +195,37 @@ pub mod stable {
     #[thread_local]
     static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
 
+    #[inline]
     pub fn clear() {
         CONTEXT.borrow_mut().pages.clear()
     }
 
+    #[inline]
     pub fn size_pages() -> u64 {
         CONTEXT.borrow().size_pages()
     }
 
+    #[inline]
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
         CONTEXT.borrow_mut().grow(new_pages)
     }
 
+    #[inline]
     pub fn read(offset: u64, buf: &mut [u8]) {
         CONTEXT.borrow().read(offset, buf)
     }
 
+    #[inline]
     pub fn write(offset: u64, buf: &[u8]) {
         CONTEXT.borrow_mut().write(offset, buf)
     }
 
+    #[inline]
     pub fn read_word(offset: u64) -> u64 {
         CONTEXT.borrow().read_word(offset)
     }
 
+    #[inline]
     pub fn write_word(offset: u64, word: u64) {
         CONTEXT.borrow_mut().write_word(offset, word);
     }

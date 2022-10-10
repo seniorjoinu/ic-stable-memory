@@ -9,7 +9,7 @@ use ic_stable_memory::collections::btree_map::SBTreeMap;
 use ic_stable_memory::collections::btree_set::SBTreeSet;
 use ic_stable_memory::collections::hash_map::hash_map_direct::SHashMapDirect;
 use ic_stable_memory::collections::hash_map::hash_map_indirect::SHashMap;
-use ic_stable_memory::collections::hash_set::SHashSet;
+use ic_stable_memory::collections::r#mod::SHashSet;
 use ic_stable_memory::collections::vec::vec_direct::SVecDirect;
 use ic_stable_memory::collections::vec::vec_indirect::SVec;
 use ic_stable_memory::{
@@ -161,9 +161,8 @@ fn _b1_standard_vec_get(count: u32) -> u64 {
     unsafe {
         let vec = STANDARD_VEC.as_mut().unwrap();
 
-        for _ in 0..count {
-            let idx = (get_random_u64(time()) as usize) % vec.len();
-            vec.get(idx).unwrap();
+        for i in 0..count as usize {
+            vec.get(i).unwrap();
         }
     }
 
@@ -177,11 +176,9 @@ fn _b2_stable_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVec);
-    vec.recache_sectors();
 
-    for _ in 0..count {
-        let idx = get_random_u64(time()) % vec.len();
-        vec.get_cloned(idx).unwrap();
+    for i in 0..count as u64 {
+        vec.get_cloned(i).unwrap();
     }
 
     let after = performance_counter(0);
@@ -193,11 +190,9 @@ fn _b2_stable_vec_get(count: u32) -> u64 {
 fn _b3_stable_direct_vec_get(count: u32) -> u64 {
     let before = performance_counter(0);
 
-    let mut vec = s!(StableVecDirect);
-    vec.recache_sectors();
+    let vec = s!(StableVecDirect);
 
-    for _ in 0..count {
-        let idx = get_random_u64(time()) % vec.len();
+    for idx in 0..count as usize {
         vec.get_cloned(idx).unwrap();
     }
 
@@ -228,7 +223,6 @@ fn _c2_stable_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVec);
-    vec.recache_sectors();
 
     for _ in 0..count {
         vec.pop();
@@ -246,7 +240,6 @@ fn _c3_stable_direct_vec_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut vec = s!(StableVecDirect);
-    vec.recache_sectors();
 
     for _ in 0..count {
         vec.pop();
@@ -333,7 +326,6 @@ fn _e2_stable_binary_heap_peek(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeap);
-    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.peek().unwrap();
@@ -349,7 +341,6 @@ fn _e3_stable_direct_binary_heap_peek(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeapDirect);
-    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.peek().unwrap();
@@ -382,7 +373,6 @@ fn _f2_stable_binary_heap_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeap);
-    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.pop();
@@ -400,7 +390,6 @@ fn _f3_stable_direct_binary_heap_pop(count: u32) -> u64 {
     let before = performance_counter(0);
 
     let mut binary_heap = s!(StableBinaryHeapDirect);
-    binary_heap.recache_sectors();
 
     for _ in 0..count {
         binary_heap.pop();

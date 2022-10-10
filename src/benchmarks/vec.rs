@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod vec_benchmark {
-    use crate::collections::vec::vec_direct::SVecDirect;
-    use crate::collections::vec::vec_indirect::SVec;
+    use crate::collections::vec::SVec;
     use crate::measure;
+    use crate::primitive::s_box::SBox;
     use crate::{init_allocator, stable};
 
     const ITERATIONS: usize = 1_000_000;
@@ -41,21 +41,19 @@ mod vec_benchmark {
 
             measure!("Stable vec push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_vec.push(&String::from("Some short string"));
+                    stable_vec.push(&SBox::new(&String::from("Some short string")));
                 }
             });
 
-            stable_vec.recache_sectors();
-
             measure!("Stable vec search", ITERATIONS, {
-                for i in 0..ITERATIONS as u64 {
-                    stable_vec.get_cloned(i).unwrap();
+                for i in 0..ITERATIONS {
+                    stable_vec.get_copy(i).unwrap();
                 }
             });
 
             measure!("Stable vec pop", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_vec.pop().unwrap();
+                    unsafe { stable_vec.pop().unwrap().drop() };
                 }
             });
         }
@@ -91,7 +89,7 @@ mod vec_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_vec = SVecDirect::new();
+            let mut stable_vec = SVec::new();
 
             measure!("Stable vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
@@ -99,11 +97,9 @@ mod vec_benchmark {
                 }
             });
 
-            stable_vec.recache_sectors();
-
             measure!("Stable vec search", ITERATIONS, {
-                for i in 0..ITERATIONS as u64 {
-                    stable_vec.get_cloned(i).unwrap();
+                for i in 0..ITERATIONS {
+                    stable_vec.get_copy(i).unwrap();
                 }
             });
 

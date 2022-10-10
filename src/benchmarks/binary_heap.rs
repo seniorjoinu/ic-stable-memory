@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod binary_heap_benchmark {
-    use crate::collections::binary_heap::binary_heap_direct::{SBinaryHeapDirect, SHeapType};
-    use crate::collections::binary_heap::binary_heap_indirect::SBinaryHeap;
+    use crate::collections::binary_heap::SBinaryHeap;
+    use crate::primitive::s_box::SBox;
     use crate::{init_allocator, measure, stable};
     use std::collections::BinaryHeap;
 
@@ -37,11 +37,12 @@ mod binary_heap_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_binary_heap = SBinaryHeap::new(SHeapType::Max);
+            let mut stable_binary_heap = SBinaryHeap::new();
 
             measure!("Stable binary heap push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_binary_heap.push(&String::from("Some short string"));
+                    let val = SBox::new(&String::from("Some short string"));
+                    stable_binary_heap.push(&val);
                 }
             });
 
@@ -53,7 +54,7 @@ mod binary_heap_benchmark {
 
             measure!("Stable binary heap pop", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_binary_heap.pop().unwrap();
+                    unsafe { stable_binary_heap.pop().unwrap().drop() };
                 }
             });
         }
@@ -89,7 +90,7 @@ mod binary_heap_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_binary_heap = SBinaryHeapDirect::new(SHeapType::Max);
+            let mut stable_binary_heap = SBinaryHeap::new();
 
             measure!("Stable binary heap push", ITERATIONS, {
                 for i in 0..ITERATIONS {

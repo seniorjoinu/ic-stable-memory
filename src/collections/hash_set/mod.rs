@@ -1,27 +1,30 @@
-use crate::collections::hash_map::hash_map_indirect::SHashMap;
-use speedy::{LittleEndian, Readable, Writable};
+use crate::collections::hash_map::SHashMap;
+use crate::primitive::StackAllocated;
+use speedy::{Readable, Writable};
 use std::hash::Hash;
 
 #[derive(Readable, Writable)]
-pub struct SHashSet<T> {
-    map: SHashMap<T, ()>,
+pub struct SHashSet<T, A> {
+    map: SHashMap<T, (), A, [u8; 0]>,
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> SHashSet<T> {
+impl<A, T> SHashSet<T, A> {
     pub fn new() -> Self {
         Self {
             map: SHashMap::new(),
         }
     }
 
-    pub fn new_with_capacity(capacity: u32) -> Self {
+    pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             map: SHashMap::new_with_capacity(capacity),
         }
     }
+}
 
+impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
     pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(value, &()).is_some()
+        self.map.insert(&value, &()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {
@@ -32,7 +35,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> SHa
         self.map.contains_key(value)
     }
 
-    pub fn len(&self) -> u64 {
+    pub fn len(&self) -> usize {
         self.map.len()
     }
 
@@ -40,14 +43,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> SHa
         self.map.is_empty()
     }
 
-    pub fn drop(self) {
+    pub unsafe fn drop(self) {
         self.map.drop()
     }
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> Default
-    for SHashSet<T>
-{
+impl<A, T> Default for SHashSet<T, A> {
     fn default() -> Self {
         SHashSet::new()
     }
@@ -57,6 +58,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Hash + Eq> Def
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::{init_allocator, stable};
+    use std::mem::size_of;
 
     #[test]
     fn basic_flow_works_fine() {
@@ -64,7 +66,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut set = SHashSet::<u64>::default();
+        let mut set = SHashSet::default();
 
         assert!(set.is_empty());
 
@@ -80,9 +82,9 @@ mod tests {
         assert!(!set.remove(&100));
         assert!(set.remove(&10));
 
-        set.drop();
+        unsafe { set.drop() };
 
-        let mut set = SHashSet::<u64>::new_with_capacity(10);
-        set.drop();
+        let set = SHashSet::<u64, [u8; size_of::<u64>()]>::new_with_capacity(10);
+        unsafe { set.drop() };
     }
 }

@@ -1,7 +1,7 @@
 use crate::mem::free_block::FreeBlock;
 use crate::utils::mem_context::stable;
 use speedy::{Readable, Writable};
-use std::mem::size_of;
+use std::mem::{size_of, MaybeUninit};
 use std::usize;
 
 pub(crate) const FREE: u64 = 2usize.pow(u32::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
@@ -61,6 +61,7 @@ impl SSlice {
         }
     }
 
+    #[inline]
     pub(crate) fn to_free_block(self) -> FreeBlock {
         FreeBlock {
             ptr: self.ptr,
@@ -69,50 +70,61 @@ impl SSlice {
         }
     }
 
+    #[inline]
     pub fn write_bytes(&self, offset: usize, data: &[u8]) {
         Self::_write_bytes(self.ptr, offset, data);
     }
 
+    #[inline]
     pub fn write_word(&self, offset: usize, word: u64) {
         Self::_write_word(self.ptr, offset, word)
     }
 
+    #[inline]
     pub fn read_bytes(&self, offset: usize, data: &mut [u8]) {
         Self::_read_bytes(self.ptr, offset, data)
     }
 
+    #[inline]
     pub fn read_word(&self, offset: usize) -> u64 {
         Self::_read_word(self.ptr, offset)
     }
 
+    #[inline]
     pub fn get_ptr(&self) -> u64 {
         self.ptr
     }
 
+    #[inline]
     pub fn get_size_bytes(&self) -> usize {
         self.size
     }
 
+    #[inline]
     pub fn get_total_size_bytes(&self) -> usize {
         self.get_size_bytes() + BLOCK_META_SIZE * 2
     }
-    
+
+    #[inline]
     pub fn _write_bytes(ptr: u64, offset: usize, data: &[u8]) {
         stable::write(ptr + (BLOCK_META_SIZE + offset) as u64, data);
     }
-    
+
+    #[inline]
     pub fn _write_word(ptr: u64, offset: usize, word: u64) {
         stable::write_word(ptr + (BLOCK_META_SIZE + offset) as u64, word)
     }
-    
+
+    #[inline]
     pub fn _read_bytes(ptr: u64, offset: usize, data: &mut [u8]) {
         stable::read(ptr + (BLOCK_META_SIZE + offset) as u64, data);
     }
 
+    #[inline]
     pub fn _read_word(ptr: u64, offset: usize) -> u64 {
         stable::read_word(ptr + (BLOCK_META_SIZE + offset) as u64)
     }
-    
+
     fn read_size(ptr: u64) -> Option<usize> {
         let mut meta = [0u8; BLOCK_META_SIZE as usize];
         stable::read(ptr, &mut meta);

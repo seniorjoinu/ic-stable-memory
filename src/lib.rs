@@ -3,6 +3,7 @@
 #![feature(negative_impls)]
 #![feature(const_ptr_read)]
 #![feature(generic_const_exprs)]
+#![feature(const_trait_impl)]
 
 use crate::mem::allocator::StableMemoryAllocator;
 use crate::primitive::s_unsafe_cell::SUnsafeCell;

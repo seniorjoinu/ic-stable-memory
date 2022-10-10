@@ -123,11 +123,7 @@ impl StableMemoryAllocator {
         slice.write_word(offset, self.max_grow_pages);
         offset += PTR_SIZE;
 
-        let flag = if self.on_low_stable_memory_callback_executed {
-            1u8
-        } else {
-            0u8
-        };
+        let flag = u8::from(self.on_low_stable_memory_callback_executed);
         slice.write_bytes(offset, &[flag; 1]);
         offset += 1;
 
@@ -144,7 +140,7 @@ impl StableMemoryAllocator {
     pub(crate) unsafe fn reinit(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
         slice.validate().unwrap();
-        
+
         let mut offset = 0;
 
         let mut magic = [0u8; MAGIC.len()];
@@ -268,12 +264,12 @@ impl StableMemoryAllocator {
 
         let next_neighbor_free_size_1_opt =
             free_block.check_neighbor_is_also_free(Side::End, self.min_ptr, self.max_ptr);
-        
+
         if let Some(next_neighbor_free_size_1) = next_neighbor_free_size_1_opt {
             if let Some(next_neighbor) = FreeBlock::from_ptr(
                 free_block.get_next_neighbor_ptr(),
                 Side::Start,
-                Some(next_neighbor_free_size_1)
+                Some(next_neighbor_free_size_1),
             ) {
                 if next_neighbor.validate().is_some() {
                     let seg_class_id = get_seg_class_id(next_neighbor.size);
@@ -313,7 +309,7 @@ impl StableMemoryAllocator {
 
                     return Err(slice);
                 }
-                
+
                 return Err(slice);
             }
 

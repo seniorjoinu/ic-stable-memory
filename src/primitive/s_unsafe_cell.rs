@@ -1,5 +1,6 @@
 use crate::mem::s_slice::Side;
 use crate::utils::phantom_data::SPhantomData;
+use crate::utils::uninit_u8_vec_of_size;
 use crate::{allocate, deallocate, reallocate, SSlice};
 use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
@@ -39,8 +40,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SUnsafeCell<T> 
         }
 
         let n = self._allocated_size();
-        let mut buf = Vec::with_capacity(n);
-        unsafe { buf.set_len(n) };
+        let mut buf = unsafe { uninit_u8_vec_of_size(n) };
         self.slice.read_bytes(0, &mut buf);
 
         let res = T::read_from_buffer_copying_data(&buf).expect("Unable to decode");

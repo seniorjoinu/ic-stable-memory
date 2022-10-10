@@ -1,4 +1,5 @@
 use ic_cdk::{print, trap};
+use std::mem;
 use std::mem::size_of;
 pub mod ic_types;
 pub mod math;
@@ -41,54 +42,11 @@ macro_rules! isotrap {
 
 pub(crate) use isotrap;
 
-pub auto trait NotReference {}
+#[inline]
+#[allow(clippy::uninit_vec)]
+pub unsafe fn uninit_u8_vec_of_size(size: usize) -> Vec<u8> {
+    let mut vec = Vec::with_capacity(size);
+    vec.set_len(size);
 
-impl<'a, T> !NotReference for &'a T {}
-impl<'a, T> !NotReference for &'a mut T {}
-
-// FIGURE OUT HOW TO ENCODE IT
-
-pub unsafe fn any_as_u8_slice<T>(p: &T) -> &[u8] {
-    std::slice::from_raw_parts(std::mem::transmute(p), std::mem::size_of::<T>())
-}
-
-pub const unsafe fn u8_slice_as_any<T: Copy>(slice: &[u8]) -> T {
-    if slice.len() != size_of::<T>() {
-        unreachable!()
-    } else {
-        std::ptr::read(slice.as_ptr() as *const T)
-    }
-}
-
-pub fn array_of_size_t<T>() -> [u8; size_of::<T>()] {
-    [0u8; size_of::<T>()]
-}
-
-pub unsafe fn u8_fixed_array_as_any<T: Copy>(arr: [u8; size_of::<T>()]) -> T {
-    *(&arr as *const [u8; size_of::<T>()] as *const T)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::utils::{any_as_u8_slice, u8_slice_as_any};
-    use std::mem::size_of;
-
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    struct A {
-        pub x: u8,
-        pub y: u16,
-    }
-
-    #[test]
-    fn test() {
-        unsafe {
-            let a = A { x: 10, y: 300 };
-
-            let slice = any_as_u8_slice(&a);
-
-            let a2: A = u8_slice_as_any(slice);
-
-            assert_eq!(a, a2);
-        }
-    }
+    vec
 }
