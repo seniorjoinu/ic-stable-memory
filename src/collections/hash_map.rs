@@ -31,6 +31,122 @@ impl<
     }
 }
 
+pub struct SHashMapIter<'a, K, V> {
+    it: &'a SHashMap<K, V>,
+    table_idx: u32,
+    bucket_idx: u64,
+}
+
+impl<
+        'a,
+        K: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+    > SHashMapIter<'a, K, V>
+{
+    pub fn next(&mut self) -> Option<(K, V)> {
+        let table = self.it._info._table.as_ref()?;
+
+        let mut table_idx = self.table_idx as usize;
+        let mut bucket_idx = self.bucket_idx;
+
+        let mut result = None;
+
+        loop {
+            let offset = table_idx * PTR_SIZE;
+            let bucket_ptr = table._read_word(offset);
+
+            if bucket_ptr == 0 || bucket_ptr == EMPTY_PTR {
+                table_idx += 1;
+
+                if table_idx == self.it._info._table_capacity as usize {
+                    result = None;
+                    break;
+                } else {
+                    continue;
+                }
+            } else {
+                let bucket_box = unsafe { HashMapBucket::<K, V>::from_ptr(bucket_ptr) };
+                let bucket = bucket_box.get_cloned();
+
+                if bucket_idx == bucket.len() {
+                    if table_idx == self.it._info._table_capacity as usize {
+                        return None;
+                    } else {
+                        table_idx += 1;
+                        bucket_idx = 0;
+
+                        if table_idx == self.it._info._table_capacity as usize {
+                            result = None;
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
+                } else {
+                    let entry = bucket.get_cloned(bucket_idx)?;
+
+                    let value = entry.val.get_cloned();
+                    let key = entry.key;
+
+                    result = Some((key, value));
+                    break;
+                }
+            }
+        }
+
+        if result.is_some() {
+            self.bucket_idx = bucket_idx + 1;
+            self.table_idx = table_idx as u32;
+        }
+
+        result
+    }
+
+    pub fn has_next(&self) -> bool {
+        if let Some(table) = self.it._info._table.as_ref() {
+            let mut table_offset = self.table_idx as usize;
+            let mut bucket_idx = self.bucket_idx;
+
+            loop {
+                let offset = table_offset * PTR_SIZE;
+                let bucket_ptr = table._read_word(offset);
+
+                if bucket_ptr == 0 || bucket_ptr == EMPTY_PTR {
+                    table_offset += 1;
+
+                    if table_offset == self.it._info._table_capacity as usize {
+                        return false;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    let bucket_box = unsafe { HashMapBucket::<K, V>::from_ptr(bucket_ptr) };
+                    let bucket = bucket_box.get_cloned();
+
+                    if bucket_idx >= bucket.len() {
+                        if table_offset == self.it._info._table_capacity as usize {
+                            return false;
+                        } else {
+                            table_offset += 1;
+                            bucket_idx = 0;
+
+                            if table_offset == self.it._info._table_capacity as usize {
+                                return false;
+                            } else {
+                                continue;
+                            }
+                        }
+                    } else {
+                        return true;
+                    }
+                }
+            }
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 struct SMapTable;
 
@@ -80,6 +196,14 @@ impl<
             _info,
             _k: SPhantomData::default(),
             _v: SPhantomData::default(),
+        }
+    }
+
+    pub fn iter(&self) -> SHashMapIter<K, V> {
+        SHashMapIter {
+            it: self,
+            table_idx: 0,
+            bucket_idx: 0,
         }
     }
 
@@ -333,5 +457,47 @@ mod tests {
 
         let map = SHashMap::new_with_capacity(3);
         test_body(map);
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let cap = 100;
+        let count = 200;
+        let mut map = SHashMap::new_with_capacity(cap);
+        let mut check = vec![false; count];
+
+        for i in 0..count {
+            map.insert(i, &i);
+        }
+
+        let mut iter = map.iter();
+
+        let mut i = 0;
+        loop {
+            assert!(iter.has_next());
+
+            println!("{} {}", iter.table_idx, iter.bucket_idx);
+
+            let it = iter.next().unwrap();
+            assert!(it.0 < count && it.0 == it.1);
+
+            check[it.0] = true;
+
+            i += 1;
+
+            if i == count {
+                break;
+            }
+        }
+
+        for i in check {
+            assert!(i);
+        }
+        assert!(!iter.has_next());
+        assert!(i == count);
     }
 }
