@@ -1,22 +1,20 @@
-use crate::SUnsafeCell;
-use speedy::{LittleEndian, Readable, Writable};
-use std::cmp::Ordering;
+use crate::collections::vec::SVec;
+use crate::mem::s_slice::Side;
+use crate::primitive::StackAllocated;
+use crate::SSlice;
+use speedy::{Readable, Writable};
+use std::mem::size_of;
 
 const DEFAULT_BTREE_DEGREE: usize = 4096;
 
 #[derive(Readable, Writable)]
-pub struct SBTreeMap<K, V> {
-    root: BTreeNode<K, V>,
+pub struct SBTreeMap<K, V, AK, AV> {
+    root: BTreeNode<K, V, AK, AV>,
     degree: usize,
     len: u64,
 }
 
-impl<
-        'a,
-        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
-    > SBTreeMap<K, V>
-{
+impl<AK, AV, K, V> SBTreeMap<K, V, AK, AV> {
     pub fn new() -> Self {
         Self::new_with_degree(DEFAULT_BTREE_DEGREE)
     }
@@ -26,30 +24,45 @@ impl<
 
         Self {
             degree,
-            root: BTreeNode::<K, V>::new(true, true),
+            root: BTreeNode::<K, V, AK, AV>::new(true, true),
             len: 0,
         }
     }
 
-    pub fn insert(&mut self, key: K, value: &V) -> Option<V> {
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl<
+        AK: AsMut<[u8]>,
+        AV: AsMut<[u8]>,
+        K: Ord + StackAllocated<K, AK>,
+        V: StackAllocated<V, AV>,
+    > SBTreeMap<K, V, AK, AV>
+{
+    pub fn insert(&mut self, key: &K, value: &V) -> Option<V> {
         let root = &mut self.root;
-        let btree_key = BTreeKey::new(key, value);
 
         let res = if root.keys.len() == 2 * self.degree - 1 {
             let mut temp = BTreeNode::new(false, false);
 
             root.is_root = false;
-            temp.children.insert(0, SUnsafeCell::new(root));
+            temp.children.insert(0, root);
 
             Self::split_child(self.degree, &mut temp, 0);
-            let res = Self::insert_non_full(self.degree, &mut temp, btree_key);
+            let res = Self::insert_non_full(self.degree, &mut temp, key, value);
 
             self.root = temp;
             self.root.is_root = true;
 
             res
         } else {
-            Self::insert_non_full(self.degree, &mut self.root, btree_key)
+            Self::insert_non_full(self.degree, &mut self.root, key, value)
         };
 
         if res.is_none() {
@@ -66,66 +79,47 @@ impl<
         Some(res)
     }
 
-    pub fn drop(mut self) {
-        while let Some(key) = self.root.keys.pop() {
-            key.drop();
-        }
-
+    pub unsafe fn drop(mut self) {
         while let Some(child_node) = self.root.children.pop() {
-            self._drop(child_node);
+            Self::_drop(child_node);
         }
     }
 
     pub fn get_cloned(&self, key: &K) -> Option<V> {
-        self._get(&self.root, key)
+        Self::_get(&self.root, key)
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
-        self._contains_key(&self.root, key)
-    }
-
-    pub fn len(&self) -> u64 {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
+        Self::_contains_key(&self.root, key)
     }
 
     fn insert_non_full(
         degree: usize,
-        node: &mut BTreeNode<K, V>,
-        key: BTreeKey<K, V>,
+        node: &mut BTreeNode<K, V, AK, AV>,
+        key: &K,
+        value: &V,
     ) -> Option<V> {
-        match node.keys.binary_search_by(|k| k.get_cloned().cmp(&key)) {
-            Ok(idx) => {
-                let new_key_cell = SUnsafeCell::new(&key);
-                let old_key_cell = std::mem::replace(&mut node.keys[idx], new_key_cell);
-
-                let old_key = old_key_cell.get_cloned();
-                old_key_cell.drop();
-
-                Some(old_key.drop())
-            }
+        match node.keys.binary_search_by(|k| k.cmp(key)) {
+            Ok(idx) => Some(node.values.replace(idx, value)),
             Err(mut idx) => {
                 if node.is_leaf {
-                    let new_key_cell = SUnsafeCell::new(&key);
+                    node.keys.insert(idx, key);
+                    node.values.insert(idx, value);
 
-                    node.keys.insert(idx, new_key_cell);
                     None
                 } else {
-                    if node.children[idx].get_cloned().keys.len() == 2 * degree - 1 {
+                    if node.children.get_copy(idx).unwrap().keys.len() == 2 * degree - 1 {
                         Self::split_child(degree, node, idx);
 
-                        if key > node.keys[idx].get_cloned() {
+                        if key.gt(&node.keys.get_copy(idx).unwrap()) {
                             idx += 1;
                         }
                     }
 
-                    let mut child = node.children[idx].get_cloned();
-                    let result = Self::insert_non_full(degree, &mut child, key);
+                    let mut child = node.children.get_copy(idx).unwrap();
+                    let result = Self::insert_non_full(degree, &mut child, key, value);
 
-                    unsafe { node.children[idx].set(&child) };
+                    node.children.replace(idx, &child);
 
                     result
                 }
@@ -133,33 +127,45 @@ impl<
         }
     }
 
-    fn split_child(degree: usize, node: &mut BTreeNode<K, V>, idx: usize) {
-        let mut child = node.children[idx].get_cloned();
-        let mut new_child = BTreeNode::<K, V>::new(child.is_leaf, false);
+    fn split_child(degree: usize, node: &mut BTreeNode<K, V, AK, AV>, idx: usize) {
+        let mut child = node.children.get_copy(idx).unwrap();
+        let mut new_child = BTreeNode::<K, V, AK, AV>::new(child.is_leaf, false);
 
         for _ in 0..(degree - 1) {
-            new_child.keys.push(child.keys.remove(degree));
+            new_child.keys.push(&child.keys.remove(degree));
+            new_child.values.push(&child.values.remove(degree));
         }
-        node.keys.insert(idx, child.keys.remove(degree - 1));
+        node.keys.insert(idx, &child.keys.remove(degree - 1));
+        node.values.insert(idx, &child.values.remove(degree - 1));
 
         if !child.is_leaf {
-            for _ in 0..degree {
-                new_child.children.push(child.children.remove(degree))
+            for i in 0..degree {
+                let grand_child = child.children.remove(degree);
+
+                if grand_child.keys.is_empty() {
+                    let slice = SSlice::from_ptr(child.children.ptr, Side::Start).unwrap();
+                    let mut bytes = vec![0u8; slice.get_size_bytes()];
+                    slice.read_bytes(0, &mut bytes);
+
+                    println!("{} {:?}", idx, bytes);
+
+                    panic!();
+                }
+
+                new_child.children.push(&grand_child);
             }
         }
 
-        unsafe { node.children[idx].set(&child) };
-        node.children.insert(idx + 1, SUnsafeCell::new(&new_child));
+        node.children.replace(idx, &child);
+        node.children.insert(idx + 1, &new_child);
     }
 
-    fn _contains_key(&self, node: &BTreeNode<K, V>, key: &K) -> bool {
-        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
+    fn _contains_key(node: &BTreeNode<K, V, AK, AV>, key: &K) -> bool {
+        match node.keys.binary_search_by(|k| k.cmp(key)) {
             Ok(_) => true,
             Err(idx) => {
-                if let Some(child_cell) = node.children.get(idx) {
-                    let child = child_cell.get_cloned();
-
-                    self._contains_key(&child, key)
+                if let Some(child) = node.children.get_copy(idx) {
+                    Self::_contains_key(&child, key)
                 } else {
                     false
                 }
@@ -167,38 +173,32 @@ impl<
         }
     }
 
-    fn _get(&self, node: &BTreeNode<K, V>, key: &K) -> Option<V> {
-        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
-            Ok(idx) => Some(node.keys[idx].get_cloned().value_cell.get_cloned()),
+    fn _get(node: &BTreeNode<K, V, AK, AV>, key: &K) -> Option<V> {
+        match node.keys.binary_search_by(|k| k.cmp(key)) {
+            Ok(idx) => node.values.get_copy(idx),
             Err(idx) => {
-                let child = node.children.get(idx)?.get_cloned();
-                self._get(&child, key)
+                let child = node.children.get_copy(idx)?;
+                Self::_get(&child, key)
             }
         }
     }
 
-    fn _drop(&mut self, node_cell: SUnsafeCell<BTreeNode<K, V>>) {
-        let mut node = node_cell.get_cloned();
-        for child_cell in node.children {
-            self._drop(child_cell);
+    unsafe fn _drop(node: BTreeNode<K, V, AK, AV>) {
+        for i in 0..node.children.len() {
+            Self::_drop(node.children.get_copy(i).unwrap());
         }
 
-        while let Some(key) = node.keys.pop() {
-            key.drop();
-        }
-        node_cell.drop();
+        node.drop();
     }
 
-    fn _delete(degree: usize, node: &mut BTreeNode<K, V>, key: &K) -> Option<V> {
-        match node.keys.binary_search_by(|k| k.get_cloned().key.cmp(key)) {
+    fn _delete(degree: usize, node: &mut BTreeNode<K, V, AK, AV>, key: &K) -> Option<V> {
+        match node.keys.binary_search_by(|k| k.cmp(key)) {
             Ok(idx) => {
                 if node.is_leaf {
-                    let btree_key_cell = node.keys.remove(idx);
+                    let k = node.keys.remove(idx);
+                    let v = node.values.remove(idx);
 
-                    let btree_key = btree_key_cell.get_cloned();
-                    btree_key_cell.drop();
-
-                    Some(btree_key.drop())
+                    Some(v)
                 } else {
                     Self::delete_internal_node(degree, node, key, idx)
                 }
@@ -210,17 +210,17 @@ impl<
                     return None;
                 }
 
-                let mut child = node.children[idx].get_cloned();
+                let mut child = node.children.get_copy(idx).unwrap();
 
                 if child.keys.len() >= degree {
                     let res = Self::_delete(degree, &mut child, key);
-                    unsafe { node.children[idx].set(&child) };
+                    node.children.replace(idx, &child);
 
                     res
                 } else {
                     if idx != 0 && idx + 1 < node.children.len() {
-                        let left_child_sibling = node.children[idx - 1].get_cloned();
-                        let right_child_sibling = node.children[idx + 1].get_cloned();
+                        let left_child_sibling = node.children.get_copy(idx - 1).unwrap();
+                        let right_child_sibling = node.children.get_copy(idx + 1).unwrap();
 
                         if left_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx - 1);
@@ -231,7 +231,7 @@ impl<
                             merged = true;
                         }
                     } else if idx == 0 {
-                        let right_child_sibling = node.children[idx + 1].get_cloned();
+                        let right_child_sibling = node.children.get_copy(idx + 1).unwrap();
 
                         if right_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx + 1);
@@ -240,7 +240,7 @@ impl<
                             merged = true;
                         }
                     } else if idx + 1 == node.children.len() {
-                        let left_child_sibling = node.children[idx - 1].get_cloned();
+                        let left_child_sibling = node.children.get_copy(idx - 1).unwrap();
 
                         if left_child_sibling.keys.len() >= degree {
                             Self::delete_sibling(node, idx, idx - 1);
@@ -254,9 +254,9 @@ impl<
                         return Self::_delete(degree, node, key);
                     }
 
-                    let mut child = node.children[idx].get_cloned();
+                    let mut child = node.children.get_copy(idx).unwrap();
                     let res = Self::_delete(degree, &mut child, key);
-                    unsafe { node.children[idx].set(&child) };
+                    node.children.replace(idx, &child);
 
                     res
                 }
@@ -266,51 +266,45 @@ impl<
 
     fn delete_internal_node(
         degree: usize,
-        node: &mut BTreeNode<K, V>,
+        node: &mut BTreeNode<K, V, AK, AV>,
         key: &K,
         idx: usize,
     ) -> Option<V> {
-        let mut left_child = node.children[idx].get_cloned();
-        let mut right_child = node.children[idx + 1].get_cloned();
+        let mut left_child = node.children.get_copy(idx).unwrap();
+        let mut right_child = node.children.get_copy(idx + 1).unwrap();
 
         if left_child.keys.len() >= degree {
-            let btree_key_cell = std::mem::replace(
-                &mut node.keys[idx],
-                Self::delete_predecessor(degree, &mut left_child),
-            );
-            unsafe { node.children[idx].set(&left_child) };
+            let (k, v) = Self::delete_predecessor(degree, &mut left_child);
+            let v = node.values.replace(idx, &v);
 
-            let btree_key = btree_key_cell.get_cloned();
-            btree_key_cell.drop();
+            node.keys.replace(idx, &k);
+            node.children.replace(idx, &left_child);
 
-            Some(btree_key.drop())
+            Some(v)
         } else if right_child.keys.len() >= degree {
-            let btree_key_cell = std::mem::replace(
-                &mut node.keys[idx],
-                Self::delete_successor(degree, &mut right_child),
-            );
-            unsafe { node.children[idx + 1].set(&right_child) };
+            let (k, v) = Self::delete_successor(degree, &mut right_child);
+            let v = node.values.replace(idx, &v);
 
-            let btree_key = btree_key_cell.get_cloned();
-            btree_key_cell.drop();
+            node.keys.replace(idx, &k);
+            node.children.replace(idx + 1, &right_child);
 
-            Some(btree_key.drop())
+            Some(v)
         } else {
             Self::delete_merge(node, idx, idx + 1);
             Self::_delete(degree, node, key)
         }
     }
 
-    fn delete_predecessor(
-        degree: usize,
-        child: &mut BTreeNode<K, V>,
-    ) -> SUnsafeCell<BTreeKey<K, V>> {
+    fn delete_predecessor(degree: usize, child: &mut BTreeNode<K, V, AK, AV>) -> (K, V) {
         if child.is_leaf {
-            return child.keys.pop().unwrap();
+            let k = child.keys.pop().unwrap();
+            let v = child.values.pop().unwrap();
+
+            return (k, v);
         }
 
         let n = child.keys.len() - 1;
-        let grand_child = child.children[n].get_cloned();
+        let grand_child = child.children.get_copy(n).unwrap();
 
         if grand_child.keys.len() >= degree {
             Self::delete_sibling(child, n + 1, n);
@@ -318,20 +312,23 @@ impl<
             Self::delete_merge(child, n + 1, n);
         }
 
-        let mut grand_child = child.children[n].get_cloned();
+        let mut grand_child = child.children.get_copy(n).unwrap();
         let res = Self::delete_predecessor(degree, &mut grand_child);
 
-        unsafe { child.children[n].set(&grand_child) };
+        child.children.replace(n, &grand_child);
 
         res
     }
 
-    fn delete_successor(degree: usize, child: &mut BTreeNode<K, V>) -> SUnsafeCell<BTreeKey<K, V>> {
+    fn delete_successor(degree: usize, child: &mut BTreeNode<K, V, AK, AV>) -> (K, V) {
         if child.is_leaf {
-            return child.keys.remove(0);
+            let k = child.keys.remove(0);
+            let v = child.values.remove(0);
+
+            return (k, v);
         }
 
-        let grand_child = child.children[0].get_cloned();
+        let grand_child = child.children.get_copy(0).unwrap();
 
         if grand_child.keys.len() >= degree {
             Self::delete_sibling(child, 0, 1);
@@ -339,253 +336,189 @@ impl<
             Self::delete_merge(child, 0, 1);
         }
 
-        let mut grand_child = child.children[0].get_cloned();
+        let mut grand_child = child.children.get_copy(0).unwrap();
         let res = Self::delete_successor(degree, &mut grand_child);
 
-        unsafe { child.children[0].set(&grand_child) };
+        child.children.replace(0, &grand_child);
 
         res
     }
 
-    fn delete_merge(node: &mut BTreeNode<K, V>, i: usize, j: usize) {
-        let mut child = node.children[i].get_cloned();
+    fn delete_merge(node: &mut BTreeNode<K, V, AK, AV>, i: usize, j: usize) {
+        let mut child = node.children.get_copy(i).unwrap();
 
         let mut new = if j > i {
-            let child_right_sibling = node.children[j].get_cloned();
-            child.keys.push(node.keys.remove(i));
+            let child_right_sibling = node.children.remove(j);
+            child.keys.push(&node.keys.remove(i));
+            child.values.push(&node.values.remove(i));
 
-            child.keys.extend(child_right_sibling.keys);
-            child.children.extend(child_right_sibling.children);
+            child.keys.extend_from(&child_right_sibling.keys);
+            child.values.extend_from(&child_right_sibling.values);
+            child.children.extend_from(&child_right_sibling.children);
 
-            unsafe { node.children[i].set(&child) };
+            node.children.replace(i, &child);
 
-            let child_right_sibling_ptr = node.children.remove(j);
-            child_right_sibling_ptr.drop();
+            unsafe { child_right_sibling.drop() };
 
             child
         } else {
-            let mut child_left_sibling = node.children[j].get_cloned();
-            child_left_sibling.keys.push(node.keys.remove(j));
+            let mut child_left_sibling = node.children.get_copy(j).unwrap();
+            child_left_sibling.keys.push(&node.keys.remove(j));
+            child_left_sibling.values.push(&node.values.remove(j));
 
-            child_left_sibling.keys.extend(child.keys);
-            child_left_sibling.children.extend(child.children);
+            child_left_sibling.keys.extend_from(&child.keys);
+            child_left_sibling.values.extend_from(&child.values);
+            child_left_sibling.children.extend_from(&child.children);
 
-            unsafe { node.children[j].set(&child_left_sibling) };
+            node.children.replace(j, &child_left_sibling);
 
-            let child_ptr = node.children.remove(i);
-            child_ptr.drop();
+            let child = node.children.remove(i);
+            unsafe { child.drop() };
 
             child_left_sibling
         };
 
         if node.is_root && node.keys.is_empty() {
-            // dealing with memory leaks - remove the element from stable memory, if it becomes root
-            if j > i {
-                // FIXME: dirty, but rust does not let me go straight to children[i], since I want to consume it during drop()
-                unsafe {
-                    SUnsafeCell::<BTreeNode<K, V>>::from_ptr(node.children[i].as_ptr()).drop()
-                };
-            } else {
-                // FIXME: dirty, but rust does not let me go straight to children[j], since I want to consume it during drop()
-                unsafe {
-                    SUnsafeCell::<BTreeNode<K, V>>::from_ptr(node.children[j].as_ptr()).drop()
-                };
-            }
-
-            // FIXME: make this new node the root
             new.is_root = true;
             *node = new;
         }
     }
 
-    fn delete_sibling(node: &mut BTreeNode<K, V>, i: usize, j: usize) {
-        let mut child = node.children[i].get_cloned();
+    fn delete_sibling(node: &mut BTreeNode<K, V, AK, AV>, i: usize, j: usize) {
+        let mut child = node.children.get_copy(i).unwrap();
 
         if j > i {
-            let mut child_right_sibling = node.children[j].get_cloned();
+            let mut child_right_sibling = node.children.get_copy(j).unwrap();
 
-            child.keys.push(node.keys.remove(i));
-            node.keys.insert(i, child_right_sibling.keys.remove(0));
+            child.keys.push(&node.keys.remove(i));
+            child.values.push(&node.values.remove(i));
+
+            node.keys.insert(i, &child_right_sibling.keys.remove(0));
+            node.values.insert(i, &child_right_sibling.values.remove(0));
 
             if !child_right_sibling.children.is_empty() {
-                child.children.push(child_right_sibling.children.remove(0));
+                child.children.push(&child_right_sibling.children.remove(0));
             }
 
-            unsafe { node.children[j].set(&child_right_sibling) };
+            node.children.replace(j, &child_right_sibling);
         } else {
-            let mut child_left_sibling = node.children[j].get_cloned();
+            let mut child_left_sibling = node.children.get_copy(j).unwrap();
 
-            child.keys.insert(0, node.keys.remove(i - 1));
+            child.keys.insert(0, &node.keys.remove(i - 1));
+            child.values.insert(0, &node.values.remove(i - 1));
+
             node.keys
-                .insert(i - 1, child_left_sibling.keys.pop().unwrap());
+                .insert(i - 1, &child_left_sibling.keys.pop().unwrap());
+            node.values
+                .insert(i - 1, &child_left_sibling.values.pop().unwrap());
 
             if !child_left_sibling.children.is_empty() {
                 child
                     .children
-                    .insert(0, child_left_sibling.children.pop().unwrap())
+                    .insert(0, &child_left_sibling.children.pop().unwrap())
             }
 
-            unsafe { node.children[j].set(&child_left_sibling) };
+            node.children.replace(j, &child_left_sibling);
         }
 
-        unsafe { node.children[i].set(&child) };
+        node.children.replace(i, &child);
     }
 }
 
-impl<
-        'a,
-        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian>,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
-    > Default for SBTreeMap<K, V>
-{
+impl<AK, AV, K, V> Default for SBTreeMap<K, V, AK, AV> {
     fn default() -> Self {
-        SBTreeMap::<K, V>::new()
+        SBTreeMap::<K, V, AK, AV>::new()
     }
 }
 
-#[derive(Readable, Writable)]
-struct BTreeKey<K, V> {
-    key: K,
-    value_cell: SUnsafeCell<V>,
-}
-
-impl<'a, K, V: Readable<'a, LittleEndian> + Writable<LittleEndian>> BTreeKey<K, V> {
-    pub fn new(key: K, value: &V) -> Self {
-        Self {
-            key,
-            value_cell: SUnsafeCell::new(value),
-        }
-    }
-
-    pub fn drop(self) -> V {
-        let it = self.value_cell.get_cloned();
-        self.value_cell.drop();
-
-        it
-    }
-}
-
-impl<K: Ord, V> Eq for BTreeKey<K, V> {}
-
-impl<K: Ord, V> PartialEq<Self> for BTreeKey<K, V> {
-    fn eq(&self, other: &Self) -> bool {
-        self.key.eq(&other.key)
-    }
-}
-
-impl<K: Ord, V> PartialOrd<Self> for BTreeKey<K, V> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.key.partial_cmp(&other.key)
-    }
-}
-
-impl<K: Ord, V> Ord for BTreeKey<K, V> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.key.cmp(&other.key)
-    }
-
-    fn min(self, other: Self) -> Self
-    where
-        Self: Sized,
-    {
-        if self < other {
-            self
-        } else {
-            other
-        }
-    }
-
-    fn max(self, other: Self) -> Self
-    where
-        Self: Sized,
-    {
-        if self > other {
-            self
-        } else {
-            other
-        }
-    }
-
-    fn clamp(self, min: Self, max: Self) -> Self
-    where
-        Self: Sized,
-    {
-        if self > max {
-            max
-        } else if self < min {
-            min
-        } else {
-            self
-        }
-    }
-}
-
-#[derive(Readable, Writable)]
-struct BTreeNode<K, V> {
+struct BTreeNode<K, V, AK, AV> {
     is_leaf: bool,
     is_root: bool,
-    keys: Vec<SUnsafeCell<BTreeKey<K, V>>>,
-    children: Vec<SUnsafeCell<BTreeNode<K, V>>>,
+    keys: SVec<K, AK>,
+    values: SVec<V, AV>,
+    children: SVec<BTreeNode<K, V, AK, AV>, [u8; 80]>,
 }
 
-impl<
-        'a,
-        K: Readable<'a, LittleEndian> + Writable<LittleEndian>,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
-    > BTreeNode<K, V>
-{
+impl<K, V, AK, AV> BTreeNode<K, V, AK, AV> {
     pub fn new(is_leaf: bool, is_root: bool) -> Self {
         Self {
             is_root,
             is_leaf,
-            keys: Vec::new(),
-            children: Vec::new(),
+            keys: SVec::new(),
+            values: SVec::new(),
+            children: SVec::new(),
         }
+    }
+
+    pub unsafe fn drop(self) {
+        self.keys.drop();
+        self.values.drop();
+        self.children.drop();
+    }
+}
+
+impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, [u8; 80]> for BTreeNode<K, V, AK, AV> {
+    fn size_of_u8_array() -> usize {
+        80
+    }
+
+    fn fixed_size_u8_array() -> [u8; 80] {
+        [0u8; 80]
+    }
+
+    #[inline]
+    fn as_u8_slice(it: &Self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(it as *const Self as *const u8, size_of::<Self>()) }
+    }
+
+    #[inline]
+    fn from_u8_fixed_size_array(arr: [u8; 80]) -> Self {
+        unsafe { std::mem::transmute(arr) }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::{BTreeKey, BTreeNode, SBTreeMap};
+    use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+    use crate::primitive::StackAllocated;
     use crate::utils::isoprint;
     use crate::{init_allocator, stable};
-    use speedy::{LittleEndian, Readable, Writable};
-    use std::cmp::{max, min};
     use std::fmt::Debug;
+    use std::mem::size_of;
 
     #[ignore]
     fn btree_to_sorted_vec<
-        'a,
-        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Clone,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian>,
+        AK: AsMut<[u8]>,
+        AV: AsMut<[u8]>,
+        K: Ord + StackAllocated<K, AK>,
+        V: StackAllocated<V, AV>,
     >(
-        btree_node: &BTreeNode<K, V>,
+        btree_node: &BTreeNode<K, V, AK, AV>,
         vec: &mut Vec<(K, V)>,
     ) {
         for i in 0..btree_node.keys.len() {
-            if let Some(child) = btree_node.children.get(i).map(|it| it.get_cloned()) {
+            if let Some(child) = btree_node.children.get_copy(i) {
                 btree_to_sorted_vec(&child, vec);
             }
-            let btree_key = &btree_node.keys[i].get_cloned();
-            vec.push((btree_key.key.clone(), btree_key.value_cell.get_cloned()));
+            let k = btree_node.keys.get_copy(i).unwrap();
+            let v = btree_node.values.get_copy(i).unwrap();
+
+            vec.push((k, v));
         }
 
-        if let Some(child) = btree_node
-            .children
-            .get(btree_node.keys.len())
-            .map(|it| it.get_cloned())
-        {
+        if let Some(child) = btree_node.children.get_copy(btree_node.keys.len()) {
             btree_to_sorted_vec(&child, vec);
         }
     }
 
     #[ignore]
     fn print_btree<
-        'a,
-        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+        AK: AsMut<[u8]>,
+        AV: AsMut<[u8]>,
+        K: Ord + StackAllocated<K, AK> + Debug,
+        V: StackAllocated<V, AV> + Debug,
     >(
-        btree: &SBTreeMap<K, V>,
+        btree: &SBTreeMap<K, V, AK, AV>,
     ) {
         let mut nodes_1 = print_btree_level(&btree.root);
         isoprint("");
@@ -613,27 +546,29 @@ mod tests {
 
     #[ignore]
     fn print_btree_level<
-        'a,
-        K: Ord + Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
-        V: Readable<'a, LittleEndian> + Writable<LittleEndian> + Debug,
+        AK: AsMut<[u8]>,
+        AV: AsMut<[u8]>,
+        K: Ord + StackAllocated<K, AK> + Debug,
+        V: StackAllocated<V, AV> + Debug,
     >(
-        btree_node: &BTreeNode<K, V>,
-    ) -> Vec<BTreeNode<K, V>> {
+        btree_node: &BTreeNode<K, V, AK, AV>,
+    ) -> Vec<BTreeNode<K, V, AK, AV>> {
         let mut children = vec![];
+
+        let keys: Vec<_> = Vec::from(&btree_node.keys);
+        let values: Vec<_> = Vec::from(&btree_node.values);
 
         print!(
             "( is_leaf: {}, is_root: {} - {:?} )",
             btree_node.is_leaf,
             btree_node.is_root,
-            btree_node
-                .keys
-                .iter()
-                .map(|it| (it.get_cloned().key, it.get_cloned().value_cell.get_cloned()))
-                .collect::<Vec<_>>()
+            keys.iter().zip(values.iter()).collect::<Vec<_>>()
         );
 
-        for ch in &btree_node.children {
-            children.push(ch.get_cloned());
+        for ch in 0..btree_node.children.len() {
+            let child = btree_node.children.get_copy(ch).unwrap();
+
+            children.push(child);
         }
 
         children
@@ -657,43 +592,43 @@ mod tests {
             (90, 9),
         ];
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+        let mut map = SBTreeMap::new_with_degree(3);
 
         println!("INSERTION");
 
-        assert!(map.insert(30, &3).is_none());
+        assert!(map.insert(&30, &3).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(90, &9).is_none());
+        assert!(map.insert(&90, &9).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(10, &1).is_none());
+        assert!(map.insert(&10, &1).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(70, &7).is_none());
+        assert!(map.insert(&70, &7).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(80, &8).is_none());
+        assert!(map.insert(&80, &8).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(50, &5).is_none());
+        assert!(map.insert(&50, &5).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(20, &2).is_none());
+        assert!(map.insert(&20, &2).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(60, &6).is_none());
+        assert!(map.insert(&60, &6).is_none());
         print_btree(&map);
         println!();
 
-        assert!(map.insert(40, &4).is_none());
+        assert!(map.insert(&40, &4).is_none());
         print_btree(&map);
         println!();
 
@@ -743,7 +678,7 @@ mod tests {
 
         assert!(map.is_empty());
 
-        map.drop();
+        unsafe { map.drop() };
     }
 
     #[test]
@@ -752,12 +687,12 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(2);
+        let mut map = SBTreeMap::new_with_degree(2);
 
         println!("INSERTION");
 
         for i in 0..10 {
-            map.insert(i, &0);
+            map.insert(&i, &0);
             print_btree(&map);
             println!();
         }
@@ -770,7 +705,7 @@ mod tests {
             println!();
         }
 
-        map.drop();
+        unsafe { map.drop() };
     }
 
     #[test]
@@ -779,29 +714,29 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::new();
+        let mut map = SBTreeMap::new();
 
-        let prev = map.insert(1, &10);
+        let prev = map.insert(&1, &10);
         assert!(prev.is_none());
 
         let val = map.get_cloned(&1).unwrap();
         assert_eq!(val, 10);
         assert!(map.contains_key(&1));
 
-        assert!(map.insert(2, &20).is_none());
-        map.insert(3, &30);
-        map.insert(4, &40);
-        map.insert(5, &50);
+        assert!(map.insert(&2, &20).is_none());
+        map.insert(&3, &30);
+        map.insert(&4, &40);
+        map.insert(&5, &50);
 
-        let val = map.insert(3, &130).unwrap();
+        let val = map.insert(&3, &130).unwrap();
         assert_eq!(val, 30);
 
         assert!(!map.contains_key(&99));
         assert!(map.remove(&99).is_none());
 
-        map.drop();
+        unsafe { map.drop() };
 
-        let map = SBTreeMap::<u64, u64>::default();
+        let _map = SBTreeMap::<u64, u64, [u8; 8], [u8; 8]>::default();
     }
 
     #[test]
@@ -810,13 +745,13 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(5);
+        let mut map = SBTreeMap::new_with_degree(5);
 
         for i in 0..50 {
-            map.insert(i + 10, &i);
+            map.insert(&(i + 10), &i);
         }
 
-        let val = map.insert(13, &130).unwrap();
+        let val = map.insert(&13, &130).unwrap();
         assert_eq!(val, 3);
 
         let val1 = map.get_cloned(&13).unwrap();
@@ -825,39 +760,39 @@ mod tests {
         assert!(!map.contains_key(&99));
         assert!(map.remove(&99).is_none());
 
-        map.insert(13, &3);
+        map.insert(&13, &3);
         assert_eq!(map.remove(&16).unwrap(), 6);
 
-        map.insert(16, &6);
-        map.insert(9, &90);
+        map.insert(&16, &6);
+        map.insert(&9, &90);
 
         assert_eq!(map.remove(&16).unwrap(), 6);
 
-        map.insert(16, &6);
+        map.insert(&16, &6);
         assert_eq!(map.remove(&9).unwrap(), 90);
         assert_eq!(map.remove(&53).unwrap(), 43);
 
-        map.insert(60, &70);
-        map.insert(61, &71);
+        map.insert(&60, &70);
+        map.insert(&61, &71);
         assert_eq!(map.remove(&58).unwrap(), 48);
 
-        map.drop();
+        unsafe { map.drop() };
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(5);
+        let mut map = SBTreeMap::new_with_degree(5);
 
         for i in 0..50 {
-            map.insert(i * 2, &i);
+            map.insert(&(i * 2), &i);
         }
 
-        map.insert(85, &1);
+        map.insert(&85, &1);
         assert_eq!(map.remove(&88).unwrap(), 44);
 
-        map.drop();
+        unsafe { map.drop() };
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+        let mut map = SBTreeMap::new_with_degree(3);
 
         for i in 0..50 {
-            map.insert(i * 2, &i);
+            map.insert(&(i * 2), &i);
         }
 
         map.remove(&94);
@@ -866,43 +801,43 @@ mod tests {
 
         assert_eq!(map.remove(&88).unwrap(), 44);
 
-        map.insert(81, &1);
-        map.insert(83, &1);
-        map.insert(94, &1);
-        map.insert(85, &1);
+        map.insert(&81, &1);
+        map.insert(&83, &1);
+        map.insert(&94, &1);
+        map.insert(&85, &1);
 
         assert_eq!(map.remove(&86).unwrap(), 43);
 
-        map.insert(71, &1);
-        map.insert(73, &1);
-        map.insert(75, &1);
-        map.insert(77, &1);
-        map.insert(79, &1);
+        map.insert(&71, &1);
+        map.insert(&73, &1);
+        map.insert(&75, &1);
+        map.insert(&77, &1);
+        map.insert(&79, &1);
 
-        map.insert(47, &1);
-        map.insert(49, &1);
-        map.insert(51, &1);
-        map.insert(53, &1);
-        map.insert(55, &1);
-        map.insert(57, &1);
-        map.insert(59, &1);
-        map.insert(61, &1);
-        map.insert(63, &1);
-        map.insert(65, &1);
-        map.insert(67, &1);
-        map.insert(69, &1);
+        map.insert(&47, &1);
+        map.insert(&49, &1);
+        map.insert(&51, &1);
+        map.insert(&53, &1);
+        map.insert(&55, &1);
+        map.insert(&57, &1);
+        map.insert(&59, &1);
+        map.insert(&61, &1);
+        map.insert(&63, &1);
+        map.insert(&65, &1);
+        map.insert(&67, &1);
+        map.insert(&69, &1);
 
         print_btree(&map);
 
-        map.drop();
+        unsafe { map.drop() };
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+        let mut map = SBTreeMap::new_with_degree(3);
 
         for i in 150..300 {
-            map.insert(i, &i);
+            map.insert(&i, &i);
         }
         for i in 0..150 {
-            map.insert(i, &i);
+            map.insert(&i, &i);
         }
 
         assert_eq!(map.remove(&203).unwrap(), 203);
@@ -910,7 +845,7 @@ mod tests {
 
         print_btree(&map);
 
-        map.drop();
+        unsafe { map.drop() };
     }
 
     #[test]
@@ -919,14 +854,14 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+        let mut map = SBTreeMap::new_with_degree(3);
 
         for i in 0..75 {
-            map.insert(i, &i);
+            map.insert(&i, &i);
         }
 
         for i in 0..75 {
-            map.insert(150 - i, &i);
+            map.insert(&(150 - i), &i);
         }
 
         for i in 0..150 {
@@ -937,42 +872,29 @@ mod tests {
             }
         }
 
-        map.drop();
+        unsafe { map.drop() };
 
-        let mut map = SBTreeMap::<u64, u64>::new_with_degree(3);
+        let mut map = SBTreeMap::new_with_degree(3);
 
         for i in 0..150 {
-            map.insert(150 - i, &i);
+            map.insert(&(150 - i), &i);
         }
 
         for i in 0..150 {
             map.remove(&(150 - i));
         }
 
-        map.drop();
+        unsafe { map.drop() };
     }
 
     #[test]
-    fn keys_work_fine() {
+    fn set_like_map_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        assert!(BTreeKey::new(10, &20) < BTreeKey::new(20, &20));
-        assert!(min(BTreeKey::new(10, &20), BTreeKey::new(20, &20)) == BTreeKey::new(10, &20));
-        assert!(max(BTreeKey::new(10, &20), BTreeKey::new(20, &20)) == BTreeKey::new(20, &20));
-
-        assert!(
-            BTreeKey::new(9, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
-                == BTreeKey::new(10, &20)
-        );
-        assert!(
-            BTreeKey::new(21, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
-                == BTreeKey::new(20, &20)
-        );
-        assert!(
-            BTreeKey::new(15, &20).clamp(BTreeKey::new(10, &20), BTreeKey::new(20, &20))
-                == BTreeKey::new(15, &20)
-        );
+        let mut map = SBTreeMap::<i32, (), [u8; size_of::<i32>()], [u8; 0]>::new();
+        map.insert(&1, &());
+        unsafe { map.drop() };
     }
 }

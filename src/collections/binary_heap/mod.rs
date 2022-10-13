@@ -38,6 +38,18 @@ impl<T, A> SBinaryHeap<T, A> {
     }
 }
 
+impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord> SBinaryHeap<T, A> {
+    #[inline]
+    pub fn peek(&mut self) -> Option<T> {
+        self.arr.get_copy(0)
+    }
+
+    #[inline]
+    pub unsafe fn drop(self) {
+        self.arr.drop();
+    }
+}
+
 impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord> SBinaryHeap<T, A> {
     pub fn push(&mut self, elem: &T) {
         self.arr.push(elem);
@@ -78,11 +90,6 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord>
 
             break;
         }
-    }
-
-    #[inline]
-    pub fn peek(&mut self) -> Option<T> {
-        self.arr.get_copy(0)
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -173,11 +180,6 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord>
 
             return Some(elem);
         }
-    }
-
-    #[inline]
-    pub unsafe fn drop(self) {
-        self.arr.drop();
     }
 }
 

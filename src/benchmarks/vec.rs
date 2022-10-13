@@ -41,7 +41,7 @@ mod vec_benchmark {
 
             measure!("Stable vec push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_vec.push(&SBox::new(&String::from("Some short string")));
+                    stable_vec.push(&SBox::new(String::from("Some short string")));
                 }
             });
 

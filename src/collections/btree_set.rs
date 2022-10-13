@@ -1,12 +1,15 @@
 use crate::collections::btree_map::SBTreeMap;
-use speedy::{LittleEndian, Readable, Writable};
+use crate::primitive::StackAllocated;
+use speedy::{Readable, Writable};
 
 #[derive(Readable, Writable)]
-pub struct SBTreeSet<T> {
-    map: SBTreeMap<T, ()>,
+pub struct SBTreeSet<T, A> {
+    map: SBTreeMap<T, (), A, [u8; 0]>,
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBTreeSet<T> {
+// TODO: add StackAllocated here and there
+
+impl<A, T> SBTreeSet<T, A> {
     pub fn new() -> Self {
         Self {
             map: SBTreeMap::new(),
@@ -19,7 +22,17 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBTreeSet
         }
     }
 
-    pub fn insert(&mut self, value: T) -> bool {
+    pub fn len(&self) -> u64 {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl<A: AsMut<[u8]>, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A> {
+    pub fn insert(&mut self, value: &T) -> bool {
         self.map.insert(value, &()).is_some()
     }
 
@@ -31,20 +44,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> SBTreeSet
         self.map.contains_key(value)
     }
 
-    pub fn len(&self) -> u64 {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
-    pub fn drop(self) {
+    pub unsafe fn drop(self) {
         self.map.drop()
     }
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> Default for SBTreeSet<T> {
+impl<A, T> Default for SBTreeSet<T, A> {
     fn default() -> Self {
         SBTreeSet::new()
     }
@@ -54,6 +59,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian> + Ord> Default f
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::{init_allocator, stable};
+    use std::mem::size_of;
 
     #[test]
     fn it_works_fine() {
@@ -62,8 +68,8 @@ mod tests {
         init_allocator(0);
 
         let mut set = SBTreeSet::default();
-        set.insert(10);
-        set.insert(20);
+        set.insert(&10);
+        set.insert(&20);
 
         assert!(set.contains(&10));
         assert_eq!(set.len(), 2);
@@ -72,9 +78,9 @@ mod tests {
         assert!(set.remove(&10));
         assert!(!set.remove(&10));
 
-        set.drop();
+        unsafe { set.drop() };
 
-        let set = SBTreeSet::<u64>::new_with_degree(3);
-        set.drop();
+        let set = SBTreeSet::<u64, [u8; size_of::<u64>()]>::new_with_degree(3);
+        unsafe { set.drop() };
     }
 }

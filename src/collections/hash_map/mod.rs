@@ -82,8 +82,8 @@ impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
 }
 
 impl<
-        AK: AsRef<[u8]> + AsMut<[u8]>,
-        AV: AsRef<[u8]> + AsMut<[u8]>,
+        AK: AsMut<[u8]>,
+        AV: AsMut<[u8]>,
         K: StackAllocated<K, AK> + Hash + Eq,
         V: StackAllocated<V, AV>,
     > SHashMap<K, V, AK, AV>

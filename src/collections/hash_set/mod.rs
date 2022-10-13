@@ -22,7 +22,7 @@ impl<A, T> SHashSet<T, A> {
     }
 }
 
-impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
+impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(&value, &()).is_some()
     }

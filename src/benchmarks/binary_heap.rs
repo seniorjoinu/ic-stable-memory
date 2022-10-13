@@ -41,7 +41,7 @@ mod binary_heap_benchmark {
 
             measure!("Stable binary heap push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    let val = SBox::new(&String::from("Some short string"));
+                    let val = SBox::new(String::from("Some short string"));
                     stable_binary_heap.push(&val);
                 }
             });
