@@ -59,6 +59,9 @@ mod vec_benchmark {
         }
     }
 
+    #[derive(Copy, Clone)]
+    struct Test(u64);
+
     #[test]
     #[ignore]
     fn body_direct() {
@@ -67,7 +70,7 @@ mod vec_benchmark {
 
             measure!("Classic vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    classic_vec.push(i);
+                    classic_vec.push(Test(i as u64));
                 }
             });
 
@@ -93,7 +96,7 @@ mod vec_benchmark {
 
             measure!("Stable vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_vec.push(&i);
+                    stable_vec.push(&Test(i as u64));
                 }
             });
 

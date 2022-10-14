@@ -5,10 +5,10 @@ use ic_stable_memory::collections::binary_heap::binary_heap_direct::{
     SBinaryHeapDirect, SHeapType,
 };
 use ic_stable_memory::collections::binary_heap::binary_heap_indirect::SBinaryHeap;
-use ic_stable_memory::collections::btree_map::SBTreeMap;
-use ic_stable_memory::collections::btree_set::SBTreeSet;
 use ic_stable_memory::collections::hash_map::hash_map_direct::SHashMapDirect;
 use ic_stable_memory::collections::hash_map::hash_map_indirect::SHashMap;
+use ic_stable_memory::collections::r#mod::SBTreeMap;
+use ic_stable_memory::collections::r#mod::SBTreeSet;
 use ic_stable_memory::collections::r#mod::SHashSet;
 use ic_stable_memory::collections::vec::vec_direct::SVecDirect;
 use ic_stable_memory::collections::vec::vec_indirect::SVec;

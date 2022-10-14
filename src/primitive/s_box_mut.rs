@@ -1,7 +1,7 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
-use crate::utils::uninit_u8_vec_of_size;
+use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate, reallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
@@ -12,6 +12,7 @@ use std::mem::size_of;
 pub struct SBoxMut<T> {
     slice: SSlice,
     _marker: SPhantomData<T>,
+    _null_ptr: *const u8,
 }
 
 impl<T> SBoxMut<T> {
@@ -25,6 +26,7 @@ impl<T> SBoxMut<T> {
         Self {
             slice,
             _marker: SPhantomData::default(),
+            _null_ptr: std::ptr::null(),
         }
     }
 }
@@ -42,6 +44,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         Self {
             slice,
             _marker: SPhantomData::default(),
+            _null_ptr: std::ptr::null(),
         }
     }
 
@@ -49,7 +52,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         let inner_slice_ptr = self.slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let buf = unsafe { uninit_u8_vec_of_size(inner_slice.get_size_bytes()) };
+        let buf = u8_smallvec(inner_slice.get_size_bytes());
         let it = T::read_from_buffer_copying_data(&buf).unwrap();
 
         deallocate(self.slice);
@@ -62,7 +65,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         let inner_slice_ptr = self.slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let buf = unsafe { uninit_u8_vec_of_size(inner_slice.get_size_bytes()) };
+        let buf = u8_smallvec(inner_slice.get_size_bytes());
 
         T::read_from_buffer_copying_data(&buf).unwrap()
     }

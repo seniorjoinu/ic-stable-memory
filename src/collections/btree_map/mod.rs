@@ -436,7 +436,8 @@ struct BTreeNode<K, V, AK, AV> {
     is_root: bool,
     keys: SVec<K, AK>,
     values: SVec<V, AV>,
-    children: SVec<BTreeNode<K, V, AK, AV>, [u8; 80]>,
+    children: SVec<BTreeNode<K, V, AK, AV>, BTreeNodeByteArray>,
+    _null_ptr: *const u8,
 }
 
 impl<K, V, AK, AV> BTreeNode<K, V, AK, AV> {
@@ -447,6 +448,7 @@ impl<K, V, AK, AV> BTreeNode<K, V, AK, AV> {
             keys: SVec::new(),
             values: SVec::new(),
             children: SVec::new(),
+            _null_ptr: std::ptr::null(),
         }
     }
 
@@ -457,13 +459,17 @@ impl<K, V, AK, AV> BTreeNode<K, V, AK, AV> {
     }
 }
 
-impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, [u8; 80]> for BTreeNode<K, V, AK, AV> {
+type BTreeNodeByteArray = [u8; 80 + size_of::<usize>()];
+
+impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, BTreeNodeByteArray>
+    for BTreeNode<K, V, AK, AV>
+{
     fn size_of_u8_array() -> usize {
-        80
+        80 + size_of::<usize>()
     }
 
-    fn fixed_size_u8_array() -> [u8; 80] {
-        [0u8; 80]
+    fn fixed_size_u8_array() -> BTreeNodeByteArray {
+        [0u8; 80 + size_of::<usize>()]
     }
 
     #[inline]
@@ -472,7 +478,7 @@ impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, [u8; 80]> for BTreeNo
     }
 
     #[inline]
-    fn from_u8_fixed_size_array(arr: [u8; 80]) -> Self {
+    fn from_u8_fixed_size_array(arr: BTreeNodeByteArray) -> Self {
         unsafe { std::mem::transmute(arr) }
     }
 }

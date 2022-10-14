@@ -1,6 +1,6 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StackAllocated;
-use crate::utils::uninit_u8_vec_of_size;
+use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
@@ -12,6 +12,7 @@ use std::ops::Deref;
 pub struct SBox<T> {
     slice: SSlice,
     inner: T,
+    _null_ptr: *const u8,
 }
 
 impl<T> SBox<T> {
@@ -26,8 +27,9 @@ impl<T> SBox<T> {
     }
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>
-    StackAllocated<SBox<T>, [u8; size_of::<u64>()]> for SBox<T>
+impl<'a, T> StackAllocated<SBox<T>, [u8; size_of::<u64>()]> for SBox<T>
+where
+    T: Readable<'a, LittleEndian> + Writable<LittleEndian>,
 {
     #[inline]
     fn size_of_u8_array() -> usize {
@@ -58,22 +60,30 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBox<T> {
 
         slice.write_bytes(0, &buf);
 
-        Self { slice, inner: it }
+        Self {
+            slice,
+            inner: it,
+            _null_ptr: std::ptr::null(),
+        }
     }
 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
-        let mut buf = unsafe { uninit_u8_vec_of_size(slice.get_size_bytes()) };
+        let mut buf = u8_smallvec(slice.get_size_bytes());
         slice.read_bytes(0, &mut buf);
 
         let inner = T::read_from_buffer_copying_data(&buf).unwrap();
 
-        Self { slice, inner }
+        Self {
+            slice,
+            inner,
+            _null_ptr: std::ptr::null(),
+        }
     }
 
     pub fn get_cloned(&self) -> T {
-        let mut buf = unsafe { uninit_u8_vec_of_size(self.slice.get_size_bytes()) };
+        let mut buf = u8_smallvec(self.slice.get_size_bytes());
         self.slice.read_bytes(0, &mut buf);
 
         T::read_from_buffer_copying_data(&buf).unwrap()

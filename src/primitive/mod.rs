@@ -2,10 +2,8 @@ use std::mem::size_of;
 
 pub mod s_box;
 pub mod s_box_mut;
-pub mod s_ref_cell;
-pub mod s_unsafe_cell;
 
-pub trait StackAllocated<T, A>
+pub trait StackAllocated<T, A>: Sized
 where
     A: AsMut<[u8]>,
 {
@@ -17,7 +15,7 @@ where
 
 impl<T> StackAllocated<T, [u8; size_of::<T>()]> for T
 where
-    T: Copy + NotReference,
+    T: NotReference + Copy,
     [u8; size_of::<T>()]: Sized,
 {
     #[inline]
@@ -45,3 +43,5 @@ where
 pub auto trait NotReference {}
 impl<'a, T> !NotReference for &'a T {}
 impl<'a, T> !NotReference for &'a mut T {}
+impl<T> !NotReference for *const T {}
+impl<T> !NotReference for *mut T {}

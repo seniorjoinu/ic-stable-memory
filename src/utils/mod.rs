@@ -1,6 +1,8 @@
 use ic_cdk::{print, trap};
+use smallvec::{smallvec, SmallVec};
 use std::mem;
 use std::mem::size_of;
+
 pub mod ic_types;
 pub mod math;
 pub mod mem_context;
@@ -43,10 +45,6 @@ macro_rules! isotrap {
 pub(crate) use isotrap;
 
 #[inline]
-#[allow(clippy::uninit_vec)]
-pub unsafe fn uninit_u8_vec_of_size(size: usize) -> Vec<u8> {
-    let mut vec = Vec::with_capacity(size);
-    vec.set_len(size);
-
-    vec
+pub fn u8_smallvec(size: usize) -> SmallVec<[u8; 64]> {
+    smallvec![0; size]
 }

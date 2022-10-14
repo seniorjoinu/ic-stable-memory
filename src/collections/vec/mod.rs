@@ -3,13 +3,10 @@ use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
 use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
-use crate::utils::uninit_u8_vec_of_size;
+use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate, reallocate};
-use speedy::{Readable, Writable};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
-use std::mem::size_of;
-use std::ops::Index;
 
 const DEFAULT_CAPACITY: usize = 4;
 
@@ -87,7 +84,7 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         self.maybe_reallocate(T::size_of_u8_array());
 
         let offset = Self::to_offset_or_size(self.len, T::size_of_u8_array());
-        let elem_bytes = T::as_u8_slice(&element);
+        let elem_bytes = T::as_u8_slice(element);
 
         SSlice::_write_bytes(self.ptr, offset, elem_bytes);
 
@@ -147,9 +144,9 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         self.maybe_reallocate(T::size_of_u8_array());
 
         let size = Self::to_offset_or_size(self.len - idx, T::size_of_u8_array());
-        let mut buf = unsafe { uninit_u8_vec_of_size(size) };
-
         let offset = Self::to_offset_or_size(idx, T::size_of_u8_array());
+
+        let mut buf = u8_smallvec(size);
 
         SSlice::_read_bytes(self.ptr, offset, &mut buf);
         SSlice::_write_bytes(self.ptr, offset + T::size_of_u8_array(), &buf);
@@ -168,7 +165,7 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         }
 
         let size = Self::to_offset_or_size(self.len - (idx + 1), T::size_of_u8_array());
-        let mut buf = unsafe { uninit_u8_vec_of_size(size) };
+        let mut buf = u8_smallvec(size);
         let offset = Self::to_offset_or_size(idx + 1, T::size_of_u8_array());
         SSlice::_read_bytes(self.ptr, offset, &mut buf);
 
@@ -299,26 +296,6 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A> {
             }
         }
         f.write_str("]")
-    }
-}
-
-impl<T, A> StackAllocated<SVec<T, A>, [u8; size_of::<SVec<T, A>>()]> for SVec<T, A> {
-    fn size_of_u8_array() -> usize {
-        size_of::<Self>()
-    }
-
-    fn fixed_size_u8_array() -> [u8; size_of::<Self>()] {
-        [0u8; size_of::<Self>()]
-    }
-
-    #[inline]
-    fn as_u8_slice(it: &Self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(it as *const Self as *const u8, size_of::<Self>()) }
-    }
-
-    #[inline]
-    fn from_u8_fixed_size_array(arr: [u8; size_of::<Self>()]) -> Self {
-        unsafe { std::mem::transmute(arr) }
     }
 }
 

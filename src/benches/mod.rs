@@ -18,9 +18,9 @@ pub fn now_milli() -> u128 {
 #[macro_export]
 macro_rules! measure {
     ($name:literal, $iterations:expr, $it:block) => {
-        let before = $crate::benchmarks::now_milli();
+        let before = $crate::benches::now_milli();
         $it;
-        let after = $crate::benchmarks::now_milli();
+        let after = $crate::benches::now_milli();
 
         println!(
             "{} {} iterations: {} ms",

@@ -38,7 +38,7 @@ impl<T, A> SBinaryHeap<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord> SBinaryHeap<T, A> {
+impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     #[inline]
     pub fn peek(&mut self) -> Option<T> {
         self.arr.get_copy(0)
@@ -50,7 +50,7 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord> SBinaryHeap<T
     }
 }
 
-impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + NotReference + Ord> SBinaryHeap<T, A> {
+impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     pub fn push(&mut self, elem: &T) {
         self.arr.push(elem);
         let len = self.len();

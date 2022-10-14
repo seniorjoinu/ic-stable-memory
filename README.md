@@ -2,6 +2,10 @@ THIS IS __NOT__ A BATTLE-TESTED SOFTWARE; USE AT YOUR OWN RISK
 
 ![test coverage 95.72%](https://badgen.net/badge/coverage/95.72%25/green)
 
+
+`#![feature(generic_const_exprs)] and 1.66 nightly are now mandatory`
+
+
 # IC Stable Memory
 
 With this Rust library you can:

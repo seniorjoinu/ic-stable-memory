@@ -6,11 +6,10 @@
 #![feature(const_trait_impl)]
 
 use crate::mem::allocator::StableMemoryAllocator;
-use crate::primitive::s_unsafe_cell::SUnsafeCell;
 use mem::s_slice::SSlice;
 use std::cell::RefCell;
 
-mod benchmarks;
+mod benches;
 pub mod collections;
 pub mod macros;
 pub mod mem;
