@@ -2,12 +2,14 @@ use crate::collections::vec::SVec;
 use crate::mem::s_slice::Side;
 use crate::primitive::StackAllocated;
 use crate::SSlice;
-use speedy::{Readable, Writable};
+use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
+use std::io::{Read, Write};
+use std::marker::Destruct;
 use std::mem::size_of;
+use std::path::Path;
 
 const DEFAULT_BTREE_DEGREE: usize = 4096;
 
-#[derive(Readable, Writable)]
 pub struct SBTreeMap<K, V, AK, AV> {
     root: BTreeNode<K, V, AK, AV>,
     degree: usize,
@@ -139,7 +141,7 @@ impl<
         node.values.insert(idx, &child.values.remove(degree - 1));
 
         if !child.is_leaf {
-            for i in 0..degree {
+            for _ in 0..degree {
                 let grand_child = child.children.remove(degree);
 
                 if grand_child.keys.is_empty() {
@@ -195,7 +197,7 @@ impl<
         match node.keys.binary_search_by(|k| k.cmp(key)) {
             Ok(idx) => {
                 if node.is_leaf {
-                    let k = node.keys.remove(idx);
+                    node.keys.remove(idx);
                     let v = node.values.remove(idx);
 
                     Some(v)
@@ -431,6 +433,29 @@ impl<AK, AV, K, V> Default for SBTreeMap<K, V, AK, AV> {
     }
 }
 
+impl<'a, K, V, AK, AV> Readable<'a, LittleEndian> for SBTreeMap<K, V, AK, AV> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let root = BTreeNode::read_from(reader)?;
+        let degree = reader.read_u32()? as usize;
+        let len = reader.read_u64()?;
+
+        Ok(Self { root, degree, len })
+    }
+}
+
+impl<K, V, AK, AV> Writable<LittleEndian> for SBTreeMap<K, V, AK, AV> {
+    fn write_to<W: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        self.root.write_to(writer)?;
+        writer.write_u32(self.degree as u32)?;
+        writer.write_u64(self.len)
+    }
+}
+
 struct BTreeNode<K, V, AK, AV> {
     is_leaf: bool,
     is_root: bool,
@@ -459,6 +484,8 @@ impl<K, V, AK, AV> BTreeNode<K, V, AK, AV> {
     }
 }
 
+// TODO: this is bad -- WE NEED TO DO SOMETHING CAPTAIN
+
 type BTreeNodeByteArray = [u8; 80 + size_of::<usize>()];
 
 impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, BTreeNodeByteArray>
@@ -480,6 +507,55 @@ impl<K, V, AK, AV> StackAllocated<BTreeNode<K, V, AK, AV>, BTreeNodeByteArray>
     #[inline]
     fn from_u8_fixed_size_array(arr: BTreeNodeByteArray) -> Self {
         unsafe { std::mem::transmute(arr) }
+    }
+}
+
+impl<'a, K, V, AK, AV> Readable<'a, LittleEndian> for BTreeNode<K, V, AK, AV> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let is_leaf_byte = reader.read_u8()?;
+        let is_leaf = match is_leaf_byte {
+            0 => false,
+            1 => true,
+            _ => unreachable!(),
+        };
+        let is_root_byte = reader.read_u8()?;
+        let is_root = match is_root_byte {
+            0 => false,
+            1 => true,
+            _ => unreachable!(),
+        };
+
+        let keys = SVec::read_from(reader)?;
+        let values = SVec::read_from(reader)?;
+        let children = SVec::read_from(reader)?;
+
+        Ok(Self {
+            is_leaf,
+            is_root,
+            keys,
+            values,
+            children,
+            _null_ptr: std::ptr::null(),
+        })
+    }
+}
+
+impl<K, V, AK, AV> Writable<LittleEndian> for BTreeNode<K, V, AK, AV> {
+    fn write_to<T: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        let is_leaf_byte: u8 = u8::from(self.is_leaf);
+        writer.write_u8(is_leaf_byte)?;
+
+        let is_root_byte: u8 = u8::from(self.is_root);
+        writer.write_u8(is_root_byte)?;
+
+        self.keys.write_to(writer)?;
+        self.values.write_to(writer)?;
+        self.children.write_to(writer)
     }
 }
 

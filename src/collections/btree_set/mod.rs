@@ -1,13 +1,12 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::primitive::StackAllocated;
-use speedy::{Readable, Writable};
+use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
+use std::io::{Read, Write};
+use std::path::Path;
 
-#[derive(Readable, Writable)]
 pub struct SBTreeSet<T, A> {
     map: SBTreeMap<T, (), A, [u8; 0]>,
 }
-
-// TODO: add StackAllocated here and there
 
 impl<A, T> SBTreeSet<T, A> {
     pub fn new() -> Self {
@@ -52,6 +51,25 @@ impl<A: AsMut<[u8]>, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A> {
 impl<A, T> Default for SBTreeSet<T, A> {
     fn default() -> Self {
         SBTreeSet::new()
+    }
+}
+
+impl<'a, T, A> Readable<'a, LittleEndian> for SBTreeSet<T, A> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let map = SBTreeMap::read_from(reader)?;
+
+        Ok(Self { map })
+    }
+}
+
+impl<T, A> Writable<LittleEndian> for SBTreeSet<T, A> {
+    fn write_to<W: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        self.map.write_to(writer)
     }
 }
 

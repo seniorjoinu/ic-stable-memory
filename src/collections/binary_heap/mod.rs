@@ -1,6 +1,8 @@
 use crate::collections::vec::SVec;
 use crate::primitive::{NotReference, StackAllocated};
-use speedy::{Readable, Writable};
+use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
+use std::io::{Read, Write};
+use std::path::Path;
 
 #[derive(Readable, Writable)]
 pub enum SHeapType {
@@ -8,7 +10,6 @@ pub enum SHeapType {
     Max,
 }
 
-#[derive(Readable, Writable)]
 pub struct SBinaryHeap<T, A> {
     ty: SHeapType,
     arr: SVec<T, A>,
@@ -40,7 +41,7 @@ impl<T, A> SBinaryHeap<T, A> {
 
 impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     #[inline]
-    pub fn peek(&mut self) -> Option<T> {
+    pub fn peek(&self) -> Option<T> {
         self.arr.get_copy(0)
     }
 
@@ -186,6 +187,27 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T,
 impl<T, A> Default for SBinaryHeap<T, A> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'a, A, T> Readable<'a, LittleEndian> for SBinaryHeap<T, A> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let ty = SHeapType::read_from(reader)?;
+        let arr = SVec::read_from(reader)?;
+
+        Ok(Self { ty, arr })
+    }
+}
+
+impl<A, T> Writable<LittleEndian> for SBinaryHeap<T, A> {
+    fn write_to<W: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        self.ty.write_to(writer)?;
+        self.arr.write_to(writer)
     }
 }
 

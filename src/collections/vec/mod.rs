@@ -5,6 +5,7 @@ use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate, reallocate};
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 
@@ -68,8 +69,6 @@ impl<T, A> SVec<T, A> {
             let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
 
             self.ptr = reallocate(slice, self.cap * item_size).anyway().ptr;
-
-            return;
         }
     }
 
@@ -296,6 +295,35 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A> {
             }
         }
         f.write_str("]")
+    }
+}
+
+impl<'a, A, T> Readable<'a, LittleEndian> for SVec<T, A> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let ptr = reader.read_u64()?;
+        let len = reader.read_u32()? as usize;
+        let cap = reader.read_u32()? as usize;
+
+        Ok(Self {
+            ptr,
+            len,
+            cap,
+            _marker_t: SPhantomData::new(),
+            _marker_a: SPhantomData::new(),
+        })
+    }
+}
+
+impl<A, T> Writable<LittleEndian> for SVec<T, A> {
+    fn write_to<W: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        writer.write_u64(self.ptr)?;
+        writer.write_u32(self.len as u32)?;
+        writer.write_u32(self.cap as u32)
     }
 }
 

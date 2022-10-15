@@ -1,9 +1,10 @@
 use crate::collections::hash_map::SHashMap;
 use crate::primitive::StackAllocated;
-use speedy::{Readable, Writable};
+use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
+use std::io::{Read, Write};
+use std::path::Path;
 
-#[derive(Readable, Writable)]
 pub struct SHashSet<T, A> {
     map: SHashMap<T, (), A, [u8; 0]>,
 }
@@ -51,6 +52,25 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
 impl<A, T> Default for SHashSet<T, A> {
     fn default() -> Self {
         SHashSet::new()
+    }
+}
+
+impl<'a, A, T> Readable<'a, LittleEndian> for SHashSet<T, A> {
+    fn read_from<R: Reader<'a, LittleEndian>>(
+        reader: &mut R,
+    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
+        let map = SHashMap::read_from(reader)?;
+
+        Ok(Self { map })
+    }
+}
+
+impl<A, T> Writable<LittleEndian> for SHashSet<T, A> {
+    fn write_to<W: ?Sized + Writer<LittleEndian>>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
+        self.map.write_to(writer)
     }
 }
 
