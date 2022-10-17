@@ -2,12 +2,14 @@ use crate::collections::hash_map::SHashMap;
 use crate::primitive::s_box::SBox;
 use crate::primitive::s_box_mut::SBoxMut;
 use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
-use fixedstr::fstr;
 use ic_cdk::trap;
 use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
+use std::mem::size_of;
 
-type Variables = SHashMap<[u8; 100], u64, [u8; 100], [u8; 8]>;
+const MAX_VAR_NAME_LEN: usize = 128;
+type Variables =
+    SHashMap<[u8; MAX_VAR_NAME_LEN], u64, [u8; MAX_VAR_NAME_LEN], [u8; size_of::<u64>()]>;
 
 #[thread_local]
 static VARS: RefCell<Option<Variables>> = RefCell::new(None);
@@ -42,11 +44,26 @@ pub fn reinit_vars() {
     }
 }
 
+fn name_to_arr(name: &str) -> [u8; MAX_VAR_NAME_LEN] {
+    assert!(
+        name.len() <= MAX_VAR_NAME_LEN,
+        "Stable variable name is too long (max 128 chars)"
+    );
+
+    let mut bytes = [0u8; MAX_VAR_NAME_LEN];
+    bytes[0..name.len()].copy_from_slice(name.as_bytes());
+
+    bytes
+}
+
 pub fn set_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str, value: &T) {
+    let bytes = name_to_arr(name);
     let val_box_ptr = SBoxMut::new(value).as_ptr();
 
     if let Some(m) = &mut *VARS.borrow_mut() {
-        m.insert(&fstr::from(name).as_u8(), &val_box_ptr);
+        if let Some(prev_val_box_ptr) = m.insert(bytes, val_box_ptr) {
+            unsafe { SBoxMut::from_ptr(prev_val_box_ptr).drop() }
+        }
     } else {
         unreachable!("Stable variables are not initialized");
     }
@@ -54,7 +71,9 @@ pub fn set_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name:
 
 pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
     let ptr = if let Some(m) = &*VARS.borrow() {
-        m.get_copy(&fstr::from(name).as_u8())
+        let bytes = name_to_arr(name);
+
+        m.get_copy(&bytes)
             .unwrap_or_else(|| trap(format!("Invalid stable var name {}", name).as_str()))
     } else {
         unreachable!("Stable variables are not initialized");

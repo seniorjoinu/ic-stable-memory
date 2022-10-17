@@ -100,7 +100,7 @@ fn _a2_stable_vec_push(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for _ in 0..count {
-            vec.push(&black_box(10));
+            vec.push(black_box(10));
         }
 
         let after = performance_counter(0);
@@ -210,7 +210,7 @@ fn _d2_stable_binary_heap_push(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for i in 0..count as u64 {
-            binary_heap.push(&black_box(i));
+            binary_heap.push(black_box(i));
         }
 
         let after = performance_counter(0);
@@ -320,7 +320,7 @@ fn _g2_stable_hash_map_insert(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for key in 0..count {
-            hash_map.insert(&(key as u64), &1);
+            hash_map.insert(key as u64, 1);
         }
 
         let after = performance_counter(0);
@@ -540,7 +540,7 @@ fn _m2_stable_btree_map_insert(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for key in 0..count {
-            btree_map.insert(&(key as u64), &1);
+            btree_map.insert(key as u64, 1);
         }
 
         let after = performance_counter(0);
@@ -650,7 +650,7 @@ fn _p2_stable_btree_set_insert(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for key in 0..count {
-            btree_set.insert(&(key as u64));
+            btree_set.insert(key as u64);
         }
 
         let after = performance_counter(0);

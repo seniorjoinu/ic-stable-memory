@@ -42,8 +42,8 @@ where
     }
 
     #[inline]
-    fn as_u8_slice(it: &Self) -> &[u8] {
-        u64::as_u8_slice(&it.slice.ptr)
+    fn to_u8_fixed_size_array(it: SBox<T>) -> [u8; size_of::<u64>()] {
+        u64::to_u8_fixed_size_array(it.slice.ptr)
     }
 
     fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {

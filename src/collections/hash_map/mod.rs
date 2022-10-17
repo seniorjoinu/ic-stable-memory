@@ -1,14 +1,12 @@
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
-use crate::primitive::{NotReference, StackAllocated};
+use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
-use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
 use std::mem::size_of;
-use std::path::Path;
 
 const LOAD_FACTOR: f64 = 0.75;
 const DEFAULT_CAPACITY: usize = 5;
@@ -82,17 +80,17 @@ impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
 }
 
 impl<
-        AK: AsMut<[u8]>,
-        AV: AsMut<[u8]>,
+        AK: AsMut<[u8]> + AsRef<[u8]>,
+        AV: AsMut<[u8]> + AsRef<[u8]>,
         K: StackAllocated<K, AK> + Hash + Eq,
         V: StackAllocated<V, AV>,
     > SHashMap<K, V, AK, AV>
 {
-    pub fn insert(&mut self, key: &K, value: &V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.maybe_reallocate();
 
         let mut prev = None;
-        let key_hash = self.hash(key) as usize;
+        let key_hash = self.hash(&key) as usize;
         let mut i = 0;
 
         let table = self.table.as_ref().unwrap();
@@ -106,7 +104,7 @@ impl<
 
             match Self::read_key_at(table, at, true) {
                 HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
+                    if prev_key.eq(&key) {
                         prev = Some(Self::read_val_at(table, at));
                         Self::write_val_at(table, at, value);
                         break;
@@ -279,15 +277,15 @@ impl<
         V::from_u8_fixed_size_array(val_at_idx)
     }
 
-    fn write_key_at(slice: &SSlice, idx: usize, key: HashMapKey<&K>) {
+    fn write_key_at(slice: &SSlice, idx: usize, key: HashMapKey<K>) {
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>());
 
         let key_flag = match key {
             HashMapKey::Empty => [EMPTY],
             HashMapKey::Tombstone => [TOMBSTONE],
             HashMapKey::Occupied(k) => {
-                let key_bytes = K::as_u8_slice(&k);
-                slice.write_bytes(at + 1, key_bytes);
+                let key_bytes = K::to_u8_fixed_size_array(k);
+                slice.write_bytes(at + 1, key_bytes.as_ref());
 
                 [OCCUPIED]
             }
@@ -297,11 +295,11 @@ impl<
         slice.write_bytes(at, &key_flag);
     }
 
-    fn write_val_at(slice: &SSlice, idx: usize, val: &V) {
+    fn write_val_at(slice: &SSlice, idx: usize, val: V) {
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>()) + 1 + size_of::<K>();
-        let val_bytes = V::as_u8_slice(val);
+        let val_bytes = V::to_u8_fixed_size_array(val);
 
-        slice.write_bytes(at, val_bytes);
+        slice.write_bytes(at, val_bytes.as_ref());
     }
 
     fn maybe_reallocate(&mut self) {
@@ -341,8 +339,8 @@ impl<
                             continue;
                         }
                         HashMapKey::Empty => {
-                            Self::write_key_at(&new_table, at, HashMapKey::Occupied(&key));
-                            Self::write_val_at(&new_table, at, &val);
+                            Self::write_key_at(&new_table, at, HashMapKey::Occupied(key));
+                            Self::write_val_at(&new_table, at, val);
 
                             break;
                         }
@@ -437,9 +435,15 @@ mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::init_allocator;
     use crate::utils::mem_context::stable;
-    use std::mem::size_of;
 
-    fn test_body(mut map: SHashMap<i32, i32, [u8; size_of::<i32>()], [u8; size_of::<i32>()]>) {
+    #[test]
+    fn simple_flow_works_well() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new_with_capacity(3);
+
         let k1 = 1;
         let k2 = 2;
         let k3 = 3;
@@ -449,14 +453,14 @@ mod tests {
         let k7 = 7;
         let k8 = 8;
 
-        map.insert(&k1, &1);
-        map.insert(&k2, &2);
-        map.insert(&k3, &3);
-        map.insert(&k4, &4);
-        map.insert(&k5, &5);
-        map.insert(&k6, &6);
-        map.insert(&k7, &7);
-        map.insert(&k8, &8);
+        map.insert(k1, 1);
+        map.insert(k2, 2);
+        map.insert(k3, 3);
+        map.insert(k4, 4);
+        map.insert(k5, 5);
+        map.insert(k6, 6);
+        map.insert(k7, 7);
+        map.insert(k8, 8);
 
         assert_eq!(map.get_copy(&k1).unwrap(), 1);
         assert_eq!(map.get_copy(&k2).unwrap(), 2);
@@ -491,26 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn simple_flow_works_well_for_big() {
-        stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
-
-        let map = SHashMap::new();
-        test_body(map);
-    }
-
-    #[test]
-    fn simple_flow_works_well_for_small() {
-        stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
-
-        let map = SHashMap::new_with_capacity(3);
-        test_body(map);
-    }
-
-    #[test]
     fn basic_flow_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();
@@ -521,11 +505,11 @@ mod tests {
         assert!(map.remove(&10).is_none());
         assert!(map.get_copy(&10).is_none());
 
-        let it = map.insert(&1, &1);
+        let it = map.insert(1, 1);
         assert!(it.is_none());
-        assert!(map.insert(&2, &2).is_none());
-        assert!(map.insert(&3, &3).is_none());
-        assert_eq!(map.insert(&1, &10).unwrap(), 1);
+        assert!(map.insert(2, 2).is_none());
+        assert!(map.insert(3, 3).is_none());
+        assert_eq!(map.insert(1, 10).unwrap(), 1);
 
         assert!(map.remove(&5).is_none());
         assert_eq!(map.remove(&1).unwrap(), 10);
@@ -537,7 +521,7 @@ mod tests {
 
         let mut map = SHashMap::default();
         for i in 0..100 {
-            assert!(map.insert(&i, &i).is_none());
+            assert!(map.insert(i, i).is_none());
         }
 
         for i in 0..100 {

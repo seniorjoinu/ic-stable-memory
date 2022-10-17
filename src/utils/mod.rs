@@ -1,7 +1,6 @@
+#[allow(unused_imports)]
 use ic_cdk::{print, trap};
 use smallvec::{smallvec, SmallVec};
-use std::mem;
-use std::mem::size_of;
 
 pub mod ic_types;
 pub mod math;

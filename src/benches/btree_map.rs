@@ -41,7 +41,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.insert(&i, &SBox::new(String::from("Some short string")));
+                    stable_btree_map.insert(i, SBox::new(String::from("Some short string")));
                 }
             });
 
@@ -93,7 +93,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.insert(&i, &i);
+                    stable_btree_map.insert(i, i);
                 }
             });
 

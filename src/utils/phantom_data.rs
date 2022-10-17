@@ -22,7 +22,7 @@ impl<T> SPhantomData<T> {
 }
 
 impl<'a, C: Context, T> Readable<'a, C> for SPhantomData<T> {
-    fn read_from<R: Reader<'a, C>>(reader: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
+    fn read_from<R: Reader<'a, C>>(_: &mut R) -> Result<Self, <C as speedy::Context>::Error> {
         Ok(SPhantomData::new())
     }
 }
@@ -30,7 +30,7 @@ impl<'a, C: Context, T> Readable<'a, C> for SPhantomData<T> {
 impl<T, C: Context> Writable<C> for SPhantomData<T> {
     fn write_to<W: ?Sized + Writer<C>>(
         &self,
-        writer: &mut W,
+        _: &mut W,
     ) -> Result<(), <C as speedy::Context>::Error> {
         Ok(())
     }

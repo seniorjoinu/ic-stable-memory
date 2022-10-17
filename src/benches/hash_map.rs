@@ -41,7 +41,7 @@ mod hash_map_benchmark {
 
             measure!("Stable hash map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_hash_map.insert(&i, &SBox::new(String::from("Some short string")));
+                    stable_hash_map.insert(i, SBox::new(String::from("Some short string")));
                 }
             });
 
@@ -93,7 +93,7 @@ mod hash_map_benchmark {
 
             measure!("Stable hash map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_hash_map.insert(&i, &i);
+                    stable_hash_map.insert(i, i);
                 }
             });
 

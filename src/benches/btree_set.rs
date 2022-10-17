@@ -40,7 +40,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree set insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.insert(&i);
+                    stable_btree_map.insert(i);
                 }
             });
 

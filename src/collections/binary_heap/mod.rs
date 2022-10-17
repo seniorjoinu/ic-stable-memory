@@ -1,31 +1,16 @@
 use crate::collections::vec::SVec;
-use crate::primitive::{NotReference, StackAllocated};
-use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
-use std::io::{Read, Write};
-use std::path::Path;
-
-#[derive(Readable, Writable)]
-pub enum SHeapType {
-    Min,
-    Max,
-}
+use crate::primitive::StackAllocated;
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 
 pub struct SBinaryHeap<T, A> {
-    ty: SHeapType,
     arr: SVec<T, A>,
 }
 
+// Max heap
 impl<T, A> SBinaryHeap<T, A> {
     #[inline]
     pub fn new() -> Self {
-        Self::new_with_type(SHeapType::Max)
-    }
-
-    pub fn new_with_type(ty: SHeapType) -> Self {
-        Self {
-            ty,
-            arr: SVec::new(),
-        }
+        Self { arr: SVec::new() }
     }
 
     #[inline]
@@ -39,7 +24,7 @@ impl<T, A> SBinaryHeap<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     #[inline]
     pub fn peek(&self) -> Option<T> {
         self.arr.get_copy(0)
@@ -51,8 +36,10 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     }
 }
 
+// https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
+
 impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
-    pub fn push(&mut self, elem: &T) {
+    pub fn push(&mut self, elem: T) {
         self.arr.push(elem);
         let len = self.len();
         if len == 1 {
@@ -60,27 +47,13 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T,
         }
 
         let mut idx = len - 1;
+        let elem = self.arr.get_copy(idx).unwrap();
 
         loop {
             let parent_idx = idx / 2;
             let parent = self.arr.get_copy(parent_idx).unwrap();
 
-            let mut flag = false;
-
-            match self.ty {
-                SHeapType::Min => {
-                    if elem < &parent {
-                        flag = true;
-                    }
-                }
-                SHeapType::Max => {
-                    if elem > &parent {
-                        flag = true;
-                    }
-                }
-            };
-
-            if flag {
+            if elem > parent {
                 self.arr.swap(idx, parent_idx);
                 idx = parent_idx;
 
@@ -120,22 +93,7 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T,
             let left_child = self.arr.get_copy(left_child_idx).unwrap();
 
             if right_child_idx > last_idx {
-                let mut flag = false;
-
-                match self.ty {
-                    SHeapType::Min => {
-                        if parent > left_child {
-                            flag = true;
-                        }
-                    }
-                    SHeapType::Max => {
-                        if parent < left_child {
-                            flag = true;
-                        }
-                    }
-                };
-
-                if flag {
+                if parent < left_child {
                     self.arr.swap(idx, left_child_idx);
                 }
 
@@ -146,37 +104,18 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T,
 
             let right_child = self.arr.get_copy(right_child_idx).unwrap();
 
-            match self.ty {
-                SHeapType::Min => {
-                    if left_child <= right_child && left_child < parent {
-                        self.arr.swap(idx, left_child_idx);
-                        idx = left_child_idx;
+            if left_child >= right_child && left_child > parent {
+                self.arr.swap(idx, left_child_idx);
+                idx = left_child_idx;
 
-                        continue;
-                    }
+                continue;
+            }
 
-                    if right_child <= left_child && right_child < parent {
-                        self.arr.swap(idx, right_child_idx);
-                        idx = right_child_idx;
+            if right_child >= left_child && right_child > parent {
+                self.arr.swap(idx, right_child_idx);
+                idx = right_child_idx;
 
-                        continue;
-                    }
-                }
-                SHeapType::Max => {
-                    if left_child >= right_child && left_child > parent {
-                        self.arr.swap(idx, left_child_idx);
-                        idx = left_child_idx;
-
-                        continue;
-                    }
-
-                    if right_child >= left_child && right_child > parent {
-                        self.arr.swap(idx, right_child_idx);
-                        idx = right_child_idx;
-
-                        continue;
-                    }
-                }
+                continue;
             }
 
             return Some(elem);
@@ -194,10 +133,9 @@ impl<'a, A, T> Readable<'a, LittleEndian> for SBinaryHeap<T, A> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let ty = SHeapType::read_from(reader)?;
         let arr = SVec::read_from(reader)?;
 
-        Ok(Self { ty, arr })
+        Ok(Self { arr })
     }
 }
 
@@ -206,14 +144,13 @@ impl<A, T> Writable<LittleEndian> for SBinaryHeap<T, A> {
         &self,
         writer: &mut W,
     ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        self.ty.write_to(writer)?;
         self.arr.write_to(writer)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::binary_heap::{SBinaryHeap, SHeapType};
+    use crate::collections::binary_heap::SBinaryHeap;
     use crate::{stable, stable_memory_init};
 
     #[test]
@@ -227,16 +164,16 @@ mod tests {
         assert!(max_heap.is_empty());
 
         // insert example values in random order
-        max_heap.push(&80);
-        max_heap.push(&100);
-        max_heap.push(&50);
-        max_heap.push(&10);
-        max_heap.push(&90);
-        max_heap.push(&60);
-        max_heap.push(&70);
-        max_heap.push(&20);
-        max_heap.push(&40);
-        max_heap.push(&30);
+        max_heap.push(80);
+        max_heap.push(100);
+        max_heap.push(50);
+        max_heap.push(10);
+        max_heap.push(90);
+        max_heap.push(60);
+        max_heap.push(70);
+        max_heap.push(20);
+        max_heap.push(40);
+        max_heap.push(30);
 
         assert_eq!(max_heap.peek().unwrap(), 100);
 
@@ -258,42 +195,5 @@ mod tests {
         assert_eq!(probe, example, "Invalid elements order (max)");
 
         unsafe { max_heap.drop() };
-
-        // it should also work for the min heap
-        let example = vec![100u32, 90, 90, 80, 70, 50, 40, 30, 20, 10];
-        let mut min_heap = SBinaryHeap::new_with_type(SHeapType::Min);
-
-        // insert example values in random order
-        min_heap.push(&80);
-        min_heap.push(&100);
-        min_heap.push(&50);
-        min_heap.push(&10);
-        min_heap.push(&90);
-        min_heap.push(&90);
-        min_heap.push(&70);
-        min_heap.push(&20);
-        min_heap.push(&40);
-        min_heap.push(&30);
-
-        assert_eq!(min_heap.peek().unwrap(), 10);
-
-        let mut probe = vec![];
-
-        // pop all elements, push them to probe
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-        probe.insert(0, min_heap.pop().unwrap());
-
-        // probe should be the same as example
-        assert_eq!(probe, example, "Invalid elements order (min)");
-
-        unsafe { min_heap.drop() };
     }
 }

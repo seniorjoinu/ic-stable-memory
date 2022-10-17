@@ -1,9 +1,7 @@
 use crate::collections::hash_map::SHashMap;
 use crate::primitive::StackAllocated;
-use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
-use std::io::{Read, Write};
-use std::path::Path;
 
 pub struct SHashSet<T, A> {
     map: SHashMap<T, (), A, [u8; 0]>,
@@ -23,9 +21,9 @@ impl<A, T> SHashSet<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
     pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(&value, &()).is_some()
+        self.map.insert(value, ()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {

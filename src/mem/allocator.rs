@@ -571,8 +571,6 @@ impl StableMemoryAllocator {
     }
 }
 
-const EMPTY_ARGS: [u8; 6] = [b'D', b'I', b'D', b'L', 0, 0];
-
 fn get_seg_class_id(size: usize) -> usize {
     let mut log = fast_log2(size);
 

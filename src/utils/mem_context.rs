@@ -190,7 +190,7 @@ pub mod stable {
 #[cfg(not(target_family = "wasm"))]
 pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
 
     #[thread_local]
     static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());

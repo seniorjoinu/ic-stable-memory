@@ -1,7 +1,7 @@
 use crate::mem::free_block::FreeBlock;
 use crate::utils::mem_context::stable;
 use speedy::{Readable, Writable};
-use std::mem::{size_of, MaybeUninit};
+use std::mem::size_of;
 use std::usize;
 
 pub(crate) const FREE: u64 = 2usize.pow(u32::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
@@ -159,7 +159,6 @@ impl SSlice {
 /// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
-    use crate::mem::s_slice::{Side, BLOCK_META_SIZE};
     use crate::utils::mem_context::stable;
     use crate::SSlice;
 

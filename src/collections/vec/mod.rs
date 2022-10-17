@@ -8,13 +8,14 @@ use crate::{allocate, deallocate, reallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
+use std::mem::size_of;
 
 const DEFAULT_CAPACITY: usize = 4;
 
 pub struct SVec<T, A> {
     pub(crate) ptr: u64,
-    len: usize,
-    cap: usize,
+    pub(crate) len: usize,
+    pub(crate) cap: usize,
     _marker_t: SPhantomData<T>,
     _marker_a: SPhantomData<A>,
 }
@@ -78,14 +79,14 @@ impl<T, A> SVec<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
-    pub fn push(&mut self, element: &T) {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
+    pub fn push(&mut self, element: T) {
         self.maybe_reallocate(T::size_of_u8_array());
 
         let offset = Self::to_offset_or_size(self.len, T::size_of_u8_array());
-        let elem_bytes = T::as_u8_slice(element);
+        let elem_bytes = T::to_u8_fixed_size_array(element);
 
-        SSlice::_write_bytes(self.ptr, offset, elem_bytes);
+        SSlice::_write_bytes(self.ptr, offset, elem_bytes.as_ref());
 
         self.len += 1;
     }
@@ -98,7 +99,6 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         self.len -= 1;
 
         let offset = Self::to_offset_or_size(self.len, T::size_of_u8_array());
-
         let mut elem_bytes = T::fixed_size_u8_array();
         SSlice::_read_bytes(self.ptr, offset, elem_bytes.as_mut());
 
@@ -118,7 +118,7 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         Some(T::from_u8_fixed_size_array(elem_bytes))
     }
 
-    pub fn replace(&mut self, idx: usize, element: &T) -> T {
+    pub fn replace(&mut self, idx: usize, element: T) -> T {
         assert!(idx < self.len(), "Out of bounds");
 
         let offset = Self::to_offset_or_size(idx, T::size_of_u8_array());
@@ -126,13 +126,13 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         let mut old_elem_bytes = T::fixed_size_u8_array();
         SSlice::_read_bytes(self.ptr, offset, old_elem_bytes.as_mut());
 
-        let new_elem_bytes = T::as_u8_slice(element);
-        SSlice::_write_bytes(self.ptr, offset, new_elem_bytes);
+        let new_elem_bytes = T::to_u8_fixed_size_array(element);
+        SSlice::_write_bytes(self.ptr, offset, new_elem_bytes.as_ref());
 
         T::from_u8_fixed_size_array(old_elem_bytes)
     }
 
-    pub fn insert(&mut self, idx: usize, element: &T) {
+    pub fn insert(&mut self, idx: usize, element: T) {
         assert!(idx <= self.len, "out of bounds");
 
         if idx == self.len {
@@ -150,8 +150,8 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
         SSlice::_read_bytes(self.ptr, offset, &mut buf);
         SSlice::_write_bytes(self.ptr, offset + T::size_of_u8_array(), &buf);
 
-        let elem_bytes = T::as_u8_slice(element);
-        SSlice::_write_bytes(self.ptr, offset, elem_bytes);
+        let elem_bytes = T::to_u8_fixed_size_array(element);
+        SSlice::_write_bytes(self.ptr, offset, elem_bytes.as_ref());
 
         self.len += 1;
     }
@@ -185,7 +185,7 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
     // TODO: make more efficient by simply copying bits
     pub fn extend_from(&mut self, other: &Self) {
         for i in 0..other.len() {
-            self.push(&other.get_copy(i).unwrap());
+            self.push(other.get_copy(i).unwrap());
         }
     }
 
@@ -253,13 +253,13 @@ impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> Default for SVec<T, A> {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> Default for SVec<T, A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> From<&SVec<T, A>> for Vec<T> {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<&SVec<T, A>> for Vec<T> {
     fn from(svec: &SVec<T, A>) -> Self {
         let mut vec = Self::new();
 
@@ -271,19 +271,19 @@ impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> From<&SVec<T, A>> for Vec<T> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A>> From<&Vec<T>> for SVec<T, A> {
-    fn from(vec: &Vec<T>) -> Self {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<Vec<T>> for SVec<T, A> {
+    fn from(mut vec: Vec<T>) -> Self {
         let mut svec = Self::new();
 
-        for i in 0..vec.len() {
-            svec.push(unsafe { vec.get_unchecked(i) });
+        for _ in 0..vec.len() {
+            svec.push(unsafe { vec.remove(0) });
         }
 
         svec
     }
 }
 
-impl<A: AsMut<[u8]>, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A> {
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
         for i in 0..self.len {
@@ -327,6 +327,24 @@ impl<A, T> Writable<LittleEndian> for SVec<T, A> {
     }
 }
 
+impl<A, T> StackAllocated<SVec<T, A>, [u8; size_of::<SVec<T, A>>()]> for SVec<T, A> {
+    fn size_of_u8_array() -> usize {
+        size_of::<Self>()
+    }
+
+    fn fixed_size_u8_array() -> [u8; size_of::<Self>()] {
+        [0u8; size_of::<Self>()]
+    }
+
+    fn to_u8_fixed_size_array(it: Self) -> [u8; size_of::<Self>()] {
+        unsafe { std::mem::transmute(it) }
+    }
+
+    fn from_u8_fixed_size_array(arr: [u8; size_of::<Self>()]) -> Self {
+        unsafe { std::mem::transmute(arr) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::vec::SVec;
@@ -350,7 +368,7 @@ mod tests {
         assert_eq!(stable_vec.capacity(), 4);
         assert_eq!(stable_vec.len(), 0);
 
-        stable_vec.push(&10);
+        stable_vec.push(10);
         assert_eq!(stable_vec.capacity(), 4);
         assert_eq!(stable_vec.len(), 1);
 
@@ -369,7 +387,7 @@ mod tests {
         for i in 0..count {
             let it = Test { a: i, b: true };
 
-            stable_vec.push(&it);
+            stable_vec.push(it);
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
@@ -377,7 +395,7 @@ mod tests {
         for i in 0..count {
             let it = Test { a: i, b: false };
 
-            stable_vec.replace(i, &it);
+            stable_vec.replace(i, it);
         }
 
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
@@ -394,7 +412,7 @@ mod tests {
         for i in 0..count {
             let it = Test { a: i, b: true };
 
-            stable_vec.push(&it);
+            stable_vec.push(it);
         }
 
         unsafe { stable_vec.drop() };
@@ -409,12 +427,12 @@ mod tests {
         let mut v = SVec::default();
         assert!(v.get_copy(100).is_none());
 
-        v.push(&10);
-        v.push(&20);
+        v.push(10);
+        v.push(20);
 
         assert_eq!(v.get_copy(0).unwrap(), 10);
         assert_eq!(v.get_copy(1).unwrap(), 20);
-        assert_eq!(v.replace(0, &11), 10);
+        assert_eq!(v.replace(0, 11), 10);
 
         unsafe { v.drop() };
     }
@@ -429,17 +447,17 @@ mod tests {
         let mut check = Vec::default();
 
         for i in 0..30 {
-            array.insert(0, &(29 - i));
+            array.insert(0, 29 - i);
             check.insert(0, 29 - i);
         }
 
         for i in 60..100 {
-            array.insert(array.len(), &i);
+            array.insert(array.len(), i);
             check.insert(check.len(), i);
         }
 
         for i in 30..60 {
-            array.insert(30 + (i - 30), &i);
+            array.insert(30 + (i - 30), i);
             check.insert(30 + (i - 30), i);
         }
 
@@ -478,7 +496,7 @@ mod tests {
             }
 
             match array.binary_search_by(|it| it.cmp(&initial[i])) {
-                Err(idx) => array.insert(idx, &initial[i]),
+                Err(idx) => array.insert(idx, initial[i]),
                 _ => unreachable!(),
             }
         }
@@ -503,7 +521,7 @@ mod tests {
             55, 72, 90, 77, 89, 16, 85, 66, 18, 1,
         ];
 
-        let mut array = SVec::from(&initial);
+        let mut array = SVec::from(initial.clone());
 
         for i in 0..initial.len() {
             assert_eq!(array.remove(0), initial[i]);

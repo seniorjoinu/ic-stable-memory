@@ -1,8 +1,7 @@
-use crate::collections::btree_map::SBTreeMap;
+use crate::collections::btree_map::{BTreeNode, SBTreeMap};
 use crate::primitive::StackAllocated;
-use speedy::{Context, Endianness, LittleEndian, Readable, Reader, Writable, Writer};
-use std::io::{Read, Write};
-use std::path::Path;
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use std::mem::size_of;
 
 pub struct SBTreeSet<T, A> {
     map: SBTreeMap<T, (), A, [u8; 0]>,
@@ -30,9 +29,12 @@ impl<A, T> SBTreeSet<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]>, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A> {
-    pub fn insert(&mut self, value: &T) -> bool {
-        self.map.insert(value, &()).is_some()
+impl<A: AsMut<[u8]> + AsRef<[u8]>, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A>
+where
+    [(); size_of::<BTreeNode<T, (), A, [u8; 0]>>()]: Sized,
+{
+    pub fn insert(&mut self, value: T) -> bool {
+        self.map.insert(value, ()).is_some()
     }
 
     pub fn remove(&mut self, value: &T) -> bool {
@@ -64,7 +66,10 @@ impl<'a, T, A> Readable<'a, LittleEndian> for SBTreeSet<T, A> {
     }
 }
 
-impl<T, A> Writable<LittleEndian> for SBTreeSet<T, A> {
+impl<T, A> Writable<LittleEndian> for SBTreeSet<T, A>
+where
+    [(); size_of::<BTreeNode<T, (), A, [u8; 0]>>()]: Sized,
+{
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut W,
@@ -86,8 +91,8 @@ mod tests {
         init_allocator(0);
 
         let mut set = SBTreeSet::default();
-        set.insert(&10);
-        set.insert(&20);
+        set.insert(10);
+        set.insert(20);
 
         assert!(set.contains(&10));
         assert_eq!(set.len(), 2);

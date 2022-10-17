@@ -65,7 +65,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         let inner_slice_ptr = self.slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let buf = u8_smallvec(inner_slice.get_size_bytes());
+        let mut buf = u8_smallvec(inner_slice.get_size_bytes());
+        inner_slice.read_bytes(0, &mut buf);
 
         T::read_from_buffer_copying_data(&buf).unwrap()
     }
@@ -107,8 +108,8 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>
     }
 
     #[inline]
-    fn as_u8_slice(it: &Self) -> &[u8] {
-        u64::as_u8_slice(&it.slice.ptr)
+    fn to_u8_fixed_size_array(it: SBoxMut<T>) -> [u8; size_of::<u64>()] {
+        u64::to_u8_fixed_size_array(it.slice.ptr)
     }
 
     fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {
