@@ -85,6 +85,18 @@ mod vec_benchmark {
                     classic_vec.pop().unwrap();
                 }
             });
+
+            measure!("Classic vec insert", ITERATIONS / 10, {
+                for i in 0..(ITERATIONS / 10) {
+                    classic_vec.insert(0, Test(i as u64));
+                }
+            });
+
+            measure!("Classic vec remove", ITERATIONS / 10, {
+                for _ in 0..(ITERATIONS / 10) {
+                    classic_vec.remove(0);
+                }
+            });
         }
 
         {
@@ -109,6 +121,18 @@ mod vec_benchmark {
             measure!("Stable vec pop", ITERATIONS, {
                 for _ in 0..ITERATIONS {
                     stable_vec.pop().unwrap();
+                }
+            });
+
+            measure!("Stable vec insert", ITERATIONS / 10, {
+                for i in 0..(ITERATIONS / 10) {
+                    stable_vec.insert(0, Test(i as u64));
+                }
+            });
+
+            measure!("Stable vec remove", ITERATIONS / 10, {
+                for _ in 0..(ITERATIONS / 10) {
+                    stable_vec.remove(0);
                 }
             });
         }

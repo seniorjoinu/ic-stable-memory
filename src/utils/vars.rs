@@ -5,11 +5,9 @@ use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
 use ic_cdk::trap;
 use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
-use std::mem::size_of;
 
 const MAX_VAR_NAME_LEN: usize = 128;
-type Variables =
-    SHashMap<[u8; MAX_VAR_NAME_LEN], u64, [u8; MAX_VAR_NAME_LEN], [u8; size_of::<u64>()]>;
+type Variables = SHashMap<[u8; MAX_VAR_NAME_LEN], u64, [u8; MAX_VAR_NAME_LEN], u64>;
 
 #[thread_local]
 static VARS: RefCell<Option<Variables>> = RefCell::new(None);

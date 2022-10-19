@@ -17,7 +17,7 @@ pub struct SBox<T> {
 
 impl<T> SBox<T> {
     pub fn as_ptr(&self) -> u64 {
-        self.slice.ptr
+        self.slice.get_ptr()
     }
 
     pub unsafe fn drop(self) -> T {
@@ -27,7 +27,7 @@ impl<T> SBox<T> {
     }
 }
 
-impl<'a, T> StackAllocated<SBox<T>, [u8; size_of::<u64>()]> for SBox<T>
+impl<'a, T> StackAllocated<SBox<T>, u64> for SBox<T>
 where
     T: Readable<'a, LittleEndian> + Writable<LittleEndian>,
 {
@@ -43,7 +43,7 @@ where
 
     #[inline]
     fn to_u8_fixed_size_array(it: SBox<T>) -> [u8; size_of::<u64>()] {
-        u64::to_u8_fixed_size_array(it.slice.ptr)
+        u64::to_u8_fixed_size_array(it.slice.get_ptr())
     }
 
     fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {
@@ -107,7 +107,7 @@ impl<T: Writable<LittleEndian>> Writable<LittleEndian> for SBox<T> {
         &self,
         writer: &mut W,
     ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        writer.write_u64(self.slice.ptr)
+        writer.write_u64(self.slice.get_ptr())
     }
 }
 

@@ -1,6 +1,7 @@
 use crate::collections::vec::SVec;
 use crate::primitive::StackAllocated;
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use std::mem::size_of;
 
 pub struct SBinaryHeap<T, A> {
     arr: SVec<T, A>,
@@ -24,7 +25,12 @@ impl<T, A> SBinaryHeap<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
+// https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
+
+impl<A, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A>
+where
+    [(); size_of::<A>()]: Sized,
+{
     #[inline]
     pub fn peek(&self) -> Option<T> {
         self.arr.get_copy(0)
@@ -34,11 +40,7 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T,
     pub unsafe fn drop(self) {
         self.arr.drop();
     }
-}
 
-// https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
-
-impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A> {
     pub fn push(&mut self, elem: T) {
         self.arr.push(elem);
         let len = self.len();

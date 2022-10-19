@@ -19,8 +19,9 @@ pub(crate) enum Side {
 /// A smart-pointer for stable memory.
 #[derive(Debug, Copy, Clone, Readable, Writable)]
 pub struct SSlice {
-    pub ptr: u64,
-    pub size: usize,
+    // ptr is shifted by BLOCK_META_SIZE for faster computations
+    ptr: u64,
+    size: usize,
 }
 
 impl SSlice {

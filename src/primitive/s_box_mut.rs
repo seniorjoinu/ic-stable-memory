@@ -17,7 +17,7 @@ pub struct SBoxMut<T> {
 
 impl<T> SBoxMut<T> {
     pub fn as_ptr(&self) -> u64 {
-        self.slice.ptr
+        self.slice.get_ptr()
     }
 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
@@ -39,7 +39,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         inner_slice.write_bytes(0, &buf);
 
         let slice = allocate(size_of::<u64>());
-        slice.write_word(0, inner_slice.ptr);
+        slice.write_word(0, inner_slice.get_ptr());
 
         Self {
             slice,
@@ -89,13 +89,13 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         inner_slice.write_bytes(0, &buf);
 
         if should_rewrite_outer {
-            self.slice.write_word(0, inner_slice.ptr);
+            self.slice.write_word(0, inner_slice.get_ptr());
         }
     }
 }
 
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>
-    StackAllocated<SBoxMut<T>, [u8; size_of::<u64>()]> for SBoxMut<T>
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StackAllocated<SBoxMut<T>, u64>
+    for SBoxMut<T>
 {
     #[inline]
     fn size_of_u8_array() -> usize {
@@ -109,7 +109,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>
 
     #[inline]
     fn to_u8_fixed_size_array(it: SBoxMut<T>) -> [u8; size_of::<u64>()] {
-        u64::to_u8_fixed_size_array(it.slice.ptr)
+        u64::to_u8_fixed_size_array(it.slice.get_ptr())
     }
 
     fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {

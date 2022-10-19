@@ -3,17 +3,14 @@ use std::mem::size_of;
 pub mod s_box;
 pub mod s_box_mut;
 
-pub trait StackAllocated<T, A>: Sized
-where
-    A: AsMut<[u8]> + AsRef<[u8]>,
-{
+pub trait StackAllocated<T, A>: Sized {
     fn size_of_u8_array() -> usize;
-    fn fixed_size_u8_array() -> A;
-    fn to_u8_fixed_size_array(it: T) -> A;
-    fn from_u8_fixed_size_array(arr: A) -> T;
+    fn fixed_size_u8_array() -> [u8; size_of::<A>()];
+    fn to_u8_fixed_size_array(it: T) -> [u8; size_of::<A>()];
+    fn from_u8_fixed_size_array(arr: [u8; size_of::<A>()]) -> T;
 }
 
-impl<T> StackAllocated<T, [u8; size_of::<T>()]> for T
+impl<T> StackAllocated<T, T> for T
 where
     T: NotReference + Copy,
 {

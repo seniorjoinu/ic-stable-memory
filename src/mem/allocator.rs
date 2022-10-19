@@ -221,7 +221,7 @@ impl StableMemoryAllocator {
         slice: SSlice,
         new_size: usize,
     ) -> Result<SSlice, SSlice> {
-        let free_block = FreeBlock::new(slice.ptr, slice.size, true);
+        let free_block = FreeBlock::new(slice.get_ptr(), slice.get_size_bytes(), true);
 
         let next_neighbor_free_size_1_opt =
             free_block.check_neighbor_is_also_free(Side::End, self.min_ptr, self.max_ptr);
@@ -634,7 +634,11 @@ mod tests {
             for i in 0..1024 {
                 let slice = sma.allocate(1024);
 
-                assert!(slice.size >= 1024, "Invalid membox size at {}", i);
+                assert!(
+                    slice.get_size_bytes() >= 1024,
+                    "Invalid membox size at {}",
+                    i
+                );
 
                 slices.push(slice);
             }
@@ -645,7 +649,11 @@ mod tests {
                 let mut slice = slices[i];
                 slice = sma.reallocate(slice, 2 * 1024).anyway();
 
-                assert!(slice.size >= 2 * 1024, "Invalid membox size at {}", i);
+                assert!(
+                    slice.get_size_bytes() >= 2 * 1024,
+                    "Invalid membox size at {}",
+                    i
+                );
 
                 slices[i] = slice;
             }

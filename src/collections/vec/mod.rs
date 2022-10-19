@@ -22,13 +22,9 @@ pub struct SVec<T, A> {
 
 impl<T, A> SVec<T, A> {
     pub fn new() -> Self {
-        Self::new_with_capacity(DEFAULT_CAPACITY)
-    }
-
-    pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             len: 0,
-            cap: capacity,
+            cap: 0,
             ptr: EMPTY_PTR,
             _marker_t: SPhantomData::new(),
             _marker_a: SPhantomData::new(),
@@ -57,77 +53,77 @@ impl<T, A> SVec<T, A> {
             deallocate(slice);
         }
     }
-
-    fn maybe_reallocate(&mut self, item_size: usize) {
-        if self.ptr == EMPTY_PTR {
-            self.ptr = allocate(self.cap * item_size).ptr;
-
-            return;
-        }
-
-        if self.len() == self.capacity() {
-            self.cap *= 2;
-            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
-
-            self.ptr = reallocate(slice, self.cap * item_size).anyway().ptr;
-        }
-    }
-
-    #[inline]
-    fn to_offset_or_size(idx: usize, item_size: usize) -> usize {
-        idx * item_size
-    }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
+impl<A, T: StackAllocated<T, A>> SVec<T, A>
+where
+    [(); size_of::<A>()]: Sized,
+{
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            len: 0,
+            cap: capacity,
+            ptr: allocate(capacity * T::size_of_u8_array()).get_ptr(),
+            _marker_t: SPhantomData::new(),
+            _marker_a: SPhantomData::new(),
+        }
+    }
+
+    fn maybe_reallocate(&mut self, item_size: usize) {
+        if self.len() == self.capacity() {
+            if self.cap == 0 {
+                self.cap = DEFAULT_CAPACITY;
+                self.ptr = allocate(self.cap * T::size_of_u8_array()).get_ptr();
+            } else {
+                self.cap *= 2;
+                let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+
+                self.ptr = reallocate(slice, self.cap * item_size).anyway().get_ptr();
+            };
+        }
+    }
+
     pub fn push(&mut self, element: T) {
         self.maybe_reallocate(T::size_of_u8_array());
 
-        let offset = Self::to_offset_or_size(self.len, T::size_of_u8_array());
         let elem_bytes = T::to_u8_fixed_size_array(element);
-
-        SSlice::_write_bytes(self.ptr, offset, elem_bytes.as_ref());
+        SSlice::_write_bytes(self.ptr, self.len * T::size_of_u8_array(), &elem_bytes);
 
         self.len += 1;
     }
 
     pub fn pop(&mut self) -> Option<T> {
-        if self.is_empty() {
-            return None;
+        if !self.is_empty() {
+            self.len -= 1;
+
+            let mut elem_bytes = T::fixed_size_u8_array();
+            SSlice::_read_bytes(self.ptr, self.len * T::size_of_u8_array(), &mut elem_bytes);
+
+            Some(T::from_u8_fixed_size_array(elem_bytes))
+        } else {
+            None
         }
-
-        self.len -= 1;
-
-        let offset = Self::to_offset_or_size(self.len, T::size_of_u8_array());
-        let mut elem_bytes = T::fixed_size_u8_array();
-        SSlice::_read_bytes(self.ptr, offset, elem_bytes.as_mut());
-
-        Some(T::from_u8_fixed_size_array(elem_bytes))
     }
 
     pub fn get_copy(&self, idx: usize) -> Option<T> {
-        if idx >= self.len() {
-            return None;
+        if idx < self.len() {
+            let mut elem_bytes = T::fixed_size_u8_array();
+            SSlice::_read_bytes(self.ptr, idx * T::size_of_u8_array(), &mut elem_bytes);
+
+            Some(T::from_u8_fixed_size_array(elem_bytes))
+        } else {
+            None
         }
-
-        let offset = Self::to_offset_or_size(idx, T::size_of_u8_array());
-
-        let mut elem_bytes = T::fixed_size_u8_array();
-        SSlice::_read_bytes(self.ptr, offset, elem_bytes.as_mut());
-
-        Some(T::from_u8_fixed_size_array(elem_bytes))
     }
 
     pub fn replace(&mut self, idx: usize, element: T) -> T {
         assert!(idx < self.len(), "Out of bounds");
 
-        let offset = Self::to_offset_or_size(idx, T::size_of_u8_array());
-
         let mut old_elem_bytes = T::fixed_size_u8_array();
-        SSlice::_read_bytes(self.ptr, offset, old_elem_bytes.as_mut());
-
         let new_elem_bytes = T::to_u8_fixed_size_array(element);
-        SSlice::_write_bytes(self.ptr, offset, new_elem_bytes.as_ref());
+
+        SSlice::_read_bytes(self.ptr, idx * T::size_of_u8_array(), &mut old_elem_bytes);
+        SSlice::_write_bytes(self.ptr, idx * T::size_of_u8_array(), &new_elem_bytes);
 
         T::from_u8_fixed_size_array(old_elem_bytes)
     }
@@ -142,16 +138,13 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
 
         self.maybe_reallocate(T::size_of_u8_array());
 
-        let size = Self::to_offset_or_size(self.len - idx, T::size_of_u8_array());
-        let offset = Self::to_offset_or_size(idx, T::size_of_u8_array());
-
-        let mut buf = u8_smallvec(size);
-
-        SSlice::_read_bytes(self.ptr, offset, &mut buf);
-        SSlice::_write_bytes(self.ptr, offset + T::size_of_u8_array(), &buf);
-
+        let mut buf = u8_smallvec((self.len - idx) * T::size_of_u8_array());
         let elem_bytes = T::to_u8_fixed_size_array(element);
-        SSlice::_write_bytes(self.ptr, offset, elem_bytes.as_ref());
+
+        SSlice::_read_bytes(self.ptr, idx * T::size_of_u8_array(), &mut buf);
+        SSlice::_write_bytes(self.ptr, (idx + 1) * T::size_of_u8_array(), &buf);
+
+        SSlice::_write_bytes(self.ptr, idx * T::size_of_u8_array(), &elem_bytes);
 
         self.len += 1;
     }
@@ -163,30 +156,55 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
             return unsafe { self.pop().unwrap_unchecked() };
         }
 
-        let size = Self::to_offset_or_size(self.len - (idx + 1), T::size_of_u8_array());
-        let mut buf = u8_smallvec(size);
-        let offset = Self::to_offset_or_size(idx + 1, T::size_of_u8_array());
-        SSlice::_read_bytes(self.ptr, offset, &mut buf);
+        let mut buf = u8_smallvec((self.len - idx - 1) * T::size_of_u8_array());
+        SSlice::_read_bytes(self.ptr, (idx + 1) * T::size_of_u8_array(), &mut buf);
 
         let mut elem_bytes = T::fixed_size_u8_array();
-        SSlice::_read_bytes(
-            self.ptr,
-            offset - T::size_of_u8_array(),
-            elem_bytes.as_mut(),
-        );
+        SSlice::_read_bytes(self.ptr, idx * T::size_of_u8_array(), &mut elem_bytes);
 
-        SSlice::_write_bytes(self.ptr, offset - T::size_of_u8_array(), &buf);
+        SSlice::_write_bytes(self.ptr, idx * T::size_of_u8_array(), &buf);
 
         self.len -= 1;
 
         T::from_u8_fixed_size_array(elem_bytes)
     }
 
+    pub fn swap(&mut self, idx1: usize, idx2: usize) {
+        assert!(
+            idx1 < self.len() && idx2 < self.len() && idx1 != idx2,
+            "invalid idx"
+        );
+
+        let mut elem_bytes_1 = T::fixed_size_u8_array();
+        let mut elem_bytes_2 = T::fixed_size_u8_array();
+
+        SSlice::_read_bytes(self.ptr, idx1 * T::size_of_u8_array(), &mut elem_bytes_1);
+        SSlice::_read_bytes(self.ptr, idx2 * T::size_of_u8_array(), &mut elem_bytes_2);
+
+        SSlice::_write_bytes(self.ptr, idx2 * T::size_of_u8_array(), &elem_bytes_1);
+        SSlice::_write_bytes(self.ptr, idx1 * T::size_of_u8_array(), &elem_bytes_2);
+    }
+
     // TODO: make more efficient by simply copying bits
     pub fn extend_from(&mut self, other: &Self) {
-        for i in 0..other.len() {
-            self.push(other.get_copy(i).unwrap());
+        if other.is_empty() {
+            return;
         }
+
+        if self.capacity() < self.len() + other.len() {
+            self.cap = self.len() + other.len();
+
+            let slice = unsafe { SSlice::from_ptr(self.ptr, Side::Start).unwrap_unchecked() };
+            self.ptr = reallocate(slice, self.cap * T::size_of_u8_array())
+                .anyway()
+                .get_ptr();
+        }
+
+        let mut buf = u8_smallvec(other.len() * T::size_of_u8_array());
+        SSlice::_read_bytes(other.ptr, 0, &mut buf);
+        SSlice::_write_bytes(self.ptr, self.len() * T::size_of_u8_array(), &buf);
+
+        self.len += other.len();
     }
 
     pub fn binary_search_by<FN>(&self, f: FN) -> Result<usize, usize>
@@ -233,33 +251,16 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
     }
 }
 
-impl<A: AsRef<[u8]> + AsMut<[u8]>, T: StackAllocated<T, A>> SVec<T, A> {
-    pub fn swap(&mut self, idx1: usize, idx2: usize) {
-        assert!(idx1 < self.len(), "idx1 out of bounds");
-        assert!(idx2 < self.len(), "idx2 out of bounds");
-        assert!(idx1 != idx2, "Indices should differ");
-
-        let offset1 = Self::to_offset_or_size(idx1, T::size_of_u8_array());
-        let offset2 = Self::to_offset_or_size(idx2, T::size_of_u8_array());
-
-        let mut elem_bytes_1 = T::fixed_size_u8_array();
-        let mut elem_bytes_2 = T::fixed_size_u8_array();
-
-        SSlice::_read_bytes(self.ptr, offset1, elem_bytes_1.as_mut());
-        SSlice::_read_bytes(self.ptr, offset2, elem_bytes_2.as_mut());
-
-        SSlice::_write_bytes(self.ptr, offset1, elem_bytes_2.as_ref());
-        SSlice::_write_bytes(self.ptr, offset2, elem_bytes_1.as_ref());
-    }
-}
-
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> Default for SVec<T, A> {
+impl<A, T: StackAllocated<T, A>> Default for SVec<T, A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<&SVec<T, A>> for Vec<T> {
+impl<A, T: StackAllocated<T, A>> From<&SVec<T, A>> for Vec<T>
+where
+    [(); size_of::<A>()]: Sized,
+{
     fn from(svec: &SVec<T, A>) -> Self {
         let mut vec = Self::new();
 
@@ -271,7 +272,10 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<&SVec<T, A>> fo
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<Vec<T>> for SVec<T, A> {
+impl<A, T: StackAllocated<T, A>> From<Vec<T>> for SVec<T, A>
+where
+    [(); size_of::<A>()]: Sized,
+{
     fn from(mut vec: Vec<T>) -> Self {
         let mut svec = Self::new();
 
@@ -283,7 +287,10 @@ impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A>> From<Vec<T>> for SVe
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A> {
+impl<A, T: StackAllocated<T, A> + Debug> Debug for SVec<T, A>
+where
+    [(); size_of::<A>()]: Sized,
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
         for i in 0..self.len {
@@ -327,7 +334,7 @@ impl<A, T> Writable<LittleEndian> for SVec<T, A> {
     }
 }
 
-impl<A, T> StackAllocated<SVec<T, A>, [u8; size_of::<SVec<T, A>>()]> for SVec<T, A> {
+impl<A, T> StackAllocated<SVec<T, A>, SVec<T, A>> for SVec<T, A> {
     fn size_of_u8_array() -> usize {
         size_of::<Self>()
     }
@@ -486,7 +493,7 @@ mod tests {
             55, 72, 90, 77, 89, 16, 85, 66, 18, 1,
         ];
 
-        let mut array = SVec::<i32, [u8; size_of::<i32>()]>::default();
+        let mut array = SVec::<i32, i32>::default();
         let mut check = Vec::<i32>::new();
 
         for i in 0..100 {

@@ -4,19 +4,13 @@ use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::mem::size_of;
 
 pub struct SBTreeSet<T, A> {
-    map: SBTreeMap<T, (), A, [u8; 0]>,
+    map: SBTreeMap<T, (), A, ()>,
 }
 
 impl<A, T> SBTreeSet<T, A> {
     pub fn new() -> Self {
         Self {
             map: SBTreeMap::new(),
-        }
-    }
-
-    pub fn new_with_degree(degree: usize) -> Self {
-        Self {
-            map: SBTreeMap::new_with_degree(degree),
         }
     }
 
@@ -29,9 +23,10 @@ impl<A, T> SBTreeSet<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A>
+impl<A, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A>
 where
-    [(); size_of::<BTreeNode<T, (), A, [u8; 0]>>()]: Sized,
+    [(); size_of::<BTreeNode<T, (), A, ()>>()]: Sized,
+    [(); size_of::<A>()]: Sized,
 {
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
@@ -68,7 +63,8 @@ impl<'a, T, A> Readable<'a, LittleEndian> for SBTreeSet<T, A> {
 
 impl<T, A> Writable<LittleEndian> for SBTreeSet<T, A>
 where
-    [(); size_of::<BTreeNode<T, (), A, [u8; 0]>>()]: Sized,
+    [(); size_of::<BTreeNode<T, (), A, ()>>()]: Sized,
+    [(); size_of::<A>()]: Sized,
 {
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
@@ -103,7 +99,7 @@ mod tests {
 
         unsafe { set.drop() };
 
-        let set = SBTreeSet::<u64, [u8; size_of::<u64>()]>::new_with_degree(3);
+        let set = SBTreeSet::<u64, u64>::new();
         unsafe { set.drop() };
     }
 }

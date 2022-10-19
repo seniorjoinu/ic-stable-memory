@@ -47,7 +47,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree map search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.get_cloned(&i).unwrap();
+                    stable_btree_map.get_copy(&i).unwrap();
                 }
             });
 
@@ -99,7 +99,7 @@ mod btree_map_benchmark {
 
             measure!("Stable btree map search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_btree_map.get_cloned(&i).unwrap();
+                    stable_btree_map.get_copy(&i).unwrap();
                 }
             });
 

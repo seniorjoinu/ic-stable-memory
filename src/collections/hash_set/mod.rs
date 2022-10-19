@@ -2,9 +2,10 @@ use crate::collections::hash_map::SHashMap;
 use crate::primitive::StackAllocated;
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
+use std::mem::size_of;
 
 pub struct SHashSet<T, A> {
-    map: SHashMap<T, (), A, [u8; 0]>,
+    map: SHashMap<T, (), A, ()>,
 }
 
 impl<A, T> SHashSet<T, A> {
@@ -21,7 +22,10 @@ impl<A, T> SHashSet<T, A> {
     }
 }
 
-impl<A: AsMut<[u8]> + AsRef<[u8]>, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A> {
+impl<A, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A>
+where
+    [(); size_of::<A>()]: Sized,
+{
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
     }
@@ -102,7 +106,7 @@ mod tests {
 
         unsafe { set.drop() };
 
-        let set = SHashSet::<u64, [u8; size_of::<u64>()]>::new_with_capacity(10);
+        let set = SHashSet::<u64, u64>::new_with_capacity(10);
         unsafe { set.drop() };
     }
 }

@@ -22,12 +22,12 @@ static mut STANDARD_HASHSET: Option<HashSet<u64>> = None;
 static mut STANDARD_BTREEMAP: Option<BTreeMap<u64, u64>> = None;
 static mut STANDARD_BTREESET: Option<BTreeSet<u64>> = None;
 
-type StableVec = SVec<u64, [u8; 8]>;
-type StableBinaryHeap = SBinaryHeap<u64, [u8; 8]>;
-type StableHashMap = SHashMap<u64, u64, [u8; 8], [u8; 8]>;
-type StableHashSet = SHashSet<u64, [u8; 8]>;
-type StableBTreeMap = SBTreeMap<u64, u64, [u8; 8], [u8; 8]>;
-type StableBTreeSet = SBTreeSet<u64, [u8; 8]>;
+type StableVec = SVec<u64, u64>;
+type StableBinaryHeap = SBinaryHeap<u64, u64>;
+type StableHashMap = SHashMap<u64, u64, u64, u64>;
+type StableHashSet = SHashSet<u64, u64>;
+type StableBTreeMap = SBTreeMap<u64, u64, u64, u64>;
+type StableBTreeSet = SBTreeSet<u64, u64>;
 
 static mut HASHER: Option<DefaultHasher> = None;
 
@@ -82,8 +82,8 @@ fn _a1_standard_vec_push(count: u32) -> u64 {
     {
         let before = performance_counter(0);
 
-        for _ in 0..count {
-            vec.push(black_box(10));
+        for i in 0..count {
+            vec.push(10);
         }
 
         let after = performance_counter(0);
@@ -99,8 +99,8 @@ fn _a2_stable_vec_push(count: u32) -> u64 {
     let res = {
         let before = performance_counter(0);
 
-        for _ in 0..count {
-            vec.push(black_box(10));
+        for i in 0..count as u64 {
+            vec.push(i);
         }
 
         let after = performance_counter(0);
@@ -121,7 +121,7 @@ fn _b1_standard_vec_get(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for i in 0..count as usize {
-            vec.get(i).unwrap();
+            let j = *vec.get(i).unwrap();
         }
 
         let after = performance_counter(0);
@@ -578,7 +578,7 @@ fn _n2_stable_btree_map_get(count: u32) -> u64 {
         let before = performance_counter(0);
 
         for key in 0..count {
-            btree_map.get_cloned(&(key as u64));
+            btree_map.get_copy(&(key as u64));
         }
 
         let after = performance_counter(0);

@@ -79,12 +79,10 @@ impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
     }
 }
 
-impl<
-        AK: AsMut<[u8]> + AsRef<[u8]>,
-        AV: AsMut<[u8]> + AsRef<[u8]>,
-        K: StackAllocated<K, AK> + Hash + Eq,
-        V: StackAllocated<V, AV>,
-    > SHashMap<K, V, AK, AV>
+impl<AK, AV, K: StackAllocated<K, AK> + Hash + Eq, V: StackAllocated<V, AV>> SHashMap<K, V, AK, AV>
+where
+    [(); size_of::<AK>()]: Sized,
+    [(); size_of::<AV>()]: Sized,
 {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.maybe_reallocate();
@@ -404,7 +402,7 @@ impl<K, V, AK, AV> Writable<LittleEndian> for SHashMap<K, V, AK, AV> {
         writer: &mut T,
     ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
         if let Some(slice) = self.table {
-            writer.write_u64(slice.ptr)?;
+            writer.write_u64(slice.get_ptr())?;
         } else {
             writer.write_u64(EMPTY_PTR)?;
         }
