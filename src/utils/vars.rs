@@ -7,7 +7,7 @@ use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
 
 const MAX_VAR_NAME_LEN: usize = 128;
-type Variables = SHashMap<[u8; MAX_VAR_NAME_LEN], u64, [u8; MAX_VAR_NAME_LEN], u64>;
+type Variables = SHashMap<[u8; MAX_VAR_NAME_LEN], u64>;
 
 #[thread_local]
 static VARS: RefCell<Option<Variables>> = RefCell::new(None);

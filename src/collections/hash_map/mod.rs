@@ -1,12 +1,15 @@
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
-use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
+use copy_as_bytes::traits::AsBytes;
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
+use crate::collections::hash_map::iter::SHashMapIter;
+
+pub mod iter;
 
 const LOAD_FACTOR: f64 = 0.75;
 const DEFAULT_CAPACITY: usize = 5;
@@ -16,17 +19,15 @@ const OCCUPIED: u8 = 1;
 const TOMBSTONE: u8 = 255;
 
 // reallocating, open addressing, quadratic probing
-pub struct SHashMap<K, V, AK, AV> {
+pub struct SHashMap<K, V> {
     len: usize,
     capacity: usize,
     table: Option<SSlice>,
     _marker_k: SPhantomData<K>,
-    _marker_ak: SPhantomData<AK>,
     _marker_v: SPhantomData<V>,
-    _marker_av: SPhantomData<AV>,
 }
 
-impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
+impl<K, V> SHashMap<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self::new_with_capacity(DEFAULT_CAPACITY)
@@ -38,9 +39,7 @@ impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
             capacity,
             table: None,
             _marker_k: SPhantomData::default(),
-            _marker_ak: SPhantomData::default(),
             _marker_v: SPhantomData::default(),
-            _marker_av: SPhantomData::default(),
         }
     }
 
@@ -79,10 +78,10 @@ impl<K, V, AK, AV> SHashMap<K, V, AK, AV> {
     }
 }
 
-impl<AK, AV, K: StackAllocated<K, AK> + Hash + Eq, V: StackAllocated<V, AV>> SHashMap<K, V, AK, AV>
+impl<K: AsBytes + Hash + Eq, V: AsBytes> SHashMap<K, V>
 where
-    [(); size_of::<AK>()]: Sized,
-    [(); size_of::<AV>()]: Sized,
+    [u8; K::SIZE]: Sized,
+    [u8; V::SIZE]: Sized,
 {
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         self.maybe_reallocate();
@@ -243,6 +242,10 @@ where
         false
     }
 
+    pub fn iter(&self) -> SHashMapIter<K, V> {
+        SHashMapIter::new(self)
+    }
+    
     fn read_key_at(slice: &SSlice, idx: usize, read_value: bool) -> HashMapKey<K> {
         let mut key_flag = [0u8];
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>());
@@ -254,10 +257,10 @@ where
             TOMBSTONE => HashMapKey::Tombstone,
             OCCUPIED => {
                 if read_value {
-                    let mut key_at_idx = K::fixed_size_u8_array();
-                    slice.read_bytes(at + 1, key_at_idx.as_mut());
+                    let mut key_at_idx = K::super_size_u8_arr();
+                    slice.read_bytes(at + 1, &mut key_at_idx);
 
-                    HashMapKey::Occupied(K::from_u8_fixed_size_array(key_at_idx))
+                    HashMapKey::Occupied(K::from_bytes(key_at_idx))
                 } else {
                     HashMapKey::OccupiedNull
                 }
@@ -269,10 +272,10 @@ where
     fn read_val_at(slice: &SSlice, idx: usize) -> V {
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>()) + 1 + size_of::<K>();
 
-        let mut val_at_idx = V::fixed_size_u8_array();
-        slice.read_bytes(at, val_at_idx.as_mut());
+        let mut val_at_idx = V::super_size_u8_arr();
+        slice.read_bytes(at, &mut val_at_idx);
 
-        V::from_u8_fixed_size_array(val_at_idx)
+        V::from_bytes(val_at_idx)
     }
 
     fn write_key_at(slice: &SSlice, idx: usize, key: HashMapKey<K>) {
@@ -282,8 +285,8 @@ where
             HashMapKey::Empty => [EMPTY],
             HashMapKey::Tombstone => [TOMBSTONE],
             HashMapKey::Occupied(k) => {
-                let key_bytes = K::to_u8_fixed_size_array(k);
-                slice.write_bytes(at + 1, key_bytes.as_ref());
+                let key_bytes = k.to_bytes();
+                slice.write_bytes(at + 1, &key_bytes);
 
                 [OCCUPIED]
             }
@@ -295,9 +298,9 @@ where
 
     fn write_val_at(slice: &SSlice, idx: usize, val: V) {
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>()) + 1 + size_of::<K>();
-        let val_bytes = V::to_u8_fixed_size_array(val);
+        let val_bytes = val.to_bytes();
 
-        slice.write_bytes(at, val_bytes.as_ref());
+        slice.write_bytes(at, &val_bytes);
     }
 
     fn maybe_reallocate(&mut self) {
@@ -364,13 +367,13 @@ where
     }
 }
 
-impl<K, V, AK, AV> Default for SHashMap<K, V, AK, AV> {
+impl<K, V> Default for SHashMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, K, V, AK, AV> Readable<'a, LittleEndian> for SHashMap<K, V, AK, AV> {
+impl<'a, K, V> Readable<'a, LittleEndian> for SHashMap<K, V> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
@@ -390,13 +393,11 @@ impl<'a, K, V, AK, AV> Readable<'a, LittleEndian> for SHashMap<K, V, AK, AV> {
             table,
             _marker_k: SPhantomData::default(),
             _marker_v: SPhantomData::default(),
-            _marker_ak: SPhantomData::default(),
-            _marker_av: SPhantomData::default(),
         })
     }
 }
 
-impl<K, V, AK, AV> Writable<LittleEndian> for SHashMap<K, V, AK, AV> {
+impl<K, V> Writable<LittleEndian> for SHashMap<K, V> {
     fn write_to<T: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut T,

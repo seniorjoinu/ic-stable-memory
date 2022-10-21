@@ -1,8 +1,9 @@
 use crate::collections::vec::SVec;
-use crate::primitive::StackAllocated;
 use copy_as_bytes::traits::AsBytes;
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use std::mem::size_of;
+use crate::collections::binary_heap::iter::SBinaryHeapIter;
+
+pub mod iter;
 
 pub struct SBinaryHeap<T> {
     arr: SVec<T>,
@@ -123,6 +124,10 @@ where
 
             return Some(elem);
         }
+    }
+    
+    pub fn iter(&self) -> SBinaryHeapIter<T> {
+        SBinaryHeapIter
     }
 }
 

@@ -4,7 +4,9 @@ mod vec_benchmark {
     use crate::measure;
     use crate::primitive::s_box::SBox;
     use crate::{init_allocator, stable};
+    use copy_as_bytes::traits::{AsBytes, SuperSized};
     use speedy::{Readable, Writable};
+    use std::hint::black_box;
 
     const ITERATIONS: usize = 1_000_000;
 

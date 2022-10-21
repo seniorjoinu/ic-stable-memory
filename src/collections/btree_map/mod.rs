@@ -1,8 +1,6 @@
 use crate::collections::vec::SVec;
-use crate::primitive::StackAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use std::mem::size_of;
 
 const B: usize = 6;
 const CAPACITY: usize = 2 * B - 1;
@@ -563,7 +561,6 @@ impl<K, V> Writable<LittleEndian> for BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::{BTreeNode, SBTreeMap};
-    use crate::primitive::StackAllocated;
     use crate::utils::isoprint;
     use crate::{init_allocator, stable};
     use copy_as_bytes::traits::AsBytes;

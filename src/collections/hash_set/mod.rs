@@ -1,14 +1,15 @@
 use crate::collections::hash_map::SHashMap;
-use crate::primitive::StackAllocated;
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
-use std::mem::size_of;
 
-pub struct SHashSet<T, A> {
-    map: SHashMap<T, (), A, ()>,
+pub mod iter;
+
+pub struct SHashSet<T> {
+    map: SHashMap<T, ()>,
 }
 
-impl<A, T> SHashSet<T, A> {
+impl<T> SHashSet<T> {
     pub fn new() -> Self {
         Self {
             map: SHashMap::new(),
@@ -22,9 +23,9 @@ impl<A, T> SHashSet<T, A> {
     }
 }
 
-impl<A, T: StackAllocated<T, A> + Hash + Eq> SHashSet<T, A>
+impl<T: AsBytes + Hash + Eq> SHashSet<T>
 where
-    [(); size_of::<A>()]: Sized,
+    [u8; T::SIZE]: Sized,
 {
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
@@ -51,13 +52,13 @@ where
     }
 }
 
-impl<A, T> Default for SHashSet<T, A> {
+impl<T> Default for SHashSet<T> {
     fn default() -> Self {
         SHashSet::new()
     }
 }
 
-impl<'a, A, T> Readable<'a, LittleEndian> for SHashSet<T, A> {
+impl<'a, T> Readable<'a, LittleEndian> for SHashSet<T> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
@@ -67,7 +68,7 @@ impl<'a, A, T> Readable<'a, LittleEndian> for SHashSet<T, A> {
     }
 }
 
-impl<A, T> Writable<LittleEndian> for SHashSet<T, A> {
+impl<T> Writable<LittleEndian> for SHashSet<T> {
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut W,
@@ -106,7 +107,7 @@ mod tests {
 
         unsafe { set.drop() };
 
-        let set = SHashSet::<u64, u64>::new_with_capacity(10);
+        let set = SHashSet::<u64>::new_with_capacity(10);
         unsafe { set.drop() };
     }
 }

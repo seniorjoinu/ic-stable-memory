@@ -22,10 +22,10 @@ static mut STANDARD_HASHSET: Option<HashSet<u64>> = None;
 static mut STANDARD_BTREEMAP: Option<BTreeMap<u64, u64>> = None;
 static mut STANDARD_BTREESET: Option<BTreeSet<u64>> = None;
 
-type StableVec = SVec<u64, u64>;
-type StableBinaryHeap = SBinaryHeap<u64, u64>;
-type StableHashMap = SHashMap<u64, u64, u64, u64>;
-type StableHashSet = SHashSet<u64, u64>;
+type StableVec = SVec<u64>;
+type StableBinaryHeap = SBinaryHeap<u64>;
+type StableHashMap = SHashMap<u64, u64>;
+type StableHashSet = SHashSet<u64>;
 type StableBTreeMap = SBTreeMap<u64, u64, u64, u64>;
 type StableBTreeSet = SBTreeSet<u64, u64>;
 

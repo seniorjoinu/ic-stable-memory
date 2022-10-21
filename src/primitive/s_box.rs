@@ -1,5 +1,4 @@
 use crate::mem::s_slice::{SSlice, Side};
-use crate::primitive::StackAllocated;
 use crate::{allocate, deallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
@@ -23,32 +22,6 @@ impl<T> SBox<T> {
         deallocate(self.slice);
 
         self.inner
-    }
-}
-
-impl<'a, T> StackAllocated<SBox<T>, u64> for SBox<T>
-where
-    T: Readable<'a, LittleEndian> + Writable<LittleEndian>,
-{
-    #[inline]
-    fn size_of_u8_array() -> usize {
-        size_of::<u64>()
-    }
-
-    #[inline]
-    fn fixed_size_u8_array() -> [u8; size_of::<u64>()] {
-        [0u8; size_of::<u64>()]
-    }
-
-    #[inline]
-    fn to_u8_fixed_size_array(it: SBox<T>) -> [u8; size_of::<u64>()] {
-        u64::to_u8_fixed_size_array(it.slice.get_ptr())
-    }
-
-    fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {
-        let ptr = u64::from_u8_fixed_size_array(arr);
-
-        unsafe { Self::from_ptr(ptr) }
     }
 }
 

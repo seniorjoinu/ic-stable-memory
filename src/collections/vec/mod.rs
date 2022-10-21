@@ -1,3 +1,4 @@
+use crate::collections::vec::iter::SVecIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
@@ -7,14 +8,12 @@ use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
-use std::mem::size_of;
+
+pub mod iter;
 
 const DEFAULT_CAPACITY: usize = 4;
 
 // TODO: make it use copy_as_bytes
-// TODO: add assert_debug!() that will check whether size_of::<T> is the same that serialized value buf size
-// TODO: add NotReference everywhere
-// TODO: make all collections use references
 
 pub struct SVec<T> {
     pub(crate) ptr: u64,
@@ -65,7 +64,7 @@ where
         Self {
             len: 0,
             cap: capacity,
-            ptr: allocate(capacity * size_of::<T>()).get_ptr(),
+            ptr: allocate(capacity * T::SIZE).get_ptr(),
             _marker_t: SPhantomData::new(),
         }
     }
@@ -74,14 +73,12 @@ where
         if self.len() == self.capacity() {
             if self.cap == 0 {
                 self.cap = DEFAULT_CAPACITY;
-                self.ptr = allocate(self.cap * size_of::<T>()).get_ptr();
+                self.ptr = allocate(self.cap * T::SIZE).get_ptr();
             } else {
                 self.cap *= 2;
                 let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
 
-                self.ptr = reallocate(slice, self.cap * size_of::<T>())
-                    .anyway()
-                    .get_ptr();
+                self.ptr = reallocate(slice, self.cap * T::SIZE).anyway().get_ptr();
             };
         }
     }
@@ -90,7 +87,7 @@ where
         self.maybe_reallocate();
 
         let buf = element.to_bytes();
-        SSlice::_write_bytes(self.ptr, self.len * size_of::<T>(), &buf);
+        SSlice::_write_bytes(self.ptr, self.len * T::SIZE, &buf);
 
         self.len += 1;
     }
@@ -99,8 +96,8 @@ where
         if !self.is_empty() {
             self.len -= 1;
 
-            let mut buf = [0u8; T::SIZE];
-            SSlice::_read_bytes(self.ptr, self.len * size_of::<T>(), &mut buf);
+            let mut buf = T::super_size_u8_arr();
+            SSlice::_read_bytes(self.ptr, self.len * T::SIZE, &mut buf);
 
             Some(T::from_bytes(buf))
         } else {
@@ -110,8 +107,8 @@ where
 
     pub fn get_copy(&self, idx: usize) -> Option<T> {
         if idx < self.len() {
-            let mut buf = [0u8; T::SIZE];
-            SSlice::_read_bytes(self.ptr, idx * size_of::<T>(), &mut buf);
+            let mut buf = T::super_size_u8_arr();
+            SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
 
             Some(T::from_bytes(buf))
         } else {
@@ -122,12 +119,12 @@ where
     pub fn replace(&mut self, idx: usize, element: T) -> T {
         assert!(idx < self.len(), "Out of bounds");
 
-        let mut buf = [0u8; T::SIZE];
-        SSlice::_read_bytes(self.ptr, idx * size_of::<T>(), &mut buf);
+        let mut buf = T::super_size_u8_arr();
+        SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         let it = T::from_bytes(buf);
 
-        let mut buf = element.to_bytes();
-        SSlice::_write_bytes(self.ptr, idx * size_of::<T>(), &buf);
+        let buf = element.to_bytes();
+        SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
 
         it
     }
@@ -142,12 +139,12 @@ where
 
         self.maybe_reallocate();
 
-        let mut buf = vec![0u8; (self.len - idx) * size_of::<T>()];
-        SSlice::_read_bytes(self.ptr, idx * size_of::<T>(), &mut buf);
-        SSlice::_write_bytes(self.ptr, (idx + 1) * size_of::<T>(), &buf);
+        let mut buf = vec![0u8; (self.len - idx) * T::SIZE];
+        SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
+        SSlice::_write_bytes(self.ptr, (idx + 1) * T::SIZE, &buf);
 
         let buf = element.to_bytes();
-        SSlice::_write_bytes(self.ptr, idx * size_of::<T>(), &buf);
+        SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
 
         self.len += 1;
     }
@@ -159,13 +156,13 @@ where
             return unsafe { self.pop().unwrap_unchecked() };
         }
 
-        let mut buf = [0u8; T::SIZE];
-        SSlice::_read_bytes(self.ptr, idx * size_of::<T>(), &mut buf);
+        let mut buf = T::super_size_u8_arr();
+        SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         let it = T::from_bytes(buf);
 
-        let mut buf = vec![0u8; (self.len - idx - 1) * size_of::<T>()];
-        SSlice::_read_bytes(self.ptr, (idx + 1) * size_of::<T>(), &mut buf);
-        SSlice::_write_bytes(self.ptr, idx * size_of::<T>(), &buf);
+        let mut buf = vec![0u8; (self.len - idx - 1) * T::SIZE];
+        SSlice::_read_bytes(self.ptr, (idx + 1) * T::SIZE, &mut buf);
+        SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
 
         self.len -= 1;
 
@@ -178,14 +175,14 @@ where
             "invalid idx"
         );
 
-        let mut buf_1 = [0u8; T::SIZE];
-        let mut buf_2 = [0u8; T::SIZE];
+        let mut buf_1 = T::super_size_u8_arr();
+        let mut buf_2 = T::super_size_u8_arr();
 
-        SSlice::_read_bytes(self.ptr, idx1 * size_of::<T>(), &mut buf_1);
-        SSlice::_read_bytes(self.ptr, idx2 * size_of::<T>(), &mut buf_2);
+        SSlice::_read_bytes(self.ptr, idx1 * T::SIZE, &mut buf_1);
+        SSlice::_read_bytes(self.ptr, idx2 * T::SIZE, &mut buf_2);
 
-        SSlice::_write_bytes(self.ptr, idx2 * size_of::<T>(), &buf_2);
-        SSlice::_write_bytes(self.ptr, idx1 * size_of::<T>(), &buf_1);
+        SSlice::_write_bytes(self.ptr, idx2 * T::SIZE, &buf_2);
+        SSlice::_write_bytes(self.ptr, idx1 * T::SIZE, &buf_1);
     }
 
     pub fn extend_from(&mut self, other: &Self) {
@@ -197,14 +194,12 @@ where
             self.cap = self.len() + other.len();
 
             let slice = unsafe { SSlice::from_ptr(self.ptr, Side::Start).unwrap_unchecked() };
-            self.ptr = reallocate(slice, self.cap * size_of::<T>())
-                .anyway()
-                .get_ptr();
+            self.ptr = reallocate(slice, self.cap * T::SIZE).anyway().get_ptr();
         }
 
-        let mut buf = vec![0u8; other.len() * size_of::<T>()];
+        let mut buf = vec![0u8; other.len() * T::SIZE];
         SSlice::_read_bytes(other.ptr, 0, &mut buf);
-        SSlice::_write_bytes(self.ptr, self.len() * size_of::<T>(), &buf);
+        SSlice::_write_bytes(self.ptr, self.len() * T::SIZE, &buf);
 
         self.len += other.len();
     }
@@ -221,10 +216,10 @@ where
         let mut max = self.len;
         let mut mid = (max - min) / 2;
 
-        let mut buf = [0u8; T::SIZE];
+        let mut buf = T::super_size_u8_arr();
 
         loop {
-            SSlice::_read_bytes(self.ptr, mid * size_of::<T>(), &mut buf);
+            SSlice::_read_bytes(self.ptr, mid * T::SIZE, &mut buf);
             let res = f(T::from_bytes(buf));
 
             match res {
@@ -256,6 +251,10 @@ where
             }
         }
     }
+
+    pub fn iter(&self) -> SVecIter<T> {
+        SVecIter::new(self)
+    }
 }
 
 impl<T> Default for SVec<T> {
@@ -264,16 +263,18 @@ impl<T> Default for SVec<T> {
     }
 }
 
-impl<T: AsBytes> From<&SVec<T>> for Vec<T>
+impl<T: AsBytes> From<SVec<T>> for Vec<T>
 where
     [u8; T::SIZE]: Sized,
 {
-    fn from(svec: &SVec<T>) -> Self {
+    fn from(mut svec: SVec<T>) -> Self {
         let mut vec = Self::new();
 
         for i in 0..svec.len() {
-            vec.push(unsafe { svec.get_copy(i).unwrap_unchecked() });
+            vec.push(svec.remove(i));
         }
+
+        unsafe { svec.drop() };
 
         vec
     }
@@ -287,7 +288,7 @@ where
         let mut svec = Self::new();
 
         for _ in 0..vec.len() {
-            svec.push(unsafe { vec.remove(0) });
+            svec.push(vec.remove(0));
         }
 
         svec
@@ -300,11 +301,10 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
-        for i in 0..self.len {
-            let elem = unsafe { self.get_copy(i).unwrap_unchecked() };
-            elem.fmt(f)?;
+        for (idx, item) in self.iter().enumerate() {
+            item.fmt(f)?;
 
-            if i < self.len - 1 {
+            if idx < self.len - 1 {
                 f.write_str(", ")?;
             }
         }
@@ -344,7 +344,6 @@ impl<T> SuperSized for SVec<T> {
     const SIZE: usize = u64::SIZE + usize::SIZE + usize::SIZE;
 }
 
-// TODO: maybe use concat_arrays
 impl<T: AsBytes> AsBytes for SVec<T> {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
@@ -531,10 +530,8 @@ mod tests {
             assert_eq!(array.get_copy(i).unwrap(), i);
         }
 
-        let actual: Vec<_> = Vec::from(&array);
+        let actual: Vec<_> = Vec::from(array);
         assert_eq!(actual, check);
-
-        unsafe { array.drop() };
     }
 
     #[test]
@@ -567,10 +564,8 @@ mod tests {
             }
         }
 
-        let actual = Vec::from(&array);
+        let actual = Vec::from(array);
         assert_eq!(actual, check);
-
-        unsafe { array.drop() };
     }
 
     #[test]

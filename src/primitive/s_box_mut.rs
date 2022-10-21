@@ -1,5 +1,4 @@
 use crate::mem::s_slice::{SSlice, Side};
-use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, reallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
@@ -90,31 +89,6 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         if should_rewrite_outer {
             self.slice.write_word(0, inner_slice.get_ptr());
         }
-    }
-}
-
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StackAllocated<SBoxMut<T>, u64>
-    for SBoxMut<T>
-{
-    #[inline]
-    fn size_of_u8_array() -> usize {
-        size_of::<u64>()
-    }
-
-    #[inline]
-    fn fixed_size_u8_array() -> [u8; size_of::<u64>()] {
-        [0u8; size_of::<u64>()]
-    }
-
-    #[inline]
-    fn to_u8_fixed_size_array(it: SBoxMut<T>) -> [u8; size_of::<u64>()] {
-        u64::to_u8_fixed_size_array(it.slice.get_ptr())
-    }
-
-    fn from_u8_fixed_size_array(arr: [u8; size_of::<u64>()]) -> Self {
-        let ptr = u64::from_u8_fixed_size_array(arr);
-
-        unsafe { Self::from_ptr(ptr) }
     }
 }
 

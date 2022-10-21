@@ -1,9 +1,6 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
-use crate::collections::vec::SVec;
-use crate::primitive::StackAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use std::mem::size_of;
 
 pub struct SBTreeSet<T> {
     map: SBTreeMap<T, ()>,
