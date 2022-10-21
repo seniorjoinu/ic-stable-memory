@@ -1,7 +1,6 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StackAllocated;
 use crate::utils::phantom_data::SPhantomData;
-use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate, reallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
@@ -52,7 +51,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         let inner_slice_ptr = self.slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let buf = u8_smallvec(inner_slice.get_size_bytes());
+        let mut buf = vec![0u8; inner_slice.get_size_bytes()];
         let it = T::read_from_buffer_copying_data(&buf).unwrap();
 
         deallocate(self.slice);
@@ -65,7 +64,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
         let inner_slice_ptr = self.slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let mut buf = u8_smallvec(inner_slice.get_size_bytes());
+        let mut buf = vec![0u8; inner_slice.get_size_bytes()];
         inner_slice.read_bytes(0, &mut buf);
 
         T::read_from_buffer_copying_data(&buf).unwrap()

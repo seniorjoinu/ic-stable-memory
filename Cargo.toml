@@ -17,5 +17,4 @@ speedy = "0.8.2"
 candid = "0.7.15"
 serde = "1.0.142"
 num-bigint = "0.4.3"
-fixedstr = "0.2.8"
-smallvec = "1.10.0"
+copy_as_bytes = { path = "../copy_as_bytes" }

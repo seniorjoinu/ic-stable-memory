@@ -37,7 +37,7 @@ mod binary_heap_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_binary_heap = SBinaryHeap::new();
+            /*            let mut stable_binary_heap = SBinaryHeap::new();
 
             measure!("Stable binary heap push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
@@ -56,7 +56,7 @@ mod binary_heap_benchmark {
                 for _ in 0..ITERATIONS {
                     unsafe { stable_binary_heap.pop().unwrap().drop() };
                 }
-            });
+            });*/
         }
     }
 

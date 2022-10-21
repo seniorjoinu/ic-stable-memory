@@ -1,6 +1,5 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StackAllocated;
-use crate::utils::u8_smallvec;
 use crate::{allocate, deallocate};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
@@ -70,7 +69,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
-        let mut buf = u8_smallvec(slice.get_size_bytes());
+        let mut buf = vec![0u8; slice.get_size_bytes()];
         slice.read_bytes(0, &mut buf);
 
         let inner = T::read_from_buffer_copying_data(&buf).unwrap();
@@ -83,7 +82,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBox<T> {
     }
 
     pub fn get_cloned(&self) -> T {
-        let mut buf = u8_smallvec(self.slice.get_size_bytes());
+        let mut buf = vec![0u8; self.slice.get_size_bytes()];
         self.slice.read_bytes(0, &mut buf);
 
         T::read_from_buffer_copying_data(&buf).unwrap()

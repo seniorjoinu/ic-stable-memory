@@ -4,6 +4,7 @@ mod vec_benchmark {
     use crate::measure;
     use crate::primitive::s_box::SBox;
     use crate::{init_allocator, stable};
+    use speedy::{Readable, Writable};
 
     const ITERATIONS: usize = 1_000_000;
 
@@ -37,7 +38,7 @@ mod vec_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_vec = SVec::new();
+            /*            let mut stable_vec = SVec::new();
 
             measure!("Stable vec push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
@@ -55,12 +56,9 @@ mod vec_benchmark {
                 for _ in 0..ITERATIONS {
                     unsafe { stable_vec.pop().unwrap().drop() };
                 }
-            });
+            });*/
         }
     }
-
-    #[derive(Copy, Clone)]
-    struct Test(u64);
 
     #[test]
     #[ignore]
@@ -70,7 +68,7 @@ mod vec_benchmark {
 
             measure!("Classic vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    classic_vec.push(Test(i as u64));
+                    classic_vec.push(i as u64);
                 }
             });
 
@@ -88,7 +86,7 @@ mod vec_benchmark {
 
             measure!("Classic vec insert", ITERATIONS / 10, {
                 for i in 0..(ITERATIONS / 10) {
-                    classic_vec.insert(0, Test(i as u64));
+                    classic_vec.insert(0, i as u64);
                 }
             });
 
@@ -108,7 +106,7 @@ mod vec_benchmark {
 
             measure!("Stable vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_vec.push(Test(i as u64));
+                    stable_vec.push(i as u64);
                 }
             });
 
@@ -126,7 +124,7 @@ mod vec_benchmark {
 
             measure!("Stable vec insert", ITERATIONS / 10, {
                 for i in 0..(ITERATIONS / 10) {
-                    stable_vec.insert(0, Test(i as u64));
+                    stable_vec.insert(0, i as u64);
                 }
             });
 

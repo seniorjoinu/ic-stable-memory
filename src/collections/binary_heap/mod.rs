@@ -1,14 +1,15 @@
 use crate::collections::vec::SVec;
 use crate::primitive::StackAllocated;
+use copy_as_bytes::traits::AsBytes;
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::mem::size_of;
 
-pub struct SBinaryHeap<T, A> {
-    arr: SVec<T, A>,
+pub struct SBinaryHeap<T> {
+    arr: SVec<T>,
 }
 
 // Max heap
-impl<T, A> SBinaryHeap<T, A> {
+impl<T> SBinaryHeap<T> {
     #[inline]
     pub fn new() -> Self {
         Self { arr: SVec::new() }
@@ -27,9 +28,9 @@ impl<T, A> SBinaryHeap<T, A> {
 
 // https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
 
-impl<A, T: StackAllocated<T, A> + Ord> SBinaryHeap<T, A>
+impl<'a, T: AsBytes + Ord> SBinaryHeap<T>
 where
-    [(); size_of::<A>()]: Sized,
+    [(); T::SIZE]: Sized,
 {
     #[inline]
     pub fn peek(&self) -> Option<T> {
@@ -125,13 +126,13 @@ where
     }
 }
 
-impl<T, A> Default for SBinaryHeap<T, A> {
+impl<T> Default for SBinaryHeap<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, A, T> Readable<'a, LittleEndian> for SBinaryHeap<T, A> {
+impl<'a, T> Readable<'a, LittleEndian> for SBinaryHeap<T> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
@@ -141,7 +142,7 @@ impl<'a, A, T> Readable<'a, LittleEndian> for SBinaryHeap<T, A> {
     }
 }
 
-impl<A, T> Writable<LittleEndian> for SBinaryHeap<T, A> {
+impl<T> Writable<LittleEndian> for SBinaryHeap<T> {
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut W,

@@ -1,13 +1,15 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+use crate::collections::vec::SVec;
 use crate::primitive::StackAllocated;
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::mem::size_of;
 
-pub struct SBTreeSet<T, A> {
-    map: SBTreeMap<T, (), A, ()>,
+pub struct SBTreeSet<T> {
+    map: SBTreeMap<T, ()>,
 }
 
-impl<A, T> SBTreeSet<T, A> {
+impl<T> SBTreeSet<T> {
     pub fn new() -> Self {
         Self {
             map: SBTreeMap::new(),
@@ -23,10 +25,11 @@ impl<A, T> SBTreeSet<T, A> {
     }
 }
 
-impl<A, T: Ord + StackAllocated<T, A>> SBTreeSet<T, A>
+impl<T: Ord + AsBytes> SBTreeSet<T>
 where
-    [(); size_of::<BTreeNode<T, (), A, ()>>()]: Sized,
-    [(); size_of::<A>()]: Sized,
+    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); T::SIZE]: Sized,
+    BTreeNode<T, ()>: AsBytes,
 {
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
@@ -45,13 +48,13 @@ where
     }
 }
 
-impl<A, T> Default for SBTreeSet<T, A> {
+impl<T> Default for SBTreeSet<T> {
     fn default() -> Self {
         SBTreeSet::new()
     }
 }
 
-impl<'a, T, A> Readable<'a, LittleEndian> for SBTreeSet<T, A> {
+impl<'a, T> Readable<'a, LittleEndian> for SBTreeSet<T> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
@@ -61,11 +64,7 @@ impl<'a, T, A> Readable<'a, LittleEndian> for SBTreeSet<T, A> {
     }
 }
 
-impl<T, A> Writable<LittleEndian> for SBTreeSet<T, A>
-where
-    [(); size_of::<BTreeNode<T, (), A, ()>>()]: Sized,
-    [(); size_of::<A>()]: Sized,
-{
+impl<T> Writable<LittleEndian> for SBTreeSet<T> {
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut W,
@@ -99,7 +98,7 @@ mod tests {
 
         unsafe { set.drop() };
 
-        let set = SBTreeSet::<u64, u64>::new();
+        let set = SBTreeSet::<u64>::new();
         unsafe { set.drop() };
     }
 }

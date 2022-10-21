@@ -1,6 +1,5 @@
 #[allow(unused_imports)]
 use ic_cdk::{print, trap};
-use smallvec::{smallvec, SmallVec};
 
 pub mod ic_types;
 pub mod math;
@@ -42,8 +41,3 @@ macro_rules! isotrap {
 }
 
 pub(crate) use isotrap;
-
-#[inline]
-pub fn u8_smallvec(size: usize) -> SmallVec<[u8; 64]> {
-    smallvec![0; size]
-}

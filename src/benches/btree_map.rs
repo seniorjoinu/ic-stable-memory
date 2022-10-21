@@ -5,7 +5,7 @@ mod btree_map_benchmark {
     use crate::{init_allocator, measure, stable};
     use std::collections::BTreeMap;
 
-    const ITERATIONS: usize = 1_000_000;
+    const ITERATIONS: usize = 100_000;
 
     #[test]
     #[ignore]
@@ -37,7 +37,7 @@ mod btree_map_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_btree_map = SBTreeMap::new();
+            /*            let mut stable_btree_map = SBTreeMap::new();
 
             measure!("Stable btree map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
@@ -55,7 +55,7 @@ mod btree_map_benchmark {
                 for i in 0..ITERATIONS {
                     stable_btree_map.remove(&i).unwrap();
                 }
-            });
+            });*/
         }
     }
 
