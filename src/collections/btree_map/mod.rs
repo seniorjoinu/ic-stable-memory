@@ -1,6 +1,10 @@
 use crate::collections::vec::SVec;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use crate::collections::btree_map::iter::SBTreeMapIter;
+use crate::utils::phantom_data::SPhantomData;
+
+pub mod iter;
 
 const B: usize = 6;
 const CAPACITY: usize = 2 * B - 1;
@@ -112,6 +116,10 @@ where
         }
     }
 
+    pub fn iter(&self) -> SBTreeMapIter<K, V> {
+        SBTreeMapIter::new(self)
+    }
+    
     fn insert_non_full(node: &mut BTreeNode<K, V>, key: K, value: V) -> Option<V> {
         match node.keys.binary_search_by(|k| k.cmp(&key)) {
             Ok(idx) => Some(node.values.replace(idx, value)),
@@ -451,6 +459,31 @@ impl<K, V> BTreeNode<K, V> {
         self.values.drop();
         self.children.drop();
     }
+    
+    unsafe fn unsafe_clone(&self) -> Self {
+        Self {
+            is_root: self.is_root,
+            is_leaf: self.is_leaf,
+            keys: SVec { 
+                ptr: self.keys.ptr,
+                len: self.keys.len,
+                cap: self.keys.cap,
+                _marker_t: SPhantomData::default(),
+            },
+            values: SVec {
+                ptr: self.values.ptr,
+                len: self.values.len,
+                cap: self.values.cap,
+                _marker_t: SPhantomData::default(),
+            },
+            children: SVec {
+                ptr: self.children.ptr,
+                len: self.children.len,
+                cap: self.children.cap,
+                _marker_t: SPhantomData::default(),
+            },
+        }
+    }
 }
 
 impl<K, V> SuperSized for BTreeNode<K, V> {
@@ -560,13 +593,8 @@ impl<K, V> Writable<LittleEndian> for BTreeNode<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::{BTreeNode, SBTreeMap};
-    use crate::utils::isoprint;
+    use crate::collections::btree_map::SBTreeMap;
     use crate::{init_allocator, stable};
-    use copy_as_bytes::traits::AsBytes;
-    use speedy::{LittleEndian, Readable, Writable};
-    use std::fmt::Debug;
-    use std::mem::size_of;
 
     #[test]
     fn random_works_as_expected() {

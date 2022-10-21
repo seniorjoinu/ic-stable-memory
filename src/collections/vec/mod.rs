@@ -19,7 +19,7 @@ pub struct SVec<T> {
     pub(crate) ptr: u64,
     pub(crate) len: usize,
     pub(crate) cap: usize,
-    _marker_t: SPhantomData<T>,
+    pub(crate) _marker_t: SPhantomData<T>,
 }
 
 impl<T> SVec<T> {

@@ -2,6 +2,7 @@ use crate::collections::hash_map::SHashMap;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
+use crate::collections::hash_set::iter::SHashSetIter;
 
 pub mod iter;
 
@@ -49,6 +50,10 @@ where
 
     pub unsafe fn drop(self) {
         self.map.drop()
+    }
+    
+    pub fn iter(&self) -> SHashSetIter<T> {
+        SHashSetIter::new(self)
     }
 }
 

@@ -1,6 +1,9 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+use crate::collections::btree_set::iter::SBTreeSetIter;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+
+pub mod iter;
 
 pub struct SBTreeSet<T> {
     map: SBTreeMap<T, ()>,
@@ -42,6 +45,10 @@ where
 
     pub unsafe fn drop(self) {
         self.map.drop()
+    }
+
+    pub fn iter(&self) -> SBTreeSetIter<T> {
+        SBTreeSetIter::new(self)
     }
 }
 
