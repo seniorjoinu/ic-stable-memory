@@ -1,8 +1,8 @@
+use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::vec::SVec;
+use crate::utils::phantom_data::SPhantomData;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use crate::collections::btree_map::iter::SBTreeMapIter;
-use crate::utils::phantom_data::SPhantomData;
 
 pub mod iter;
 
@@ -16,13 +16,6 @@ pub struct SBTreeMap<K, V> {
 }
 
 impl<K, V> SBTreeMap<K, V> {
-    pub fn new() -> Self {
-        Self {
-            root: BTreeNode::default(),
-            len: 0,
-        }
-    }
-
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -37,8 +30,16 @@ where
     [(); BTreeNode::<K, V>::SIZE]: Sized, // ???? why only putting K is enough
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
+    [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
     BTreeNode<K, V>: AsBytes,
 {
+    pub fn new() -> Self {
+        Self {
+            root: BTreeNode::default(),
+            len: 0,
+        }
+    }
+
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let res = if self.root.keys.len() == CAPACITY {
             let mut temp = BTreeNode::new(false, false);
@@ -119,7 +120,7 @@ where
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
         SBTreeMapIter::new(self)
     }
-    
+
     fn insert_non_full(node: &mut BTreeNode<K, V>, key: K, value: V) -> Option<V> {
         match node.keys.binary_search_by(|k| k.cmp(&key)) {
             Ok(idx) => Some(node.values.replace(idx, value)),
@@ -402,7 +403,14 @@ where
     }
 }
 
-impl<K, V> Default for SBTreeMap<K, V> {
+impl<K: AsBytes + Ord, V: AsBytes> Default for SBTreeMap<K, V>
+where
+    [(); BTreeNode::<K, V>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
+    BTreeNode<K, V>: AsBytes,
+{
     fn default() -> Self {
         SBTreeMap::<K, V>::new()
     }
@@ -437,34 +445,48 @@ pub struct BTreeNode<K, V> {
     children: SVec<Self>,
 }
 
-impl<K, V> Default for BTreeNode<K, V> {
+impl<K: AsBytes, V: AsBytes> Default for BTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<Self>::SIZE]: Sized,
+    [(); Self::SIZE]: Sized,
+{
     fn default() -> Self {
         Self::new(true, true)
     }
 }
 
-impl<K, V> BTreeNode<K, V> {
+impl<K: AsBytes, V: AsBytes> BTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<Self>::SIZE]: Sized,
+    [(); Self::SIZE]: Sized,
+{
     pub fn new(is_leaf: bool, is_root: bool) -> Self {
         Self {
             is_root,
             is_leaf,
-            keys: SVec::new(),
-            values: SVec::new(),
-            children: SVec::new(),
+            keys: SVec::new_with_capacity(CAPACITY),
+            values: SVec::new_with_capacity(CAPACITY),
+            children: SVec::new_with_capacity(CAPACITY),
         }
     }
+}
 
+impl<K, V> BTreeNode<K, V> {
     pub unsafe fn drop(self) {
         self.keys.drop();
         self.values.drop();
         self.children.drop();
     }
-    
+
     unsafe fn unsafe_clone(&self) -> Self {
         Self {
             is_root: self.is_root,
             is_leaf: self.is_leaf,
-            keys: SVec { 
+            keys: SVec {
                 ptr: self.keys.ptr,
                 len: self.keys.len,
                 cap: self.keys.cap,

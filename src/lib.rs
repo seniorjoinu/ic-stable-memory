@@ -1,9 +1,5 @@
 #![feature(thread_local)]
-#![feature(auto_traits)]
-#![feature(negative_impls)]
-#![feature(const_ptr_read)]
 #![feature(generic_const_exprs)]
-#![feature(const_trait_impl)]
 
 use crate::mem::allocator::StableMemoryAllocator;
 use mem::s_slice::SSlice;

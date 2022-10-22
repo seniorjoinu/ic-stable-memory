@@ -2,6 +2,7 @@ use crate::collections::vec::iter::SVecIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
+use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, reallocate};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
@@ -12,8 +13,6 @@ use std::fmt::{Debug, Formatter};
 pub mod iter;
 
 const DEFAULT_CAPACITY: usize = 4;
-
-// TODO: make it use copy_as_bytes
 
 pub struct SVec<T> {
     pub(crate) ptr: u64,
@@ -56,7 +55,7 @@ impl<T> SVec<T> {
     }
 }
 
-impl<T: AsBytes> SVec<T>
+impl<T: StableAllocated> SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -86,6 +85,8 @@ where
     pub fn push(&mut self, element: T) {
         self.maybe_reallocate();
 
+        element.stable_persist();
+
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, self.len * T::SIZE, &buf);
 
@@ -99,7 +100,10 @@ where
             let mut buf = T::super_size_u8_arr();
             SSlice::_read_bytes(self.ptr, self.len * T::SIZE, &mut buf);
 
-            Some(T::from_bytes(buf))
+            let mut it = T::from_bytes(buf);
+            unsafe { it.stable_drop() };
+
+            Some(it)
         } else {
             None
         }
@@ -121,12 +125,15 @@ where
 
         let mut buf = T::super_size_u8_arr();
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
-        let it = T::from_bytes(buf);
+        let mut prev_element = T::from_bytes(buf);
+
+        unsafe { prev_element.stable_drop() };
+        element.stable_persist();
 
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
 
-        it
+        prev_element
     }
 
     pub fn insert(&mut self, idx: usize, element: T) {
@@ -143,6 +150,8 @@ where
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         SSlice::_write_bytes(self.ptr, (idx + 1) * T::SIZE, &buf);
 
+        element.stable_persist();
+
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
 
@@ -158,7 +167,9 @@ where
 
         let mut buf = T::super_size_u8_arr();
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
-        let it = T::from_bytes(buf);
+        let mut it = T::from_bytes(buf);
+
+        unsafe { it.stable_drop() };
 
         let mut buf = vec![0u8; (self.len - idx - 1) * T::SIZE];
         SSlice::_read_bytes(self.ptr, (idx + 1) * T::SIZE, &mut buf);
@@ -185,7 +196,7 @@ where
         SSlice::_write_bytes(self.ptr, idx1 * T::SIZE, &buf_1);
     }
 
-    pub fn extend_from(&mut self, other: &Self) {
+    pub unsafe fn extend_from(&mut self, other: &Self) {
         if other.is_empty() {
             return;
         }
@@ -255,6 +266,10 @@ where
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
+}
+
+impl<T> StableAllocated for SVec<T> {
+    // TODO: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 }
 
 impl<T> Default for SVec<T> {

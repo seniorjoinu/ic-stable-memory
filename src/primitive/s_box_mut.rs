@@ -1,66 +1,60 @@
 use crate::mem::s_slice::{SSlice, Side};
-use crate::utils::phantom_data::SPhantomData;
+use crate::primitive::StableAllocated;
 use crate::{allocate, deallocate, reallocate};
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
 
 pub struct SBoxMut<T> {
-    slice: SSlice,
-    _marker: SPhantomData<T>,
-    _null_ptr: *const u8,
+    outer_slice: Option<SSlice>,
+    inner: T,
 }
 
 impl<T> SBoxMut<T> {
-    pub fn as_ptr(&self) -> u64 {
-        self.slice.get_ptr()
+    pub fn new(it: T) -> Self {
+        Self {
+            outer_slice: None,
+            inner: it,
+        }
     }
 
-    pub unsafe fn from_ptr(ptr: u64) -> Self {
-        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+    pub fn get(&self) -> &T {
+        &self.inner
+    }
 
-        Self {
-            slice,
-            _marker: SPhantomData::default(),
-            _null_ptr: std::ptr::null(),
-        }
+    pub fn as_ptr(&self) -> u64 {
+        self.outer_slice.unwrap().get_ptr()
     }
 }
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
-    pub fn new(it: &T) -> Self {
-        let buf = it.write_to_vec().unwrap();
-        let inner_slice = allocate(buf.len());
-
-        inner_slice.write_bytes(0, &buf);
-
-        let slice = allocate(size_of::<u64>());
-        slice.write_word(0, inner_slice.get_ptr());
-
-        Self {
-            slice,
-            _marker: SPhantomData::default(),
-            _null_ptr: std::ptr::null(),
-        }
+    pub fn get_mut(&mut self) -> SMutRef<T> {
+        SMutRef::new(self)
     }
+}
 
-    pub unsafe fn drop(self) -> T {
-        let inner_slice_ptr = self.slice.read_word(0);
+impl<'a, T: Readable<'a, LittleEndian>> SBoxMut<T> {
+    pub unsafe fn from_ptr(ptr: u64) -> Self {
+        let outer_slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+
+        let inner_slice_ptr = outer_slice.read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; inner_slice.get_size_bytes()];
         let it = T::read_from_buffer_copying_data(&buf).unwrap();
 
-        deallocate(self.slice);
-        deallocate(inner_slice);
-
-        it
+        Self {
+            outer_slice: Some(outer_slice),
+            inner: it,
+        }
     }
 
     pub fn get_cloned(&self) -> T {
-        let inner_slice_ptr = self.slice.read_word(0);
+        let inner_slice_ptr = self.outer_slice.unwrap().read_word(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; inner_slice.get_size_bytes()];
@@ -68,26 +62,104 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBoxMut<T> {
 
         T::read_from_buffer_copying_data(&buf).unwrap()
     }
+}
 
-    pub fn set(&mut self, it: &T) {
-        let inner_slice_ptr = self.slice.read_word(0);
-        let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
+impl<T: Writable<LittleEndian>> SBoxMut<T> {
+    fn repersist(&mut self) {
+        if let Some(outer_slice) = self.outer_slice {
+            let inner_slice_ptr = outer_slice.read_word(0);
+            let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let buf = it.write_to_vec().unwrap();
+            let buf = self.inner.write_to_vec().unwrap();
 
-        let (inner_slice, should_rewrite_outer) = if buf.len() > inner_slice.get_size_bytes() {
-            match reallocate(inner_slice, buf.len()) {
-                Ok(slice) => (slice, false),
-                Err(slice) => (slice, true),
+            let (inner_slice, should_rewrite_outer) = if buf.len() > inner_slice.get_size_bytes() {
+                match reallocate(inner_slice, buf.len()) {
+                    Ok(slice) => (slice, false),
+                    Err(slice) => (slice, true),
+                }
+            } else {
+                (inner_slice, false)
+            };
+
+            inner_slice.write_bytes(0, &buf);
+
+            if should_rewrite_outer {
+                outer_slice.write_word(0, inner_slice.get_ptr());
             }
-        } else {
-            (inner_slice, false)
-        };
+        }
+    }
+}
+
+pub struct SMutRef<'a, T: Writable<LittleEndian>> {
+    sbox: &'a mut SBoxMut<T>,
+}
+
+impl<'a, T: Writable<LittleEndian>> SMutRef<'a, T> {
+    pub fn new(sbox: &'a mut SBoxMut<T>) -> Self {
+        Self { sbox }
+    }
+}
+
+impl<'a, T: Writable<LittleEndian>> Deref for SMutRef<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sbox.inner
+    }
+}
+
+impl<'a, T: Writable<LittleEndian>> DerefMut for SMutRef<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sbox.inner
+    }
+}
+
+impl<'a, T: Writable<LittleEndian>> Drop for SMutRef<'a, T> {
+    fn drop(&mut self) {
+        self.sbox.repersist();
+    }
+}
+
+impl<T> SuperSized for SBoxMut<T> {
+    const SIZE: usize = u64::SIZE;
+}
+
+impl<'a, T: Readable<'a, LittleEndian>> AsBytes for SBoxMut<T> {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        self.as_ptr().to_bytes()
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let ptr = u64::from_bytes(arr);
+
+        unsafe { Self::from_ptr(ptr) }
+    }
+}
+
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated for SBoxMut<T> {
+    fn stable_persist(&mut self) {
+        assert!(self.outer_slice.is_none());
+
+        let buf = self.inner.write_to_vec().unwrap();
+        let inner_slice = allocate(buf.len());
 
         inner_slice.write_bytes(0, &buf);
 
-        if should_rewrite_outer {
-            self.slice.write_word(0, inner_slice.get_ptr());
+        let outer_slice = allocate(size_of::<u64>());
+        outer_slice.write_word(0, inner_slice.get_ptr());
+    }
+
+    unsafe fn stable_drop(&mut self) {
+        if let Some(outer_slice) = self.outer_slice {
+            let inner_slice_ptr = outer_slice.read_word(0);
+            let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
+
+            deallocate(outer_slice);
+            deallocate(inner_slice);
+
+            self.outer_slice = None;
+        } else {
+            unreachable!();
         }
     }
 }
@@ -142,7 +214,7 @@ impl<'a, T: Ord + PartialOrd + Readable<'a, LittleEndian> + Writable<LittleEndia
 
 impl<'a, T: Default + Readable<'a, LittleEndian> + Writable<LittleEndian>> Default for SBoxMut<T> {
     fn default() -> Self {
-        Self::new(&Default::default())
+        Self::new(Default::default())
     }
 }
 

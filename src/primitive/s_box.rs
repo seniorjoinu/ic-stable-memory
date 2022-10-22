@@ -1,44 +1,36 @@
 use crate::mem::s_slice::{SSlice, Side};
+use crate::primitive::StableAllocated;
 use crate::{allocate, deallocate};
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
-use std::mem::size_of;
 use std::ops::Deref;
 
 pub struct SBox<T> {
-    slice: SSlice,
+    slice: Option<SSlice>,
     inner: T,
-    _null_ptr: *const u8,
 }
 
 impl<T> SBox<T> {
-    pub fn as_ptr(&self) -> u64 {
-        self.slice.get_ptr()
-    }
-
-    pub unsafe fn drop(self) -> T {
-        deallocate(self.slice);
-
-        self.inner
-    }
-}
-
-impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBox<T> {
     pub fn new(it: T) -> Self {
-        let buf = it.write_to_vec().unwrap();
-        let slice = allocate(buf.len());
-
-        slice.write_bytes(0, &buf);
-
         Self {
-            slice,
+            slice: None,
             inner: it,
-            _null_ptr: std::ptr::null(),
         }
     }
 
+    pub fn as_ptr(&self) -> u64 {
+        self.slice.unwrap().get_ptr()
+    }
+
+    pub fn get(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<'a, T: Readable<'a, LittleEndian>> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
@@ -48,17 +40,59 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> SBox<T> {
         let inner = T::read_from_buffer_copying_data(&buf).unwrap();
 
         Self {
-            slice,
+            slice: Some(slice),
             inner,
-            _null_ptr: std::ptr::null(),
         }
     }
 
     pub fn get_cloned(&self) -> T {
-        let mut buf = vec![0u8; self.slice.get_size_bytes()];
-        self.slice.read_bytes(0, &mut buf);
+        if let Some(slice) = self.slice {
+            let mut buf = vec![0u8; slice.get_size_bytes()];
+            slice.read_bytes(0, &mut buf);
 
-        T::read_from_buffer_copying_data(&buf).unwrap()
+            T::read_from_buffer_copying_data(&buf).unwrap()
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl<T> SuperSized for SBox<T> {
+    const SIZE: usize = u64::SIZE;
+}
+
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> AsBytes for SBox<T> {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        self.as_ptr().to_bytes()
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let ptr = u64::from_bytes(arr);
+
+        unsafe { Self::from_ptr(ptr) }
+    }
+}
+
+impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated for SBox<T> {
+    fn stable_persist(&mut self) {
+        assert!(self.slice.is_none());
+
+        let buf = self.inner.write_to_vec().unwrap();
+        let slice = allocate(buf.len());
+
+        slice.write_bytes(0, &buf);
+
+        self.slice = Some(slice);
+    }
+
+    unsafe fn stable_drop(&mut self) {
+        if let Some(slice) = self.slice {
+            deallocate(slice);
+
+            self.slice = None;
+        } else {
+            unreachable!()
+        }
     }
 }
 
@@ -79,7 +113,7 @@ impl<T: Writable<LittleEndian>> Writable<LittleEndian> for SBox<T> {
         &self,
         writer: &mut W,
     ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        writer.write_u64(self.slice.get_ptr())
+        writer.write_u64(self.as_ptr())
     }
 }
 
