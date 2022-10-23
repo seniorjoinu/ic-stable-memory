@@ -4,6 +4,8 @@ use num_bigint::{BigInt, BigUint, Sign};
 use serde::Deserializer;
 use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::fmt::{Display, Formatter};
+use copy_as_bytes::traits::{AsBytes, SuperSized};
+use crate::primitive::StableAllocated;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SPrincipal(pub Principal);
@@ -58,6 +60,35 @@ impl Display for SPrincipal {
     }
 }
 
+impl SuperSized for SPrincipal {
+    const SIZE: usize = 29;
+}
+
+impl AsBytes for SPrincipal {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        let slice = self.0.as_slice();
+        buf[..slice.len()].copy_from_slice(slice);
+        
+        buf
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        SPrincipal(Principal::from_slice(&arr))
+    }
+}
+
+impl StableAllocated for SPrincipal {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SNat(pub Nat);
 
@@ -109,6 +140,36 @@ impl Display for SNat {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
+}
+
+impl SuperSized for SNat {
+    const SIZE: usize = 32;
+}
+
+impl AsBytes for SNat {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf.copy_from_slice(&self.0.0.to_bytes_le());
+        
+        buf
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let it = BigUint::from_bytes_le(&arr);
+        
+        SNat(Nat(it))
+    }
+}
+
+impl StableAllocated for SNat {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -177,6 +238,51 @@ impl Display for SInt {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
+}
+
+impl SuperSized for SInt {
+    const SIZE: usize = 32;
+}
+
+impl AsBytes for SInt {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        let (sign, bytes) = self.0.0.to_bytes_le();
+        
+        buf[0] = match sign {
+            Sign::Plus => 0u8,
+            Sign::Minus => 1u8,
+            Sign::NoSign => 2u8,
+        };
+        
+        buf[1..].copy_from_slice(&bytes);
+
+        buf
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let sign = match arr[0] {
+            0 => Sign::Plus,
+            1 => Sign::Minus,
+            2 => Sign::NoSign,
+            _ => unreachable!(),
+        };
+        
+        let it = BigInt::from_bytes_le(sign, &arr[1..]);
+
+        SInt(Int(it))
+    }
+}
+
+impl StableAllocated for SInt {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
 }
 
 #[cfg(test)]

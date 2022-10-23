@@ -4,6 +4,6 @@ macro_rules! s {
         ic_stable_memory::utils::vars::get_var::<$name>(stringify!($name))
     };
     ( $name:ident = $val:expr ) => {
-        ic_stable_memory::utils::vars::set_var::<$name>(stringify!($name), &$val)
+        ic_stable_memory::utils::vars::set_var::<$name>(stringify!($name), $val)
     };
 }

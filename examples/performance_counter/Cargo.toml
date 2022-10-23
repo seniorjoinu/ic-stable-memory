@@ -14,9 +14,9 @@ path = "src/actor.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ic-cdk = "0.5.6"
-ic-cdk-macros = "0.5.6"
-serde = "1.0.144"
-candid = "0.7.16"
+ic-cdk = "0.6.1"
+ic-cdk-macros = "0.6.1"
+serde = "1.0.147"
+candid = "0.8.3"
 speedy = "0.8.3"
 ic-stable-memory = { path = "../../../ic-stable-memory" }
