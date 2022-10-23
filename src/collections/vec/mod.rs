@@ -263,8 +263,6 @@ where
 
     pub unsafe fn stable_drop_collection(&mut self) {
         if self.ptr != EMPTY_PTR {
-            println!("{}", self.ptr);
-
             let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
 
             deallocate(slice);
@@ -631,5 +629,52 @@ mod tests {
         for i in 0..initial.len() {
             assert_eq!(array.remove(0), initial[i]);
         }
+    }
+
+    #[test]
+    fn serialization_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let vec = SVec::<u32>::new_with_capacity(10);
+        let buf = vec.write_to_vec().unwrap();
+        let vec1 = SVec::<u32>::read_from_buffer(&buf).unwrap();
+
+        assert_eq!(vec.ptr, vec1.ptr);
+        assert_eq!(vec.len, vec1.len);
+        assert_eq!(vec.cap, vec1.cap);
+
+        let ptr = vec.ptr;
+        let len = vec.len;
+        let cap = vec.cap;
+
+        let buf = vec.to_bytes();
+        let vec1 = SVec::<u32>::from_bytes(buf);
+
+        assert_eq!(ptr, vec1.ptr);
+        assert_eq!(len, vec1.len);
+        assert_eq!(cap, vec1.cap);
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut vec = SVec::new();
+        for i in 0..100 {
+            vec.push(i);
+        }
+
+        let mut c = 0;
+        for (idx, i) in vec.iter().enumerate() {
+            c += 1;
+
+            assert_eq!(idx as i32, i);
+        }
+
+        assert_eq!(c, 100);
     }
 }

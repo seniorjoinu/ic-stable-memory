@@ -145,6 +145,8 @@ mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
+    use copy_as_bytes::traits::AsBytes;
+    use speedy::{Readable, Writable};
 
     #[test]
     fn it_works_fine() {
@@ -167,5 +169,35 @@ mod tests {
 
         let set = SBTreeSet::<u64>::new();
         unsafe { set.stable_drop() };
+    }
+
+    #[test]
+    fn serialization_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let set = SBTreeSet::<u32>::new();
+        let buf = set.write_to_vec().unwrap();
+        SBTreeSet::<u32>::read_from_buffer_copying_data(&buf).unwrap();
+
+        let buf = set.to_bytes();
+        SBTreeSet::<u32>::from_bytes(buf);
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut set = SBTreeSet::<u32>::default();
+        for i in 0..100 {
+            set.insert(i);
+        }
+
+        for (idx, i) in set.iter().enumerate() {
+            assert_eq!(idx as u32, i);
+        }
     }
 }

@@ -21,9 +21,9 @@ const TOMBSTONE: u8 = 255;
 
 // reallocating, open addressing, quadratic probing
 pub struct SHashMap<K, V> {
-    len: usize,
-    capacity: usize,
-    table: Option<SSlice>,
+    pub(crate) len: usize,
+    pub(crate) capacity: usize,
+    pub(crate) table: Option<SSlice>,
     _marker_k: SPhantomData<K>,
     _marker_v: SPhantomData<V>,
 }
@@ -518,6 +518,8 @@ mod tests {
     use crate::init_allocator;
     use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
+    use copy_as_bytes::traits::AsBytes;
+    use speedy::{Readable, Writable};
 
     #[test]
     fn simple_flow_works_well() {
@@ -583,7 +585,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SHashMap::new_with_capacity(7773);
+        let mut map = SHashMap::new_with_capacity(3);
 
         assert!(map.remove(&10).is_none());
         assert!(map.get_copy(&10).is_none());
@@ -616,5 +618,83 @@ mod tests {
         }
 
         unsafe { map.stable_drop() };
+    }
+
+    #[test]
+    fn tombstones_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new();
+
+        for i in 0..100 {
+            map.insert(i, i);
+        }
+
+        assert_eq!(map.len(), 100);
+
+        for i in 0..50 {
+            map.remove(&i);
+        }
+
+        assert_eq!(map.len(), 50);
+
+        for i in 0..50 {
+            map.insert(i, i);
+        }
+
+        assert_eq!(map.len(), 100);
+
+        unsafe { map.stable_drop() };
+    }
+
+    #[test]
+    fn serialization_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new();
+        map.insert(0, 0);
+
+        let buf = map.write_to_vec().unwrap();
+        let map1 = SHashMap::<i32, i32>::read_from_buffer_copying_data(&buf).unwrap();
+
+        assert_eq!(map.len, map1.len);
+        assert_eq!(map.capacity, map1.capacity);
+        assert_eq!(map.table.unwrap().get_ptr(), map1.table.unwrap().get_ptr());
+
+        let len = map.len;
+        let cap = map.capacity;
+        let ptr = map.table.unwrap().get_ptr();
+
+        let buf = map.to_bytes();
+        let map1 = SHashMap::<i32, i32>::from_bytes(buf);
+
+        assert_eq!(len, map1.len);
+        assert_eq!(cap, map1.capacity);
+        assert_eq!(ptr, map1.table.unwrap().get_ptr());
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new();
+        for i in 0..100 {
+            map.insert(i, i);
+        }
+
+        let mut c = 0;
+        for (k, v) in map.iter() {
+            c += 1;
+
+            assert!(k < 100);
+        }
+
+        assert_eq!(c, 100);
     }
 }

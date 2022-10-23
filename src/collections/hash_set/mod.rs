@@ -123,6 +123,8 @@ mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
+    use copy_as_bytes::traits::AsBytes;
+    use speedy::{Readable, Writable};
     use std::mem::size_of;
 
     #[test]
@@ -151,5 +153,50 @@ mod tests {
 
         let set = SHashSet::<u64>::new_with_capacity(10);
         unsafe { set.stable_drop() };
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut set = SHashSet::default();
+
+        for i in 0..100 {
+            set.insert(i);
+        }
+
+        let mut c = 0;
+        for i in set.iter() {
+            c += 1;
+        }
+
+        assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn serialization_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let set = SHashSet::<u32>::default();
+        let buf = set.write_to_vec().unwrap();
+        let set1 = SHashSet::<u32>::read_from_buffer_copying_data(&buf).unwrap();
+
+        assert_eq!(set.map.len(), set1.map.len());
+        assert_eq!(set.map.capacity, set1.map.capacity);
+        assert!(set.map.table.is_none() && set1.map.table.is_none());
+
+        let len = set.map.len;
+        let cap = set.map.capacity;
+
+        let buf = set.to_bytes();
+        let set1 = SHashSet::<u32>::from_bytes(buf);
+
+        assert_eq!(len, set1.map.len);
+        assert_eq!(cap, set1.map.capacity);
+        assert!(set1.map.table.is_none());
     }
 }

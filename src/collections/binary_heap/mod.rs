@@ -208,7 +208,9 @@ where
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::primitive::StableAllocated;
-    use crate::{stable, stable_memory_init};
+    use crate::{init_allocator, stable, stable_memory_init};
+    use copy_as_bytes::traits::AsBytes;
+    use speedy::{Readable, Writable};
 
     #[test]
     fn heap_sort_works_fine() {
@@ -253,6 +255,54 @@ mod tests {
         // probe should be the same as example
         assert_eq!(probe, example, "Invalid elements order (max)");
 
-        unsafe { max_heap.remove_from_stable() };
+        unsafe { max_heap.stable_drop() };
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut heap = SBinaryHeap::default();
+
+        for i in 0..100 {
+            heap.push(i);
+        }
+        
+        let mut c = 0;
+        for i in heap.iter() {
+            c += 1;
+            
+            assert!(i < 100);
+        }
+        
+        assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn serialization_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let heap = SBinaryHeap::<u32>::default();
+        let buf = heap.write_to_vec().unwrap();
+        let heap1 = SBinaryHeap::<u32>::read_from_buffer_copying_data(&buf).unwrap();
+
+        assert_eq!(heap.inner.ptr, heap1.inner.ptr);
+        assert_eq!(heap.inner.len, heap1.inner.len);
+        assert_eq!(heap.inner.cap, heap1.inner.cap);
+
+        let ptr = heap.inner.ptr;
+        let len = heap.inner.len;
+        let cap = heap.inner.cap;
+
+        let buf = heap.to_bytes();
+        let heap1 = SBinaryHeap::<u32>::from_bytes(buf);
+
+        assert_eq!(ptr, heap1.inner.ptr);
+        assert_eq!(len, heap1.inner.len);
+        assert_eq!(cap, heap1.inner.cap);
     }
 }

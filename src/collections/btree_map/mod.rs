@@ -706,6 +706,8 @@ mod tests {
     use crate::collections::btree_map::SBTreeMap;
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
+    use copy_as_bytes::traits::AsBytes;
+    use speedy::{Readable, Writable};
 
     #[test]
     fn random_works_as_expected() {
@@ -913,11 +915,6 @@ mod tests {
         assert_eq!(map.remove(&203).unwrap(), 203);
         assert_eq!(map.remove(&80).unwrap(), 80);
 
-        for (k, v) in map.iter() {
-            print!("{} {}, ", k, v);
-        }
-        println!("");
-
         unsafe { map.stable_drop() };
     }
 
@@ -969,5 +966,87 @@ mod tests {
         let mut map = SBTreeMap::<i32, ()>::new();
         map.insert(1, ());
         unsafe { map.stable_drop() };
+    }
+
+    #[test]
+    fn iter_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::new();
+        for i in 0..100 {
+            map.insert(i, i);
+        }
+
+        let mut c = 0;
+        for (idx, (k, v)) in map.iter().enumerate() {
+            assert!(k == idx && v == idx);
+            c += 1;
+        }
+
+        assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn serialization_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let map = SBTreeMap::<u32, u32>::new();
+        let buf = map.write_to_vec().unwrap();
+        let map1 = SBTreeMap::<u32, u32>::read_from_buffer_copying_data(&buf).unwrap();
+
+        assert_eq!(map.len, map1.len);
+        assert_eq!(map.root.is_root, map1.root.is_root);
+        assert_eq!(map.root.is_leaf, map1.root.is_leaf);
+
+        assert_eq!(map.root.keys.ptr, map1.root.keys.ptr);
+        assert_eq!(map.root.keys.len, map1.root.keys.len);
+        assert_eq!(map.root.keys.cap, map1.root.keys.cap);
+
+        assert_eq!(map.root.values.ptr, map1.root.values.ptr);
+        assert_eq!(map.root.values.len, map1.root.values.len);
+        assert_eq!(map.root.values.cap, map1.root.values.cap);
+
+        assert_eq!(map.root.children.ptr, map1.root.children.ptr);
+        assert_eq!(map.root.children.len, map1.root.children.len);
+        assert_eq!(map.root.children.cap, map1.root.children.cap);
+
+        let len = map.len;
+        let is_root = map.root.is_root;
+        let is_leaf = map.root.is_leaf;
+
+        let keys_ptr = map.root.keys.ptr;
+        let keys_len = map.root.keys.len;
+        let keys_cap = map.root.keys.cap;
+
+        let values_ptr = map.root.values.ptr;
+        let values_len = map.root.values.len;
+        let values_cap = map.root.values.cap;
+
+        let children_ptr = map.root.children.ptr;
+        let children_len = map.root.children.len;
+        let children_cap = map.root.children.cap;
+
+        let buf = map.to_bytes();
+        let map1 = SBTreeMap::<u32, u32>::from_bytes(buf);
+
+        assert_eq!(len, map1.len);
+        assert_eq!(is_root, map1.root.is_root);
+        assert_eq!(is_leaf, map1.root.is_leaf);
+
+        assert_eq!(keys_ptr, map1.root.keys.ptr);
+        assert_eq!(keys_len, map1.root.keys.len);
+        assert_eq!(keys_cap, map1.root.keys.cap);
+
+        assert_eq!(values_ptr, map1.root.values.ptr);
+        assert_eq!(values_len, map1.root.values.len);
+        assert_eq!(values_cap, map1.root.values.cap);
+
+        assert_eq!(children_ptr, map1.root.children.ptr);
+        assert_eq!(children_len, map1.root.children.len);
+        assert_eq!(children_cap, map1.root.children.cap);
     }
 }

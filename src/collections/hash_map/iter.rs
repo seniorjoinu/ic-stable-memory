@@ -1,4 +1,5 @@
 use crate::collections::hash_map::SHashMap;
+use crate::collections::hash_map::{EMPTY, OCCUPIED, TOMBSTONE};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 pub struct SHashMapIter<'a, K, V> {

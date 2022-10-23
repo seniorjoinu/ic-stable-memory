@@ -23,13 +23,13 @@ where
     fn find_smallest_child(
         node: BTreeNode<K, V>,
     ) -> Result<BTreeNode<K, V>, (BTreeNode<K, V>, BTreeNode<K, V>)> {
-        if node.children.len() == 0 {
+        if node.children.is_empty() {
             return Ok(node);
         }
 
         let child = node.children.get_copy(0);
 
-        Err((node, unsafe { child.unwrap_unchecked() }))
+        Err((node, child.unwrap()))
     }
 }
 
@@ -65,7 +65,7 @@ where
 
             self.stack = Some(stack);
 
-            unsafe { self.stack.as_mut().unwrap_unchecked() }
+            unsafe { self.stack.as_mut().unwrap() }
         };
 
         if let Some((last_node, idx)) = stack.last_mut() {
@@ -75,13 +75,24 @@ where
                 return self.next();
             }
 
-            let k = unsafe { last_node.keys.get_copy(*idx).unwrap_unchecked() };
-            let v = unsafe { last_node.values.get_copy(*idx).unwrap_unchecked() };
+            let k = unsafe { last_node.keys.get_copy(*idx).unwrap() };
+            let v = unsafe { last_node.values.get_copy(*idx).unwrap() };
 
             *idx += 1;
 
-            if let Some(child) = last_node.children.get_copy(*idx) {
-                stack.push((child, 0));
+            if let Some(mut child) = last_node.children.get_copy(*idx) {
+                loop {
+                    match Self::find_smallest_child(child) {
+                        Ok(smallest_node) => {
+                            stack.push((smallest_node, 0));
+                            break;
+                        }
+                        Err((prev_node, next_node)) => {
+                            stack.push((prev_node, 0));
+                            child = next_node;
+                        }
+                    };
+                }
             }
 
             Some((k, v))
