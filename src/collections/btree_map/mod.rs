@@ -1,5 +1,6 @@
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::vec::SVec;
+use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
@@ -25,13 +26,13 @@ impl<K, V> SBTreeMap<K, V> {
     }
 }
 
-impl<K: Ord + AsBytes, V: AsBytes> SBTreeMap<K, V>
+impl<K: Ord + StableAllocated, V: StableAllocated> SBTreeMap<K, V>
 where
-    [(); BTreeNode::<K, V>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); BTreeNode::<K, V>::SIZE]: Sized,
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
     [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
-    BTreeNode<K, V>: AsBytes,
+    BTreeNode<K, V>: StableAllocated,
 {
     pub fn new() -> Self {
         Self {
@@ -72,18 +73,12 @@ where
         Some(res)
     }
 
-    pub unsafe fn drop(mut self) {
-        while let Some(child_node) = self.root.children.pop() {
-            Self::_drop(child_node);
-        }
-    }
-
-    unsafe fn _drop(node: BTreeNode<K, V>) {
+    unsafe fn _drop(mut node: BTreeNode<K, V>) {
         for i in 0..node.children.len() {
-            Self::_drop(node.children.get_copy(i).unwrap());
+            Self::_drop(node.children.remove(0));
         }
 
-        node.drop();
+        node.stable_drop();
     }
 
     pub fn get_copy(&self, key: &K) -> Option<V> {
@@ -121,11 +116,22 @@ where
         SBTreeMapIter::new(self)
     }
 
-    fn insert_non_full(node: &mut BTreeNode<K, V>, key: K, value: V) -> Option<V> {
+    fn insert_non_full(node: &mut BTreeNode<K, V>, mut key: K, mut value: V) -> Option<V> {
         match node.keys.binary_search_by(|k| k.cmp(&key)) {
-            Ok(idx) => Some(node.values.replace(idx, value)),
+            Ok(idx) => {
+                value.move_to_stable();
+
+                let mut prev_value = node.values.replace(idx, value);
+
+                prev_value.remove_from_stable();
+
+                Some(prev_value)
+            }
             Err(mut idx) => {
                 if node.is_leaf {
+                    key.move_to_stable();
+                    value.move_to_stable();
+
                     node.keys.insert(idx, key);
                     node.values.insert(idx, value);
 
@@ -177,8 +183,11 @@ where
         match node.keys.binary_search_by(|k| k.cmp(key)) {
             Ok(idx) => {
                 if node.is_leaf {
-                    node.keys.remove(idx);
-                    let v = node.values.remove(idx);
+                    let mut k = node.keys.remove(idx);
+                    let mut v = node.values.remove(idx);
+
+                    k.remove_from_stable();
+                    v.remove_from_stable();
 
                     Some(v)
                 } else {
@@ -252,17 +261,23 @@ where
 
         if left_child.keys.len() >= B {
             let (k, v) = Self::delete_predecessor(&mut left_child);
-            let v = node.values.replace(idx, v);
+            let mut k = node.keys.replace(idx, k);
+            let mut v = node.values.replace(idx, v);
 
-            node.keys.replace(idx, k);
+            k.remove_from_stable();
+            v.remove_from_stable();
+
             node.children.replace(idx, left_child);
 
             Some(v)
         } else if right_child.keys.len() >= B {
             let (k, v) = Self::delete_successor(&mut right_child);
-            let v = node.values.replace(idx, v);
+            let mut k = node.keys.replace(idx, k);
+            let mut v = node.values.replace(idx, v);
 
-            node.keys.replace(idx, k);
+            k.remove_from_stable();
+            v.remove_from_stable();
+
             node.children.replace(idx + 1, right_child);
 
             Some(v)
@@ -329,11 +344,9 @@ where
             child.keys.push(node.keys.remove(i));
             child.values.push(node.values.remove(i));
 
-            child.keys.extend_from(&child_right_sibling.keys);
-            child.values.extend_from(&child_right_sibling.values);
-            child.children.extend_from(&child_right_sibling.children);
-
-            unsafe { child_right_sibling.drop() };
+            child.keys.extend_from(child_right_sibling.keys);
+            child.values.extend_from(child_right_sibling.values);
+            child.children.extend_from(child_right_sibling.children);
 
             if node.is_root && node.keys.is_empty() {
                 child.is_root = true;
@@ -346,12 +359,11 @@ where
             child_left_sibling.keys.push(node.keys.remove(j));
             child_left_sibling.values.push(node.values.remove(j));
 
-            child_left_sibling.keys.extend_from(&child.keys);
-            child_left_sibling.values.extend_from(&child.values);
-            child_left_sibling.children.extend_from(&child.children);
+            child_left_sibling.keys.extend_from(child.keys);
+            child_left_sibling.values.extend_from(child.values);
+            child_left_sibling.children.extend_from(child.children);
 
-            let child = node.children.remove(i);
-            unsafe { child.drop() };
+            node.children.remove(i);
 
             if node.is_root && node.keys.is_empty() {
                 child_left_sibling.is_root = true;
@@ -403,13 +415,13 @@ where
     }
 }
 
-impl<K: AsBytes + Ord, V: AsBytes> Default for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V>
 where
     [(); BTreeNode::<K, V>::SIZE]: Sized, // ???? why only putting K is enough
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
     [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
-    BTreeNode<K, V>: AsBytes,
+    BTreeNode<K, V>: StableAllocated,
 {
     fn default() -> Self {
         SBTreeMap::<K, V>::new()
@@ -437,6 +449,62 @@ impl<K, V> Writable<LittleEndian> for SBTreeMap<K, V> {
     }
 }
 
+impl<K, V> SuperSized for SBTreeMap<K, V> {
+    const SIZE: usize = BTreeNode::<K, V>::SIZE + u64::SIZE;
+}
+
+impl<K: StableAllocated, V: StableAllocated> AsBytes for SBTreeMap<K, V>
+where
+    [(); BTreeNode::<K, V>::SIZE]: Sized,
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
+    BTreeNode<K, V>: StableAllocated,
+{
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let mut root_buf = [0u8; BTreeNode::<K, V>::SIZE];
+        let mut len_buf = [0u8; u64::SIZE];
+
+        root_buf.copy_from_slice(&arr[..BTreeNode::<K, V>::SIZE]);
+        len_buf
+            .copy_from_slice(&arr[BTreeNode::<K, V>::SIZE..(BTreeNode::<K, V>::SIZE + u64::SIZE)]);
+
+        Self {
+            root: BTreeNode::<K, V>::from_bytes(root_buf),
+            len: u64::from_bytes(len_buf),
+        }
+    }
+
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[..BTreeNode::<K, V>::SIZE].copy_from_slice(&self.root.to_bytes());
+        buf[BTreeNode::<K, V>::SIZE..(BTreeNode::<K, V>::SIZE + u64::SIZE)]
+            .copy_from_slice(&self.len.to_bytes());
+
+        buf
+    }
+}
+
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V>
+where
+    [(); BTreeNode::<K, V>::SIZE]: Sized,
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<BTreeNode<K, V>>::SIZE]: Sized,
+    BTreeNode<K, V>: StableAllocated,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {}
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    unsafe fn stable_drop(mut self) {
+        while let Some(child_node) = self.root.children.pop() {
+            Self::_drop(child_node);
+        }
+    }
+}
+
 pub struct BTreeNode<K, V> {
     is_leaf: bool,
     is_root: bool,
@@ -445,7 +513,7 @@ pub struct BTreeNode<K, V> {
     children: SVec<Self>,
 }
 
-impl<K: AsBytes, V: AsBytes> Default for BTreeNode<K, V>
+impl<K: StableAllocated, V: StableAllocated> Default for BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -457,7 +525,7 @@ where
     }
 }
 
-impl<K: AsBytes, V: AsBytes> BTreeNode<K, V>
+impl<K: StableAllocated, V: StableAllocated> BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -476,12 +544,6 @@ where
 }
 
 impl<K, V> BTreeNode<K, V> {
-    pub unsafe fn drop(self) {
-        self.keys.drop();
-        self.values.drop();
-        self.children.drop();
-    }
-
     unsafe fn unsafe_clone(&self) -> Self {
         Self {
             is_root: self.is_root,
@@ -513,10 +575,13 @@ impl<K, V> SuperSized for BTreeNode<K, V> {
         bool::SIZE + bool::SIZE + SVec::<K>::SIZE + SVec::<V>::SIZE + SVec::<Self>::SIZE;
 }
 
-impl<K: AsBytes, V: AsBytes> AsBytes for BTreeNode<K, V>
+impl<K: StableAllocated, V: StableAllocated> AsBytes for BTreeNode<K, V>
 where
+    [(); K::SIZE]: Sized,
     [(); SVec::<K>::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
     [(); SVec::<V>::SIZE]: Sized,
+    [(); Self::SIZE]: Sized,
     [(); SVec::<Self>::SIZE]: Sized,
 {
     fn to_bytes(self) -> [u8; Self::SIZE] {
@@ -562,6 +627,29 @@ where
             values: SVec::<V>::from_bytes(vals_arr),
             children: SVec::<Self>::from_bytes(children_arr),
         }
+    }
+}
+
+impl<K: StableAllocated, V: StableAllocated> StableAllocated for BTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); SVec::<K>::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); SVec::<V>::SIZE]: Sized,
+    [(); Self::SIZE]: Sized,
+    [(); SVec::<Self>::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {
+        self.keys.stable_drop();
+        self.values.stable_drop();
+        self.children.stable_drop();
     }
 }
 
@@ -616,6 +704,7 @@ impl<K, V> Writable<LittleEndian> for BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
+    use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -665,7 +754,7 @@ mod tests {
         assert_eq!(map.remove(&90).unwrap(), 9);
         assert!(map.is_empty());
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -688,7 +777,7 @@ mod tests {
             map.remove(&i).unwrap();
         }
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -717,7 +806,7 @@ mod tests {
         assert!(!map.contains_key(&99));
         assert!(map.remove(&99).is_none());
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let _map = SBTreeMap::<u64, u64>::default();
     }
@@ -759,7 +848,7 @@ mod tests {
         map.insert(61, 71);
         assert_eq!(map.remove(&58).unwrap(), 48);
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let mut map = SBTreeMap::new();
 
@@ -770,7 +859,7 @@ mod tests {
         map.insert(85, 1);
         assert_eq!(map.remove(&88).unwrap(), 44);
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let mut map = SBTreeMap::new();
 
@@ -810,7 +899,7 @@ mod tests {
         map.insert(67, 1);
         map.insert(69, 1);
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let mut map = SBTreeMap::new();
 
@@ -824,7 +913,12 @@ mod tests {
         assert_eq!(map.remove(&203).unwrap(), 203);
         assert_eq!(map.remove(&80).unwrap(), 80);
 
-        unsafe { map.drop() };
+        for (k, v) in map.iter() {
+            print!("{} {}, ", k, v);
+        }
+        println!("");
+
+        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -851,7 +945,7 @@ mod tests {
             }
         }
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let mut map = SBTreeMap::new();
 
@@ -863,7 +957,7 @@ mod tests {
             map.remove(&(150 - i));
         }
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -874,6 +968,6 @@ mod tests {
 
         let mut map = SBTreeMap::<i32, ()>::new();
         map.insert(1, ());
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 }

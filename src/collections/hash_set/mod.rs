@@ -1,8 +1,9 @@
 use crate::collections::hash_map::SHashMap;
+use crate::collections::hash_set::iter::SHashSetIter;
+use crate::primitive::StableAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::Hash;
-use crate::collections::hash_set::iter::SHashSetIter;
 
 pub mod iter;
 
@@ -24,7 +25,7 @@ impl<T> SHashSet<T> {
     }
 }
 
-impl<T: AsBytes + Hash + Eq> SHashSet<T>
+impl<T: StableAllocated + Hash + Eq> SHashSet<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -48,10 +49,10 @@ where
         self.map.is_empty()
     }
 
-    pub unsafe fn drop(self) {
-        self.map.drop()
+    pub unsafe fn stable_drop_collection(&mut self) {
+        self.map.stable_drop_collection()
     }
-    
+
     pub fn iter(&self) -> SHashSetIter<T> {
         SHashSetIter::new(self)
     }
@@ -82,9 +83,45 @@ impl<T> Writable<LittleEndian> for SHashSet<T> {
     }
 }
 
+impl<T> SuperSized for SHashSet<T> {
+    const SIZE: usize = SHashMap::<T, ()>::SIZE;
+}
+
+impl<T> AsBytes for SHashSet<T> {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        self.map.to_bytes()
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let map = SHashMap::<T, ()>::from_bytes(arr);
+        Self { map }
+    }
+}
+
+impl<T: StableAllocated + Eq + Hash> StableAllocated for SHashSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {
+        self.map.move_to_stable();
+    }
+
+    #[inline]
+    fn remove_from_stable(&mut self) {
+        self.map.remove_from_stable()
+    }
+
+    #[inline]
+    unsafe fn stable_drop(self) {
+        self.map.stable_drop()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_set::SHashSet;
+    use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
     use std::mem::size_of;
 
@@ -110,9 +147,9 @@ mod tests {
         assert!(!set.remove(&100));
         assert!(set.remove(&10));
 
-        unsafe { set.drop() };
+        unsafe { set.stable_drop() };
 
         let set = SHashSet::<u64>::new_with_capacity(10);
-        unsafe { set.drop() };
+        unsafe { set.stable_drop() };
     }
 }

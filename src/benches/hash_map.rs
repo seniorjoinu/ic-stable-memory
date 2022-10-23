@@ -37,7 +37,7 @@ mod hash_map_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            /*            let mut stable_hash_map = SHashMap::new();
+            let mut stable_hash_map = SHashMap::new();
 
             measure!("Stable hash map insert", ITERATIONS, {
                 for i in 0..ITERATIONS {
@@ -55,7 +55,7 @@ mod hash_map_benchmark {
                 for i in 0..ITERATIONS {
                     stable_hash_map.remove(&i).unwrap();
                 }
-            });*/
+            });
         }
     }
 

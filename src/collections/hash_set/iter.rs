@@ -7,7 +7,7 @@ pub struct SHashSetIter<'a, T> {
 }
 
 impl<'a, T: SuperSized> SHashSetIter<'a, T> {
-    pub fn new(set: &SHashSet<T>) -> Self {
+    pub fn new(set: &'a SHashSet<T>) -> Self {
         Self {
             iter: SHashMapIter::new(&set.map),
         }

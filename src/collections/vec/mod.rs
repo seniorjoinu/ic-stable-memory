@@ -45,14 +45,6 @@ impl<T> SVec<T> {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-
-    pub unsafe fn drop(self) {
-        if self.ptr != EMPTY_PTR {
-            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
-
-            deallocate(slice);
-        }
-    }
 }
 
 impl<T: StableAllocated> SVec<T>
@@ -82,10 +74,10 @@ where
         }
     }
 
-    pub fn push(&mut self, element: T) {
+    pub fn push(&mut self, mut element: T) {
         self.maybe_reallocate();
 
-        element.stable_persist();
+        element.move_to_stable();
 
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, self.len * T::SIZE, &buf);
@@ -101,7 +93,7 @@ where
             SSlice::_read_bytes(self.ptr, self.len * T::SIZE, &mut buf);
 
             let mut it = T::from_bytes(buf);
-            unsafe { it.stable_drop() };
+            it.remove_from_stable();
 
             Some(it)
         } else {
@@ -120,15 +112,15 @@ where
         }
     }
 
-    pub fn replace(&mut self, idx: usize, element: T) -> T {
+    pub fn replace(&mut self, idx: usize, mut element: T) -> T {
         assert!(idx < self.len(), "Out of bounds");
 
         let mut buf = T::super_size_u8_arr();
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         let mut prev_element = T::from_bytes(buf);
 
-        unsafe { prev_element.stable_drop() };
-        element.stable_persist();
+        prev_element.remove_from_stable();
+        element.move_to_stable();
 
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
@@ -136,7 +128,7 @@ where
         prev_element
     }
 
-    pub fn insert(&mut self, idx: usize, element: T) {
+    pub fn insert(&mut self, idx: usize, mut element: T) {
         assert!(idx <= self.len, "out of bounds");
 
         if idx == self.len {
@@ -150,7 +142,7 @@ where
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         SSlice::_write_bytes(self.ptr, (idx + 1) * T::SIZE, &buf);
 
-        element.stable_persist();
+        element.move_to_stable();
 
         let buf = element.to_bytes();
         SSlice::_write_bytes(self.ptr, idx * T::SIZE, &buf);
@@ -169,7 +161,7 @@ where
         SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
         let mut it = T::from_bytes(buf);
 
-        unsafe { it.stable_drop() };
+        it.remove_from_stable();
 
         let mut buf = vec![0u8; (self.len - idx - 1) * T::SIZE];
         SSlice::_read_bytes(self.ptr, (idx + 1) * T::SIZE, &mut buf);
@@ -192,11 +184,11 @@ where
         SSlice::_read_bytes(self.ptr, idx1 * T::SIZE, &mut buf_1);
         SSlice::_read_bytes(self.ptr, idx2 * T::SIZE, &mut buf_2);
 
-        SSlice::_write_bytes(self.ptr, idx2 * T::SIZE, &buf_2);
-        SSlice::_write_bytes(self.ptr, idx1 * T::SIZE, &buf_1);
+        SSlice::_write_bytes(self.ptr, idx1 * T::SIZE, &buf_2);
+        SSlice::_write_bytes(self.ptr, idx2 * T::SIZE, &buf_1);
     }
 
-    pub unsafe fn extend_from(&mut self, other: &Self) {
+    pub fn extend_from(&mut self, mut other: Self) {
         if other.is_empty() {
             return;
         }
@@ -213,6 +205,8 @@ where
         SSlice::_write_bytes(self.ptr, self.len() * T::SIZE, &buf);
 
         self.len += other.len();
+
+        unsafe { other.stable_drop_collection() };
     }
 
     pub fn binary_search_by<FN>(&self, mut f: FN) -> Result<usize, usize>
@@ -266,10 +260,18 @@ where
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
-}
 
-impl<T> StableAllocated for SVec<T> {
-    // TODO: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    pub unsafe fn stable_drop_collection(&mut self) {
+        if self.ptr != EMPTY_PTR {
+            println!("{}", self.ptr);
+
+            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+
+            deallocate(slice);
+
+            self.ptr = EMPTY_PTR;
+        }
+    }
 }
 
 impl<T> Default for SVec<T> {
@@ -278,24 +280,24 @@ impl<T> Default for SVec<T> {
     }
 }
 
-impl<T: AsBytes> From<SVec<T>> for Vec<T>
+impl<T: StableAllocated> From<SVec<T>> for Vec<T>
 where
     [u8; T::SIZE]: Sized,
 {
     fn from(mut svec: SVec<T>) -> Self {
         let mut vec = Self::new();
 
-        for i in 0..svec.len() {
-            vec.push(svec.remove(i));
+        for elem in svec.iter() {
+            vec.push(elem);
         }
 
-        unsafe { svec.drop() };
+        unsafe { svec.stable_drop_collection() };
 
         vec
     }
 }
 
-impl<T: AsBytes> From<Vec<T>> for SVec<T>
+impl<T: StableAllocated> From<Vec<T>> for SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -310,7 +312,7 @@ where
     }
 }
 
-impl<T: AsBytes + Debug> Debug for SVec<T>
+impl<T: StableAllocated + Debug> Debug for SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -359,7 +361,7 @@ impl<T> SuperSized for SVec<T> {
     const SIZE: usize = u64::SIZE + usize::SIZE + usize::SIZE;
 }
 
-impl<T: AsBytes> AsBytes for SVec<T> {
+impl<T: StableAllocated> AsBytes for SVec<T> {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (ptr_buf, rest_buf) = buf.split_at_mut(u64::SIZE);
@@ -393,10 +395,29 @@ impl<T: AsBytes> AsBytes for SVec<T> {
     }
 }
 
+impl<T: StableAllocated> StableAllocated for SVec<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    fn remove_from_stable(&mut self) {}
+
+    unsafe fn stable_drop(mut self) {
+        for elem in self.iter() {
+            elem.stable_drop();
+        }
+
+        self.stable_drop_collection();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::vec::SVec;
     use crate::init_allocator;
+    use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
     use copy_as_bytes::traits::{AsBytes, SuperSized};
     use speedy::{Readable, Writable};
@@ -438,6 +459,14 @@ mod tests {
         }
     }
 
+    impl StableAllocated for Test {
+        fn move_to_stable(&mut self) {}
+
+        fn remove_from_stable(&mut self) {}
+
+        unsafe fn stable_drop(self) {}
+    }
+
     #[test]
     fn create_destroy_work_fine() {
         stable::clear();
@@ -445,14 +474,14 @@ mod tests {
         init_allocator(0);
 
         let mut stable_vec = SVec::new();
-        assert_eq!(stable_vec.capacity(), 4);
+        assert_eq!(stable_vec.capacity(), 0);
         assert_eq!(stable_vec.len(), 0);
 
         stable_vec.push(10);
         assert_eq!(stable_vec.capacity(), 4);
         assert_eq!(stable_vec.len(), 1);
 
-        unsafe { stable_vec.drop() };
+        unsafe { stable_vec.stable_drop() };
     }
 
     #[test]
@@ -495,7 +524,7 @@ mod tests {
             stable_vec.push(it);
         }
 
-        unsafe { stable_vec.drop() };
+        unsafe { stable_vec.stable_drop() };
     }
 
     #[test]
@@ -514,7 +543,7 @@ mod tests {
         assert_eq!(v.get_copy(1).unwrap(), 20);
         assert_eq!(v.replace(0, 11), 10);
 
-        unsafe { v.drop() };
+        unsafe { v.stable_drop() };
     }
 
     #[test]

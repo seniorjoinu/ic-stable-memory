@@ -74,25 +74,28 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> AsBytes for SBo
 }
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated for SBox<T> {
-    fn stable_persist(&mut self) {
-        assert!(self.slice.is_none());
+    fn move_to_stable(&mut self) {
+        if self.slice.is_none() {
+            let buf = self.inner.write_to_vec().unwrap();
+            let slice = allocate(buf.len());
 
-        let buf = self.inner.write_to_vec().unwrap();
-        let slice = allocate(buf.len());
+            slice.write_bytes(0, &buf);
 
-        slice.write_bytes(0, &buf);
-
-        self.slice = Some(slice);
+            self.slice = Some(slice);
+        }
     }
 
-    unsafe fn stable_drop(&mut self) {
+    fn remove_from_stable(&mut self) {
         if let Some(slice) = self.slice {
             deallocate(slice);
 
             self.slice = None;
-        } else {
-            unreachable!()
         }
+    }
+
+    #[inline]
+    unsafe fn stable_drop(mut self) {
+        self.remove_from_stable();
     }
 }
 

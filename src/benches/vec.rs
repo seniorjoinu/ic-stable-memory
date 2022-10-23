@@ -40,7 +40,7 @@ mod vec_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            /*            let mut stable_vec = SVec::new();
+            let mut stable_vec = SVec::new();
 
             measure!("Stable vec push", ITERATIONS, {
                 for _ in 0..ITERATIONS {
@@ -56,9 +56,9 @@ mod vec_benchmark {
 
             measure!("Stable vec pop", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    unsafe { stable_vec.pop().unwrap().drop() };
+                    stable_vec.pop().unwrap();
                 }
-            });*/
+            });
         }
     }
 

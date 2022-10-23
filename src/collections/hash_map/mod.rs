@@ -1,13 +1,14 @@
+use crate::collections::hash_map::iter::SHashMapIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
+use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
-use copy_as_bytes::traits::AsBytes;
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
-use crate::collections::hash_map::iter::SHashMapIter;
 
 pub mod iter;
 
@@ -55,9 +56,10 @@ impl<K, V> SHashMap<K, V> {
         self.len == 0
     }
 
-    pub unsafe fn drop(self) {
+    pub unsafe fn stable_drop_collection(&mut self) {
         if let Some(slice) = self.table {
             deallocate(slice);
+            self.table = None;
         }
     }
 
@@ -78,12 +80,12 @@ impl<K, V> SHashMap<K, V> {
     }
 }
 
-impl<K: AsBytes + Hash + Eq, V: AsBytes> SHashMap<K, V>
+impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V>
 where
     [u8; K::SIZE]: Sized,
     [u8; V::SIZE]: Sized,
 {
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, mut key: K, mut value: V) -> Option<V> {
         self.maybe_reallocate();
 
         let mut prev = None;
@@ -102,8 +104,14 @@ where
             match Self::read_key_at(table, at, true) {
                 HashMapKey::Occupied(prev_key) => {
                     if prev_key.eq(&key) {
-                        prev = Some(Self::read_val_at(table, at));
+                        let mut prev_value = Self::read_val_at(table, at);
+                        prev_value.remove_from_stable();
+
+                        prev = Some(prev_value);
+
+                        value.move_to_stable();
                         Self::write_val_at(table, at, value);
+
                         break;
                     } else {
                         continue;
@@ -117,6 +125,9 @@ where
                 }
                 HashMapKey::Empty => {
                     let at = if let Some(a) = remembered_at { a } else { at };
+
+                    key.move_to_stable();
+                    value.move_to_stable();
 
                     Self::write_key_at(table, at, HashMapKey::Occupied(key));
                     Self::write_val_at(table, at, value);
@@ -146,9 +157,14 @@ where
             i += 1;
 
             match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(prev_key) => {
+                HashMapKey::Occupied(mut prev_key) => {
                     if prev_key.eq(key) {
-                        prev = Some(Self::read_val_at(table, at));
+                        let mut prev_value = Self::read_val_at(table, at);
+
+                        prev_key.remove_from_stable();
+                        prev_value.remove_from_stable();
+
+                        prev = Some(prev_value);
                         Self::write_key_at(table, at, HashMapKey::Tombstone);
 
                         self.len -= 1;
@@ -245,7 +261,7 @@ where
     pub fn iter(&self) -> SHashMapIter<K, V> {
         SHashMapIter::new(self)
     }
-    
+
     fn read_key_at(slice: &SSlice, idx: usize, read_value: bool) -> HashMapKey<K> {
         let mut key_flag = [0u8];
         let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>());
@@ -429,10 +445,78 @@ impl<K> HashMapKey<K> {
     }
 }
 
+impl<K, V> SuperSized for SHashMap<K, V> {
+    const SIZE: usize = usize::SIZE * 2 + u64::SIZE;
+}
+
+impl<K, V> AsBytes for SHashMap<K, V> {
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        buf[..usize::SIZE].copy_from_slice(&self.len.to_bytes());
+        buf[usize::SIZE..(usize::SIZE * 2)].copy_from_slice(&self.capacity.to_bytes());
+        buf[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)].copy_from_slice(
+            &self
+                .table
+                .map(|it| it.get_ptr())
+                .unwrap_or(EMPTY_PTR)
+                .to_bytes(),
+        );
+
+        buf
+    }
+
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let mut len_buf = [0u8; usize::SIZE];
+        let mut cap_buf = [0u8; usize::SIZE];
+        let mut ptr_buf = [0u8; u64::SIZE];
+
+        len_buf.copy_from_slice(&arr[..usize::SIZE]);
+        cap_buf.copy_from_slice(&arr[usize::SIZE..(usize::SIZE * 2)]);
+        ptr_buf.copy_from_slice(&arr[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)]);
+
+        let table_ptr = u64::from_bytes(ptr_buf);
+        let table = if table_ptr == EMPTY_PTR {
+            None
+        } else {
+            Some(SSlice::from_ptr(table_ptr, Side::Start).unwrap())
+        };
+
+        Self {
+            len: usize::from_bytes(len_buf),
+            capacity: usize::from_bytes(cap_buf),
+            table,
+            _marker_k: SPhantomData::default(),
+            _marker_v: SPhantomData::default(),
+        }
+    }
+}
+
+impl<K: StableAllocated + Eq + Hash, V: StableAllocated> StableAllocated for SHashMap<K, V>
+where
+    [u8; K::SIZE]: Sized,
+    [u8; V::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    unsafe fn stable_drop(mut self) {
+        for (k, v) in self.iter() {
+            k.stable_drop();
+            v.stable_drop();
+        }
+
+        self.stable_drop_collection();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::init_allocator;
+    use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
 
     #[test]
@@ -490,7 +574,7 @@ mod tests {
         assert_eq!(map.get_copy(&k6).unwrap(), 6);
         assert_eq!(map.get_copy(&k8).unwrap(), 8);
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -516,7 +600,7 @@ mod tests {
         assert!(map.contains_key(&2));
         assert!(!map.contains_key(&5));
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
 
         let mut map = SHashMap::default();
         for i in 0..100 {
@@ -531,6 +615,6 @@ mod tests {
             assert_eq!(map.remove(&(99 - i)).unwrap(), 99 - i);
         }
 
-        unsafe { map.drop() };
+        unsafe { map.stable_drop() };
     }
 }

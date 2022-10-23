@@ -1,67 +1,69 @@
-use crate::collections::vec::SVec;
-use copy_as_bytes::traits::AsBytes;
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
+use crate::collections::vec::SVec;
+use crate::primitive::StableAllocated;
+use copy_as_bytes::traits::{AsBytes, SuperSized};
+use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use std::fmt::{Debug, Formatter};
 
 pub mod iter;
 
 pub struct SBinaryHeap<T> {
-    arr: SVec<T>,
+    inner: SVec<T>,
 }
 
 // Max heap
 impl<T> SBinaryHeap<T> {
     #[inline]
     pub fn new() -> Self {
-        Self { arr: SVec::new() }
+        Self { inner: SVec::new() }
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        self.arr.len()
+        self.inner.len()
     }
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.arr.is_empty()
+        self.inner.is_empty()
     }
 }
 
-// https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
+// TODO: apply https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
 
-impl<'a, T: AsBytes + Ord> SBinaryHeap<T>
+impl<'a, T: StableAllocated + Ord> SBinaryHeap<T>
 where
     [(); T::SIZE]: Sized,
 {
     #[inline]
     pub fn peek(&self) -> Option<T> {
-        self.arr.get_copy(0)
+        self.inner.get_copy(0)
     }
 
     #[inline]
-    pub unsafe fn drop(self) {
-        self.arr.drop();
+    pub unsafe fn stable_drop_collection(mut self) {
+        self.inner.stable_drop_collection();
     }
 
     pub fn push(&mut self, elem: T) {
-        self.arr.push(elem);
+        self.inner.push(elem);
         let len = self.len();
         if len == 1 {
             return;
         }
 
         let mut idx = len - 1;
-        let elem = self.arr.get_copy(idx).unwrap();
+        let elem = self.inner.get_copy(idx).unwrap();
 
         loop {
             let parent_idx = idx / 2;
-            let parent = self.arr.get_copy(parent_idx).unwrap();
+            let parent = self.inner.get_copy(parent_idx).unwrap();
 
             if elem > parent {
-                self.arr.swap(idx, parent_idx);
+                self.inner.swap(idx, parent_idx);
                 idx = parent_idx;
 
-                if idx > 0 {
+                if idx != 0 {
                     continue;
                 }
             }
@@ -74,18 +76,18 @@ where
         let len = self.len();
 
         if len <= 1 {
-            return self.arr.pop();
+            return self.inner.pop();
         }
 
-        self.arr.swap(0, len - 1);
-        let elem = self.arr.pop().unwrap();
+        self.inner.swap(0, len - 1);
+        let elem = self.inner.pop().unwrap();
 
         let last_idx = len - 2;
 
         let mut idx = 0;
 
         loop {
-            let parent = self.arr.get_copy(idx).unwrap();
+            let parent = self.inner.get_copy(idx).unwrap();
 
             let left_child_idx = (idx + 1) * 2 - 1;
             let right_child_idx = (idx + 1) * 2;
@@ -94,11 +96,11 @@ where
                 return Some(elem);
             }
 
-            let left_child = self.arr.get_copy(left_child_idx).unwrap();
+            let left_child = self.inner.get_copy(left_child_idx).unwrap();
 
             if right_child_idx > last_idx {
                 if parent < left_child {
-                    self.arr.swap(idx, left_child_idx);
+                    self.inner.swap(idx, left_child_idx);
                 }
 
                 // this is the last iteration, we can return here
@@ -106,17 +108,17 @@ where
                 return Some(elem);
             }
 
-            let right_child = self.arr.get_copy(right_child_idx).unwrap();
+            let right_child = self.inner.get_copy(right_child_idx).unwrap();
 
             if left_child >= right_child && left_child > parent {
-                self.arr.swap(idx, left_child_idx);
+                self.inner.swap(idx, left_child_idx);
                 idx = left_child_idx;
 
                 continue;
             }
 
             if right_child >= left_child && right_child > parent {
-                self.arr.swap(idx, right_child_idx);
+                self.inner.swap(idx, right_child_idx);
                 idx = right_child_idx;
 
                 continue;
@@ -125,9 +127,18 @@ where
             return Some(elem);
         }
     }
-    
+
     pub fn iter(&self) -> SBinaryHeapIter<T> {
-        SBinaryHeapIter
+        SBinaryHeapIter::new(self)
+    }
+}
+
+impl<T: StableAllocated + Debug> Debug for SBinaryHeap<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
     }
 }
 
@@ -141,9 +152,9 @@ impl<'a, T> Readable<'a, LittleEndian> for SBinaryHeap<T> {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let arr = SVec::read_from(reader)?;
+        let inner = SVec::read_from(reader)?;
 
-        Ok(Self { arr })
+        Ok(Self { inner })
     }
 }
 
@@ -152,13 +163,51 @@ impl<T> Writable<LittleEndian> for SBinaryHeap<T> {
         &self,
         writer: &mut W,
     ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        self.arr.write_to(writer)
+        self.inner.write_to(writer)
+    }
+}
+
+impl<T> SuperSized for SBinaryHeap<T> {
+    const SIZE: usize = SVec::<T>::SIZE;
+}
+
+impl<T: StableAllocated> AsBytes for SBinaryHeap<T> {
+    #[inline]
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        self.inner.to_bytes()
+    }
+
+    #[inline]
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let inner = SVec::<T>::from_bytes(arr);
+        Self { inner }
+    }
+}
+
+impl<T: StableAllocated> StableAllocated for SBinaryHeap<T>
+where
+    [u8; T::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {
+        self.inner.move_to_stable()
+    }
+
+    #[inline]
+    fn remove_from_stable(&mut self) {
+        self.inner.remove_from_stable()
+    }
+
+    #[inline]
+    unsafe fn stable_drop(self) {
+        self.inner.stable_drop();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
+    use crate::primitive::StableAllocated;
     use crate::{stable, stable_memory_init};
 
     #[test]
@@ -183,6 +232,8 @@ mod tests {
         max_heap.push(40);
         max_heap.push(30);
 
+        println!("{:?}", max_heap);
+
         assert_eq!(max_heap.peek().unwrap(), 100);
 
         let mut probe = vec![];
@@ -202,6 +253,6 @@ mod tests {
         // probe should be the same as example
         assert_eq!(probe, example, "Invalid elements order (max)");
 
-        unsafe { max_heap.drop() };
+        unsafe { max_heap.remove_from_stable() };
     }
 }

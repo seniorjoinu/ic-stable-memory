@@ -137,19 +137,19 @@ impl<'a, T: Readable<'a, LittleEndian>> AsBytes for SBoxMut<T> {
 }
 
 impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated for SBoxMut<T> {
-    fn stable_persist(&mut self) {
-        assert!(self.outer_slice.is_none());
+    fn move_to_stable(&mut self) {
+        if self.outer_slice.is_none() {
+            let buf = self.inner.write_to_vec().unwrap();
+            let inner_slice = allocate(buf.len());
 
-        let buf = self.inner.write_to_vec().unwrap();
-        let inner_slice = allocate(buf.len());
+            inner_slice.write_bytes(0, &buf);
 
-        inner_slice.write_bytes(0, &buf);
-
-        let outer_slice = allocate(size_of::<u64>());
-        outer_slice.write_word(0, inner_slice.get_ptr());
+            let outer_slice = allocate(size_of::<u64>());
+            outer_slice.write_word(0, inner_slice.get_ptr());
+        }
     }
 
-    unsafe fn stable_drop(&mut self) {
+    fn remove_from_stable(&mut self) {
         if let Some(outer_slice) = self.outer_slice {
             let inner_slice_ptr = outer_slice.read_word(0);
             let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
@@ -158,9 +158,12 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated
             deallocate(inner_slice);
 
             self.outer_slice = None;
-        } else {
-            unreachable!();
         }
+    }
+
+    #[inline]
+    unsafe fn stable_drop(mut self) {
+        self.remove_from_stable();
     }
 }
 

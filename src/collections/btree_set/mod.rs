@@ -1,5 +1,7 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
 use crate::collections::btree_set::iter::SBTreeSetIter;
+use crate::collections::vec::SVec;
+use crate::primitive::StableAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 
@@ -10,12 +12,6 @@ pub struct SBTreeSet<T> {
 }
 
 impl<T> SBTreeSet<T> {
-    pub fn new() -> Self {
-        Self {
-            map: SBTreeMap::new(),
-        }
-    }
-
     pub fn len(&self) -> u64 {
         self.map.len()
     }
@@ -25,12 +21,19 @@ impl<T> SBTreeSet<T> {
     }
 }
 
-impl<T: Ord + AsBytes> SBTreeSet<T>
+impl<T: Ord + StableAllocated> SBTreeSet<T>
 where
     [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
     [(); T::SIZE]: Sized,
-    BTreeNode<T, ()>: AsBytes,
+    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
+    BTreeNode<T, ()>: StableAllocated,
 {
+    pub fn new() -> Self {
+        Self {
+            map: SBTreeMap::new(),
+        }
+    }
+
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
     }
@@ -43,18 +46,78 @@ where
         self.map.contains_key(value)
     }
 
-    pub unsafe fn drop(self) {
-        self.map.drop()
-    }
-
     pub fn iter(&self) -> SBTreeSetIter<T> {
         SBTreeSetIter::new(self)
     }
 }
 
-impl<T> Default for SBTreeSet<T> {
+impl<T: Ord + StableAllocated> Default for SBTreeSet<T>
+where
+    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); T::SIZE]: Sized,
+    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
+    BTreeNode<T, ()>: StableAllocated,
+{
     fn default() -> Self {
         SBTreeSet::new()
+    }
+}
+
+impl<T> SuperSized for SBTreeSet<T> {
+    const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
+}
+
+impl<T: StableAllocated> AsBytes for SBTreeSet<T>
+where
+    [(); BTreeNode::<T, ()>::SIZE]: Sized,
+    [(); T::SIZE]: Sized,
+    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
+    BTreeNode<T, ()>: StableAllocated,
+    [(); Self::SIZE]: Sized,
+    [(); SBTreeMap::<T, ()>::SIZE]: Sized,
+{
+    #[inline]
+    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        let mut buf = [0u8; SBTreeMap::<T, ()>::SIZE];
+        buf.copy_from_slice(&arr);
+
+        let map = SBTreeMap::<T, ()>::from_bytes(buf);
+        Self { map }
+    }
+
+    #[inline]
+    fn to_bytes(self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+        let map_buf = self.map.to_bytes();
+
+        buf.copy_from_slice(&map_buf);
+
+        buf
+    }
+}
+
+impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T>
+where
+    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); T::SIZE]: Sized,
+    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
+    BTreeNode<T, ()>: StableAllocated,
+    [(); Self::SIZE]: Sized,
+    [(); SBTreeMap::<T, ()>::SIZE]: Sized,
+{
+    #[inline]
+    fn move_to_stable(&mut self) {
+        self.map.move_to_stable();
+    }
+
+    #[inline]
+    fn remove_from_stable(&mut self) {
+        self.map.remove_from_stable()
+    }
+
+    #[inline]
+    unsafe fn stable_drop(self) {
+        self.map.stable_drop();
     }
 }
 
@@ -80,8 +143,8 @@ impl<T> Writable<LittleEndian> for SBTreeSet<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
+    use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
-    use std::mem::size_of;
 
     #[test]
     fn it_works_fine() {
@@ -100,9 +163,9 @@ mod tests {
         assert!(set.remove(&10));
         assert!(!set.remove(&10));
 
-        unsafe { set.drop() };
+        unsafe { set.stable_drop() };
 
         let set = SBTreeSet::<u64>::new();
-        unsafe { set.drop() };
+        unsafe { set.stable_drop() };
     }
 }

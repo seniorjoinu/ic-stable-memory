@@ -26,8 +26,8 @@ type StableVec = SVec<u64>;
 type StableBinaryHeap = SBinaryHeap<u64>;
 type StableHashMap = SHashMap<u64, u64>;
 type StableHashSet = SHashSet<u64>;
-type StableBTreeMap = SBTreeMap<u64, u64, u64, u64>;
-type StableBTreeSet = SBTreeSet<u64, u64>;
+type StableBTreeMap = SBTreeMap<u64, u64>;
+type StableBTreeSet = SBTreeSet<u64>;
 
 static mut HASHER: Option<DefaultHasher> = None;
 

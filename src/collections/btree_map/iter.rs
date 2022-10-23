@@ -1,4 +1,5 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+use crate::primitive::StableAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 pub struct SBTreeMapIter<'a, K, V> {
@@ -7,17 +8,17 @@ pub struct SBTreeMapIter<'a, K, V> {
 }
 
 impl<'a, K, V> SBTreeMapIter<'a, K, V> {
-    pub fn new(map: &SBTreeMap<K, V>) -> Self {
+    pub fn new(map: &'a SBTreeMap<K, V>) -> Self {
         Self { map, stack: None }
     }
 }
 
-impl<'a, K: AsBytes, V: AsBytes> SBTreeMapIter<'a, K, V>
+impl<'a, K: StableAllocated, V: StableAllocated> SBTreeMapIter<'a, K, V>
 where
     [(); BTreeNode::<K, V>::SIZE]: Sized,
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
-    BTreeNode<K, V>: AsBytes,
+    BTreeNode<K, V>: StableAllocated,
 {
     fn find_smallest_child(
         node: BTreeNode<K, V>,
@@ -26,18 +27,18 @@ where
             return Ok(node);
         }
 
-        Err((node, unsafe {
-            node.children.get_copy(0).unwrap_unchecked()
-        }))
+        let child = node.children.get_copy(0);
+
+        Err((node, unsafe { child.unwrap_unchecked() }))
     }
 }
 
-impl<'a, K: AsBytes, V: AsBytes> Iterator for SBTreeMapIter<'a, K, V>
+impl<'a, K: StableAllocated, V: StableAllocated> Iterator for SBTreeMapIter<'a, K, V>
 where
-    [(); BTreeNode::<K, V>::SIZE]: Sized, // ???? why only putting K is enough
+    [(); BTreeNode::<K, V>::SIZE]: Sized,
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
-    BTreeNode<K, V>: AsBytes,
+    BTreeNode<K, V>: StableAllocated,
 {
     type Item = (K, V);
 

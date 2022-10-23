@@ -1,6 +1,7 @@
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::BTreeNode;
 use crate::collections::btree_set::SBTreeSet;
+use crate::primitive::StableAllocated;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 pub struct SBTreeSetIter<'a, T> {
@@ -15,11 +16,11 @@ impl<'a, T> SBTreeSetIter<'a, T> {
     }
 }
 
-impl<'a, T: AsBytes> Iterator for SBTreeSetIter<'a, T>
+impl<'a, T: StableAllocated> Iterator for SBTreeSetIter<'a, T>
 where
     [(); BTreeNode::<T, ()>::SIZE]: Sized,
     [(); T::SIZE]: Sized,
-    BTreeNode<T, ()>: AsBytes,
+    BTreeNode<T, ()>: StableAllocated,
 {
     type Item = T;
 

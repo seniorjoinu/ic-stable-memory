@@ -4,19 +4,23 @@ pub mod s_box;
 pub mod s_box_mut;
 
 pub trait StableAllocated: AsBytes {
-    fn stable_persist(&mut self);
+    fn move_to_stable(&mut self);
+    fn remove_from_stable(&mut self);
 
-    unsafe fn stable_drop(&mut self);
+    unsafe fn stable_drop(self);
 }
 
 macro_rules! impl_for_primitive {
     ($ty:ty) => {
         impl StableAllocated for $ty {
             #[inline]
-            fn stable_persist(&mut self) {}
+            fn move_to_stable(&mut self) {}
 
             #[inline]
-            unsafe fn stable_drop(&mut self) {}
+            fn remove_from_stable(&mut self) {}
+
+            #[inline]
+            unsafe fn stable_drop(self) {}
         }
     };
 }
