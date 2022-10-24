@@ -246,6 +246,7 @@ Performance difference in real canister should be less significant because of re
 ```
 
 ### BTree set
+```
 "Classic btree set insert" 100000 iterations: 312 ms
 "Stable btree set insert" 100000 iterations: 1771 ms (x5.6 slower)
 
