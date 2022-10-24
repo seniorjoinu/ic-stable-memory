@@ -28,6 +28,7 @@ pub(crate) trait MemContext {
 #[derive(Clone)]
 pub(crate) struct StableMemContext;
 
+#[cfg(target_family = "wasm")]
 impl MemContext for StableMemContext {
     #[inline]
     fn size_pages(&self) -> u64 {

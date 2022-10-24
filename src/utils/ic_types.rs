@@ -1,11 +1,11 @@
+use crate::primitive::StableAllocated;
 use candid::types::{Serializer, Type};
 use candid::{CandidType, Deserialize, Int, Nat, Principal};
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 use num_bigint::{BigInt, BigUint, Sign};
 use serde::Deserializer;
 use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::fmt::{Display, Formatter};
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use crate::primitive::StableAllocated;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SPrincipal(pub Principal);
@@ -61,20 +61,26 @@ impl Display for SPrincipal {
 }
 
 impl SuperSized for SPrincipal {
-    const SIZE: usize = 29;
+    const SIZE: usize = 30;
 }
 
 impl AsBytes for SPrincipal {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let slice = self.0.as_slice();
-        buf[..slice.len()].copy_from_slice(slice);
-        
+
+        buf[0] = slice.len() as u8;
+        buf[1..(1 + slice.len())].copy_from_slice(slice);
+
         buf
     }
 
     fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
-        SPrincipal(Principal::from_slice(&arr))
+        let len = arr[0] as usize;
+        let mut buf = vec![0u8; len];
+        buf.copy_from_slice(&arr[1..(1 + len)]);
+
+        SPrincipal(Principal::from_slice(&buf))
     }
 }
 
@@ -149,14 +155,15 @@ impl SuperSized for SNat {
 impl AsBytes for SNat {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
-        buf.copy_from_slice(&self.0.0.to_bytes_le());
-        
+        let vec = self.0 .0.to_bytes_le();
+        buf[..vec.len()].copy_from_slice(&vec);
+
         buf
     }
 
     fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
         let it = BigUint::from_bytes_le(&arr);
-        
+
         SNat(Nat(it))
     }
 }
@@ -247,15 +254,15 @@ impl SuperSized for SInt {
 impl AsBytes for SInt {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
-        let (sign, bytes) = self.0.0.to_bytes_le();
-        
+        let (sign, bytes) = self.0 .0.to_bytes_le();
+
         buf[0] = match sign {
             Sign::Plus => 0u8,
             Sign::Minus => 1u8,
             Sign::NoSign => 2u8,
         };
-        
-        buf[1..].copy_from_slice(&bytes);
+
+        buf[1..(1 + bytes.len())].copy_from_slice(&bytes);
 
         buf
     }
@@ -267,7 +274,7 @@ impl AsBytes for SInt {
             2 => Sign::NoSign,
             _ => unreachable!(),
         };
-        
+
         let it = BigInt::from_bytes_le(sign, &arr[1..]);
 
         SInt(Int(it))
@@ -287,8 +294,10 @@ impl StableAllocated for SInt {
 
 #[cfg(test)]
 mod tests {
+    use crate::primitive::StableAllocated;
     use crate::utils::ic_types::{SInt, SNat, SPrincipal};
     use candid::{decode_one, encode_one, Int, Nat, Principal};
+    use copy_as_bytes::traits::AsBytes;
     use speedy::{Readable, Writable};
 
     #[test]
@@ -304,6 +313,15 @@ mod tests {
         let p2 = decode_one::<SPrincipal>(&p_c).unwrap();
 
         assert_eq!(p, p2);
+
+        let buf = p1.to_bytes();
+        let mut p2 = SPrincipal::from_bytes(buf);
+
+        assert_eq!(p, p2);
+
+        p2.move_to_stable();
+        p2.remove_from_stable();
+        unsafe { p2.stable_drop() };
 
         println!("{}", p);
     }
@@ -322,6 +340,15 @@ mod tests {
 
         assert_eq!(n, n2);
 
+        let buf = n1.to_bytes();
+        let mut n2 = SNat::from_bytes(buf);
+
+        assert_eq!(n, n2);
+
+        n2.move_to_stable();
+        n2.remove_from_stable();
+        unsafe { n2.stable_drop() };
+
         println!("{}", n);
     }
 
@@ -338,6 +365,15 @@ mod tests {
         let n2 = decode_one::<SInt>(&n_c).unwrap();
 
         assert_eq!(n, n2);
+
+        let buf = n1.to_bytes();
+        let mut n2 = SInt::from_bytes(buf);
+
+        assert_eq!(n, n2);
+
+        n2.move_to_stable();
+        n2.remove_from_stable();
+        unsafe { n2.stable_drop() };
 
         println!("{}", n);
     }

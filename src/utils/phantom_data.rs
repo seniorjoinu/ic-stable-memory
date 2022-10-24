@@ -35,3 +35,16 @@ impl<T, C: Context> Writable<C> for SPhantomData<T> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use speedy::{Writable, Readable};
+    use crate::utils::phantom_data::SPhantomData;
+
+    #[test]
+    fn ser_works_fine() {
+        let d = SPhantomData::<i32>::default();
+        let vec = d.write_to_vec().unwrap();
+        let d1 = SPhantomData::<i32>::read_from_buffer_copying_data(&vec).unwrap();
+    }
+}

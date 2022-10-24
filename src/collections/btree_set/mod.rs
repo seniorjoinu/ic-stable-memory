@@ -200,4 +200,16 @@ mod tests {
             assert_eq!(idx as u32, i);
         }
     }
+
+    #[test]
+    fn helpers_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut set = SBTreeSet::<u32>::default();
+        set.move_to_stable();
+        set.remove_from_stable();
+        unsafe { set.stable_drop() };
+    }
 }

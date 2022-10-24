@@ -6,7 +6,6 @@ use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
-use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 
 pub struct SBoxMut<T> {
@@ -144,8 +143,10 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated
 
             inner_slice.write_bytes(0, &buf);
 
-            let outer_slice = allocate(size_of::<u64>());
+            let outer_slice = allocate(u64::SIZE);
             outer_slice.write_word(0, inner_slice.get_ptr());
+
+            self.outer_slice = Some(outer_slice);
         }
     }
 
@@ -190,7 +191,7 @@ impl<'a, T: PartialEq + Readable<'a, LittleEndian> + Writable<LittleEndian>> Par
     for SBoxMut<T>
 {
     fn eq(&self, other: &Self) -> bool {
-        self.get_cloned().eq(&other.get_cloned())
+        self.inner.eq(&other.inner)
     }
 }
 
@@ -198,7 +199,7 @@ impl<'a, T: PartialOrd + Readable<'a, LittleEndian> + Writable<LittleEndian>> Pa
     for SBoxMut<T>
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.get_cloned().partial_cmp(&other.get_cloned())
+        self.inner.partial_cmp(&other.inner)
     }
 }
 
@@ -211,7 +212,7 @@ impl<'a, T: Ord + PartialOrd + Readable<'a, LittleEndian> + Writable<LittleEndia
     for SBoxMut<T>
 {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.get_cloned().cmp(&other.get_cloned())
+        self.inner.cmp(&other.inner)
     }
 }
 
@@ -223,7 +224,7 @@ impl<'a, T: Default + Readable<'a, LittleEndian> + Writable<LittleEndian>> Defau
 
 impl<'a, T: Hash + Readable<'a, LittleEndian> + Writable<LittleEndian>> Hash for SBoxMut<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.get_cloned().hash(state);
+        self.inner.hash(state);
     }
 }
 
@@ -231,8 +232,68 @@ impl<'a, T: Debug + Readable<'a, LittleEndian> + Writable<LittleEndian>> Debug f
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("SBoxMut(")?;
 
-        self.get_cloned().fmt(f)?;
+        self.inner.fmt(f)?;
 
         f.write_str(")")
+    }
+}
+
+impl<T> Deref for SBoxMut<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::primitive::s_box_mut::SBoxMut;
+    use crate::primitive::StableAllocated;
+    use crate::{init_allocator, stable};
+    use speedy::{Readable, Writable};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn sboxes_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let sbox1 = SBoxMut::new(10);
+        let sbox11 = SBoxMut::new(10);
+        let sbox2 = SBoxMut::new(20);
+
+        assert_eq!(sbox1.get(), &10);
+        assert_eq!(*sbox1, 10);
+
+        assert!(sbox1 < sbox2);
+        assert!(sbox2 > sbox1);
+        assert_eq!(sbox1, sbox11);
+
+        println!("{:?}", sbox1);
+
+        let mut sbox = SBoxMut::<i32>::default();
+        assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
+
+        sbox.move_to_stable();
+
+        *sbox.get_mut() = 100;
+        assert_eq!(*sbox, 100);
+        assert_eq!(*sbox.get_mut(), 100);
+        assert_eq!(sbox.get_cloned(), 100);
+
+        sbox.remove_from_stable();
+
+        let mut sbox = SBoxMut::<Vec<u8>>::default();
+        sbox.move_to_stable();
+        (*sbox.get_mut()).extend(vec![0u8; 100]);
+        assert_eq!(sbox.get_cloned(), vec![0u8; 100]);
+
+        let buf = sbox.write_to_vec().unwrap();
+        let mut sbox = SBoxMut::<Vec<u8>>::read_from_buffer_copying_data(&buf).unwrap();
+        assert_eq!(sbox.get_cloned(), vec![0u8; 100]);
+
+        sbox.remove_from_stable();
     }
 }

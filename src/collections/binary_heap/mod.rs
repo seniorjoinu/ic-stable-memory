@@ -269,14 +269,14 @@ mod tests {
         for i in 0..100 {
             heap.push(i);
         }
-        
+
         let mut c = 0;
         for i in heap.iter() {
             c += 1;
-            
+
             assert!(i < 100);
         }
-        
+
         assert_eq!(c, 100);
     }
 
@@ -304,5 +304,17 @@ mod tests {
         assert_eq!(ptr, heap1.inner.ptr);
         assert_eq!(len, heap1.inner.len);
         assert_eq!(cap, heap1.inner.cap);
+    }
+
+    #[test]
+    fn helpers_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut heap = SBinaryHeap::<u32>::default();
+        heap.move_to_stable(); // does nothing
+        heap.remove_from_stable(); // does nothing
+        unsafe { heap.stable_drop_collection() };
     }
 }

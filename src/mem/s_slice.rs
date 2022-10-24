@@ -157,9 +157,9 @@ impl SSlice {
     }
 }
 
-/// Only run these tests with `-- --test-threads=1`. It fails otherwise.
 #[cfg(test)]
 mod tests {
+    use crate::mem::s_slice::Side;
     use crate::utils::mem_context::stable;
     use crate::SSlice;
 
@@ -169,6 +169,7 @@ mod tests {
         stable::grow(10).expect("Unable to grow");
 
         let m1 = SSlice::new(0, 100, true);
+        let m1 = SSlice::from_ptr(m1.get_total_size_bytes() as u64, Side::End).unwrap();
 
         let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let b = vec![1u8, 3, 3, 7];

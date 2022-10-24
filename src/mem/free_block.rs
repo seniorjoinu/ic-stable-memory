@@ -10,7 +10,7 @@ pub(crate) struct FreeBlock {
 
 impl FreeBlock {
     pub fn new(ptr: u64, size: usize, transient: bool) -> Self {
-        assert!(size >= BLOCK_MIN_TOTAL_SIZE - 2 * BLOCK_META_SIZE);
+        assert!(size >= PTR_SIZE * 2);
 
         Self {
             ptr,
@@ -27,11 +27,7 @@ impl FreeBlock {
         SSlice::new(self.ptr, self.size, true)
     }
 
-    pub fn from_ptr(
-        ptr: u64,
-        side: Side,
-        size_1_opt: Option<usize>,
-    ) -> Option<Self> {
+    pub fn from_ptr(ptr: u64, side: Side, size_1_opt: Option<usize>) -> Option<Self> {
         match side {
             Side::Start => {
                 let size_1 = if let Some(s) = size_1_opt {
@@ -39,7 +35,7 @@ impl FreeBlock {
                 } else {
                     Self::read_size(ptr)?
                 };
-                
+
                 Some(Self::new(ptr, size_1, false))
             }
             Side::End => {
@@ -48,16 +44,15 @@ impl FreeBlock {
                 } else {
                     Self::read_size(ptr - BLOCK_META_SIZE as u64)?
                 };
-                
-                Some(Self::new(
-                    ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
-                    size_1,
-                    false,
-                ))
+
+                let it_ptr = ptr - (BLOCK_META_SIZE * 2 + size_1) as u64;
+                let it = Self::new(it_ptr, size_1, false);
+
+                Some(it)
             }
         }
     }
-    
+
     pub(crate) fn validate(&self) -> Option<()> {
         let size_2 = Self::read_size(self.ptr + (BLOCK_META_SIZE + self.size) as u64)?;
 
@@ -140,30 +135,6 @@ impl FreeBlock {
         self.size + BLOCK_META_SIZE * 2
     }
 
-    pub fn _write_bytes(&self, offset: usize, data: &[u8]) {
-        assert!(offset + data.len() <= self.size);
-
-        stable::write(self.ptr + (BLOCK_META_SIZE + offset) as u64, data);
-    }
-
-    pub fn _write_word(&self, offset: usize, word: u64) {
-        let num = word.to_le_bytes();
-        self._write_bytes(offset, &num);
-    }
-
-    pub fn _read_bytes(&self, offset: usize, data: &mut [u8]) {
-        assert!(data.len() + offset <= self.size);
-
-        stable::read(self.ptr + (BLOCK_META_SIZE + offset) as u64, data);
-    }
-
-    pub fn _read_word(&self, offset: usize) -> u64 {
-        let mut buf = [0u8; PTR_SIZE];
-        self._read_bytes(offset, &mut buf);
-
-        u64::from_le_bytes(buf)
-    }
-
     fn read_size(ptr: u64) -> Option<usize> {
         let mut meta = [0u8; PTR_SIZE];
         stable::read(ptr, &mut meta);
@@ -192,5 +163,23 @@ impl FreeBlock {
 
         stable::write(ptr, &meta);
         stable::write(ptr + (PTR_SIZE + size) as u64, &meta);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::mem::free_block::FreeBlock;
+    use crate::mem::free_block::Side;
+    use crate::utils::mem_context::stable;
+
+    #[test]
+    fn read_write_work_fine() {
+        stable::clear();
+        stable::grow(1).expect("Unable to grow");
+
+        let mut m1 = FreeBlock::new(0, 100, true);
+        m1.persist();
+
+        let m1 = FreeBlock::from_ptr(m1.get_total_size_bytes() as u64, Side::End, None).unwrap();
     }
 }

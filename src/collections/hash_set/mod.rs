@@ -125,7 +125,6 @@ mod tests {
     use crate::{init_allocator, stable};
     use copy_as_bytes::traits::AsBytes;
     use speedy::{Readable, Writable};
-    use std::mem::size_of;
 
     #[test]
     fn basic_flow_works_fine() {
@@ -198,5 +197,19 @@ mod tests {
         assert_eq!(len, set1.map.len);
         assert_eq!(cap, set1.map.capacity);
         assert!(set1.map.table.is_none());
+    }
+
+    #[test]
+    fn helpers_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut set = SHashSet::<u32>::default();
+
+        set.move_to_stable();
+        set.remove_from_stable();
+
+        unsafe { set.stable_drop_collection() };
     }
 }

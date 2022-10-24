@@ -8,7 +8,6 @@ use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::mem::size_of;
 
 pub mod iter;
 
@@ -264,7 +263,7 @@ where
 
     fn read_key_at(slice: &SSlice, idx: usize, read_value: bool) -> HashMapKey<K> {
         let mut key_flag = [0u8];
-        let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>());
+        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE);
 
         slice.read_bytes(at, &mut key_flag);
 
@@ -286,7 +285,7 @@ where
     }
 
     fn read_val_at(slice: &SSlice, idx: usize) -> V {
-        let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>()) + 1 + size_of::<K>();
+        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE) + 1 + K::SIZE;
 
         let mut val_at_idx = V::super_size_u8_arr();
         slice.read_bytes(at, &mut val_at_idx);
@@ -295,7 +294,7 @@ where
     }
 
     fn write_key_at(slice: &SSlice, idx: usize, key: HashMapKey<K>) {
-        let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>());
+        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE);
 
         let key_flag = match key {
             HashMapKey::Empty => [EMPTY],
@@ -313,7 +312,7 @@ where
     }
 
     fn write_val_at(slice: &SSlice, idx: usize, val: V) {
-        let at = Self::to_offset_or_size(idx, size_of::<K>(), size_of::<V>()) + 1 + size_of::<K>();
+        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE) + 1 + K::SIZE;
         let val_bytes = val.to_bytes();
 
         slice.write_bytes(at, &val_bytes);
@@ -327,11 +326,7 @@ where
         if let Some(old_table) = self.table {
             let new_capacity = self.capacity * 2 + 1;
 
-            let new_table = allocate(Self::to_offset_or_size(
-                new_capacity,
-                size_of::<K>(),
-                size_of::<V>(),
-            ));
+            let new_table = allocate(Self::to_offset_or_size(new_capacity, K::SIZE, V::SIZE));
             new_table.write_bytes(0, &vec![0u8; new_table.get_size_bytes()]);
 
             for idx in 0..self.capacity {
@@ -348,7 +343,6 @@ where
 
                 loop {
                     let at = (key_hash + i * i) % new_capacity as usize;
-
                     i += 1;
 
                     match Self::read_key_at(&new_table, at, false) {
@@ -371,11 +365,7 @@ where
 
             deallocate(old_table);
         } else {
-            let slice = allocate(Self::to_offset_or_size(
-                self.capacity,
-                size_of::<K>(),
-                size_of::<V>(),
-            ));
+            let slice = allocate(Self::to_offset_or_size(self.capacity, K::SIZE, V::SIZE));
             slice.write_bytes(0, &vec![0u8; slice.get_size_bytes()]);
 
             self.table = Some(slice)
@@ -403,13 +393,15 @@ impl<'a, K, V> Readable<'a, LittleEndian> for SHashMap<K, V> {
             SSlice::from_ptr(ptr, Side::Start)
         };
 
-        Ok(Self {
+        let it = Self {
             len,
             capacity,
             table,
             _marker_k: SPhantomData::default(),
             _marker_v: SPhantomData::default(),
-        })
+        };
+
+        Ok(it)
     }
 }
 
@@ -454,13 +446,9 @@ impl<K, V> AsBytes for SHashMap<K, V> {
         let mut buf = [0u8; Self::SIZE];
         buf[..usize::SIZE].copy_from_slice(&self.len.to_bytes());
         buf[usize::SIZE..(usize::SIZE * 2)].copy_from_slice(&self.capacity.to_bytes());
-        buf[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)].copy_from_slice(
-            &self
-                .table
-                .map(|it| it.get_ptr())
-                .unwrap_or(EMPTY_PTR)
-                .to_bytes(),
-        );
+        
+        let table_buf = self.table.map(|it| it.get_ptr()).unwrap_or(EMPTY_PTR).to_bytes();
+        buf[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)].copy_from_slice(&table_buf);
 
         buf
     }
@@ -516,9 +504,13 @@ where
 mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::init_allocator;
+    use crate::primitive::s_box::SBox;
+    use crate::primitive::s_box_mut::SBoxMut;
     use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
     use copy_as_bytes::traits::AsBytes;
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
     use speedy::{Readable, Writable};
 
     #[test]
@@ -621,6 +613,43 @@ mod tests {
     }
 
     #[test]
+    fn removes_work() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new();
+
+        for i in 0..500 {
+            map.insert(499 - i, i);
+        }
+
+        let mut vec = (200..300).collect::<Vec<_>>();
+        vec.shuffle(&mut thread_rng());
+
+        for i in vec {
+            map.remove(&i);
+        }
+
+        for i in 500..5000 {
+            map.insert(i, i);
+        }
+
+        for i in 200..300 {
+            map.insert(i, i);
+        }
+
+        let mut vec = (0..5000).collect::<Vec<_>>();
+        vec.shuffle(&mut thread_rng());
+
+        for i in vec {
+            map.remove(&i);
+        }
+
+        unsafe { map.stable_drop() };
+    }
+
+    #[test]
     fn tombstones_work_fine() {
         stable::clear();
         stable::grow(1).unwrap();
@@ -696,5 +725,33 @@ mod tests {
         }
 
         assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn sboxes_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashMap::new();
+
+        for i in 0..100 {
+            map.insert(SBox::new(i), i);
+        }
+
+        unsafe { map.stable_drop() };
+
+        // TODO: this part doesn't work for some reason
+        // it seems like hashes calculate differently
+
+        /*
+        println!("sbox mut");
+        let mut map = SHashMap::new();
+
+        for i in 0..100 {
+            map.insert(SBoxMut::new(i), i);
+        }
+
+        unsafe { map.stable_drop() };*/
     }
 }

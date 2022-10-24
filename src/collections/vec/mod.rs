@@ -415,11 +415,12 @@ where
 mod tests {
     use crate::collections::vec::SVec;
     use crate::init_allocator;
+    use crate::primitive::s_box::SBox;
+    use crate::primitive::s_box_mut::SBoxMut;
     use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
     use copy_as_bytes::traits::{AsBytes, SuperSized};
     use speedy::{Readable, Writable};
-    use std::mem::size_of;
 
     #[derive(Copy, Clone, Debug, Readable, Writable)]
     struct Test {
@@ -428,7 +429,7 @@ mod tests {
     }
 
     impl SuperSized for Test {
-        const SIZE: usize = size_of::<usize>() + size_of::<bool>();
+        const SIZE: usize = usize::SIZE + bool::SIZE;
     }
 
     impl AsBytes for Test {
@@ -676,5 +677,28 @@ mod tests {
         }
 
         assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn sboxes_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut vec = SVec::new();
+
+        for i in 0..100 {
+            vec.push(SBox::new(10));
+        }
+
+        unsafe { vec.stable_drop() };
+
+        let mut vec = SVec::new();
+
+        for i in 0..100 {
+            vec.push(SBoxMut::new(10));
+        }
+
+        unsafe { vec.stable_drop() };
     }
 }

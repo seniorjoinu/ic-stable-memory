@@ -173,3 +173,28 @@ impl<T: Debug> Debug for SBox<T> {
         f.write_str(")")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::primitive::s_box::SBox;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn sboxes_work_fine() {
+        let sbox1 = SBox::new(10);
+        let sbox11 = SBox::new(10);
+        let sbox2 = SBox::new(20);
+
+        assert_eq!(sbox1.get(), &10);
+        assert_eq!(*sbox1, 10);
+
+        assert!(sbox1 < sbox2);
+        assert!(sbox2 > sbox1);
+        assert_eq!(sbox1, sbox11);
+
+        println!("{:?}", sbox1);
+
+        let sbox = SBox::<i32>::default();
+        assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
+    }
+}

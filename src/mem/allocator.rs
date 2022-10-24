@@ -12,8 +12,6 @@ pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
 pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
 pub(crate) const CUSTOM_DATA_PTRS_COUNT: usize = 4;
 
-pub(crate) type SegClassId = u32;
-
 #[derive(Debug)]
 pub(crate) struct StableMemoryAllocator {
     offset: u64,
@@ -381,10 +379,9 @@ impl StableMemoryAllocator {
                     FreeBlock::new_total_size(ptr, pages_to_grow as usize * PAGE_SIZE_BYTES);
 
                 if free_block.size >= size && free_block.size < size + BLOCK_MIN_TOTAL_SIZE {
-                    let total_allocated = self.get_allocated_size();
-                    self.set_allocated_size(
-                        total_allocated + free_block.get_total_size_bytes() as u64,
-                    );
+                    let new_size =
+                        self.get_allocated_size() + free_block.get_total_size_bytes() as u64;
+                    self.set_allocated_size(new_size);
 
                     return Ok(free_block);
                 }
@@ -464,20 +461,15 @@ impl StableMemoryAllocator {
             free_block.check_neighbor_is_also_free(Side::End, self.min_ptr, self.max_ptr);
 
         free_block = if let Some(prev_neighbor_free_size_1) = prev_neighbor_free_size_1_opt {
-            if let Some(prev_neighbor) = FreeBlock::from_ptr(
-                prev_neighbor_ptr,
-                Side::End,
-                Some(prev_neighbor_free_size_1),
-            ) {
+            let size = Some(prev_neighbor_free_size_1);
+
+            if let Some(prev_neighbor) = FreeBlock::from_ptr(prev_neighbor_ptr, Side::End, size) {
                 if prev_neighbor.validate().is_some() {
                     let seg_class_id = get_seg_class_id(prev_neighbor.size);
                     self.eject_from_freelist(seg_class_id, &prev_neighbor);
+                    let size = prev_neighbor.size + free_block.size + BLOCK_META_SIZE * 2;
 
-                    FreeBlock::new(
-                        prev_neighbor.ptr,
-                        prev_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
-                        true,
-                    )
+                    FreeBlock::new(prev_neighbor.ptr, size, true)
                 } else {
                     free_block
                 }
@@ -489,20 +481,15 @@ impl StableMemoryAllocator {
         };
 
         free_block = if let Some(next_neighbor_free_size_1) = next_neighbor_free_size_1_opt {
-            if let Some(next_neighbor) = FreeBlock::from_ptr(
-                next_neighbor_ptr,
-                Side::Start,
-                Some(next_neighbor_free_size_1),
-            ) {
+            let size = Some(next_neighbor_free_size_1);
+
+            if let Some(next_neighbor) = FreeBlock::from_ptr(next_neighbor_ptr, Side::Start, size) {
                 if next_neighbor.validate().is_some() {
                     let seg_class_id = get_seg_class_id(next_neighbor.size);
                     self.eject_from_freelist(seg_class_id, &next_neighbor);
 
-                    FreeBlock::new(
-                        free_block.ptr,
-                        next_neighbor.size + free_block.size + BLOCK_META_SIZE * 2,
-                        true,
-                    )
+                    let size = next_neighbor.size + free_block.size + BLOCK_META_SIZE * 2;
+                    FreeBlock::new(free_block.ptr, size, true)
                 } else {
                     free_block
                 }
@@ -590,7 +577,9 @@ mod tests {
     use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
     use crate::mem::Anyway;
     use crate::utils::mem_context::stable;
-    use crate::{isoprint, StableMemoryAllocator};
+    use crate::{deallocate, isoprint, StableMemoryAllocator};
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
 
     #[test]
     fn initialization_works_fine() {
@@ -681,49 +670,29 @@ mod tests {
             let mut allocator = StableMemoryAllocator::reinit(0);
 
             let slice1 = allocator.allocate(100);
-
-            allocator.store();
-
-            let mut allocator = StableMemoryAllocator::reinit(0);
-
-            /*  let it = catch_unwind(move || {
-                allocator.allocate(2usize.pow(16) + 1);
-            });
-            assert!(it.is_err());*/
-
-            let mut allocator = StableMemoryAllocator::reinit(0);
+            let slice1 = allocator.reallocate(slice1, 200).anyway();
 
             let slice2 = allocator.allocate(100);
             let slice3 = allocator.allocate(100);
 
-            allocator.deallocate(slice3);
+            allocator.deallocate(slice1);
+            let slice2 = allocator.reallocate(slice2, 200).anyway();
 
-            isoprint(format!("{:?}", &allocator).as_str());
-        }
-    }
+            allocator.store();
 
-    #[test]
-    fn random_deallocations_work_fine() {
-        unsafe {
-            stable::clear();
-            stable::grow(1).unwrap();
+            let allocator = StableMemoryAllocator::reinit(0);
 
-            let mut allocator = StableMemoryAllocator::init(0);
+            let mut allocator = StableMemoryAllocator::reinit(0);
 
-            let mut b = Vec::new();
-
-            for i in 1..151 {
-                b.push(Some(allocator.allocate(8 * i)));
+            let mut slices = Vec::new();
+            for _ in 0..5000 {
+                slices.push(allocator.allocate(100));
             }
 
-            for i in 0..75 {
-                let j = if i % 2 == 0 { i } else { 149 - i };
-                let it = b.remove(j).unwrap();
-                b.insert(j, None);
+            slices.shuffle(&mut thread_rng());
 
-                allocator.deallocate(it);
-
-                format!("{:?}", &allocator);
+            for slice in slices {
+                allocator.deallocate(slice);
             }
         }
     }

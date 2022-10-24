@@ -257,8 +257,6 @@ where
 
     fn delete_internal_node(node: &mut BTreeNode<K, V>, key: &K, idx: usize) -> Option<V> {
         let mut left_child = node.children.get_copy(idx).unwrap();
-        let mut right_child = node.children.get_copy(idx + 1).unwrap();
-
         if left_child.keys.len() >= B {
             let (k, v) = Self::delete_predecessor(&mut left_child);
             let mut k = node.keys.replace(idx, k);
@@ -269,8 +267,11 @@ where
 
             node.children.replace(idx, left_child);
 
-            Some(v)
-        } else if right_child.keys.len() >= B {
+            return Some(v);
+        }
+
+        let mut right_child = node.children.get_copy(idx + 1).unwrap();
+        if right_child.keys.len() >= B {
             let (k, v) = Self::delete_successor(&mut right_child);
             let mut k = node.keys.replace(idx, k);
             let mut v = node.values.replace(idx, v);
@@ -280,11 +281,11 @@ where
 
             node.children.replace(idx + 1, right_child);
 
-            Some(v)
-        } else {
-            Self::delete_merge(node, idx, idx + 1);
-            Self::_delete(node, key)
+            return Some(v);
         }
+
+        Self::delete_merge(node, idx, idx + 1);
+        Self::_delete(node, key)
     }
 
     fn delete_predecessor(child: &mut BTreeNode<K, V>) -> (K, V) {
@@ -707,6 +708,8 @@ mod tests {
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
     use copy_as_bytes::traits::AsBytes;
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
     use speedy::{Readable, Writable};
 
     #[test]
@@ -952,6 +955,32 @@ mod tests {
 
         for i in 0..150 {
             map.remove(&(150 - i));
+        }
+
+        unsafe { map.stable_drop() };
+
+        let mut map = SBTreeMap::new();
+
+        for i in 0..5000 {
+            map.insert(4999 - i, i);
+        }
+
+        let mut vec = (2000..3000).collect::<Vec<_>>();
+        vec.shuffle(&mut thread_rng());
+
+        for i in vec {
+            map.remove(&i);
+        }
+
+        for i in 2000..3000 {
+            map.insert(i, i);
+        }
+
+        let mut vec = (0..5000).collect::<Vec<_>>();
+        vec.shuffle(&mut thread_rng());
+
+        for i in vec {
+            map.remove(&i);
         }
 
         unsafe { map.stable_drop() };
