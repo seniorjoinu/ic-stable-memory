@@ -45,3 +45,19 @@ pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name:
         .get_cloned()
     }
 }
+
+pub fn remove_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
+    unsafe {
+        let cell = SUnsafeCell::from_ptr(
+            VARS.as_mut()
+                .expect("Stable vars are not initialized yet")
+                .remove(&String::from(name))
+                .expect("No such variable"),
+        );
+
+        let it = cell.get_cloned();
+        cell.drop();
+
+        it
+    }
+}

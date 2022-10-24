@@ -1,6 +1,6 @@
 [package]
 name = "ic-stable-memory"
-version = "0.2.4"
+version = "0.2.5"
 authors = ["Александр Втюрин <senior.joinu@gmail.com>"]
 edition = "2021"
 description = "Internet Computer's stable memory collections and tools"

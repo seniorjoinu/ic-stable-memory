@@ -7,3 +7,10 @@ macro_rules! s {
         ic_stable_memory::utils::vars::set_var::<$name>(stringify!($name), &$val)
     };
 }
+
+#[macro_export]
+macro_rules! s_remove {
+    ( $name:ident ) => {
+        ic_stable_memory::utils::vars::remove_var::<$name>(stringify!($name))
+    };
+}
