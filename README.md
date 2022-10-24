@@ -1,9 +1,6 @@
-THIS IS __NOT__ A BATTLE-TESTED SOFTWARE; USE AT YOUR OWN RISK
+THIS IS A EARLY SOFTWARE. DON'T USE IN PRODUCTION!
 
-![test coverage 95.72%](https://badgen.net/badge/coverage/95.72%25/green)
-
-
-`#![feature(generic_const_exprs)] and 1.66 nightly are now mandatory`
+![test coverage 94.60%](https://badgen.net/badge/coverage/94.60%25/green)
 
 
 # IC Stable Memory
@@ -21,11 +18,20 @@ With this Rust library you can:
 2. It is a early version software, so there may be bugs. This will improve in future. Please, report if you've encountered one.
 
 ## Installation
+`Use rust 1.66 nightly or newer`
+
 ```toml
 # cargo.toml
 
 [dependencies]
-ic-stable-memory = "0.2.3"
+ic-stable-memory = "0.4.0-rc1"
+```
+
+```rust
+// lib.rs
+
+#![feature(thread_local)]
+#![feature(generic_const_exprs)]
 ```
 
 ## Quick example
@@ -136,50 +142,6 @@ fn add_my_string(entry: String) {
 }
 ```
 
-## Horizontal scaling
-Using this library you can utilize the maximum of your canister's memory. Instead of 4GB of heap memory,
-you're now able to use up to 8GBs of stable memory, which is twice more available memory per a single canister.
-
-And this is good, when you know that your canister will store only some limited amount of data. But 
-what if your data set size is unknown and theoretically can be really big (like, terabytes)? There is 
-only one way to handle this situation - to scale horizontally.
-
-And ic-stable-memory helps with that a little bit. There is a special configuration parameter:
-```rust
-fn get_max_allocation_pages() -> u32;
-fn set_max_allocation_pages(pages: u32);
-```
-This parameter defines how much of free stable memory the library should always keep. By default it is set
-to `180 pages` (~10MB). This means that the library will always make sure, that your 
-canister have this amount of memory available no matter what. This is important, since on the IC all memory
-gets allocated to canisters on-demand.
-
-When the subnet won't be able to give your canister enough memory to fulfill this parameter (two reasons: 1. 
-subnet is out of memory at all; 2. your canister reached its memory limits), a special function of your canister
-will be invoked:
-
-```rust
-#[update]
-fn on_low_stable_memory() {
-    // do whatever you need to do, when your canister is out of memory
-}
-```
-
-This function is named `on_low_stable_memory()` and has to have no arguments or return values. Inside
-this function you can:
-* spawn a new canister to scale horizontally;
-* block your canister from accepting new requests;
-* send messages to some logging service;
-* etc.
-
-In other words, you can do whatever you want in order to keep your service operable even if the canister
-is out of stable memory.
-
-##### ! Important !
-
-This function will only be called __ONCE__! If you forgot to define it and ran out of memory - it won't work
-for you anymore, even if you add it to the canister later.
-
 ## Collections
 
 ### SVec
@@ -219,78 +181,79 @@ Performance difference in real canister should be less significant because of re
 
 ### Vec
 ```
-"Classic vec push" 1000000 iterations: 463 ms
-"Stable vec push" 1000000 iterations: 22606 ms (x49 slower)
+"Classic vec push" 1000000 iterations: 46 ms
+"Stable vec push" 1000000 iterations: 212 ms (x4.6 slower)
 
-"Classic vec pop" 1000000 iterations: 406 ms
-"Stable vec pop" 1000000 iterations: 11338 ms (x28 slower)
+"Classic vec search" 1000000 iterations: 102 ms
+"Stable vec search" 1000000 iterations: 151 ms (x1.4 slower)
 
-"Classic vec search" 1000000 iterations: 127 ms
-"Stable vec search" 1000000 iterations: 2926 ms (x23 slower)
+"Classic vec pop" 1000000 iterations: 48 ms
+"Stable vec pop" 1000000 iterations: 148 ms (x3 slower)
+
+"Classic vec insert" 100000 iterations: 1068 ms
+"Stable vec insert" 100000 iterations: 3779 ms (x3.5 slower)
+
+"Classic vec remove" 100000 iterations: 1183 ms
+"Stable vec remove" 100000 iterations: 3739 ms (x3.1 slower)
 ```
 
 ### Binary heap
 ```
-"Classic binary heap push" 1000000 iterations: 995 ms
-"Stable binary heap push" 1000000 iterations: 29578 ms (x29 slower)
+"Classic binary heap push" 1000000 iterations: 461 ms
+"Stable binary heap push" 1000000 iterations: 11668 ms (x25 slower)
 
-"Classic binary heap pop" 1000000 iterations: 4453 ms
-"Stable binary heap pop" 1000000 iterations: 27159 ms (x6 slower)
+"Classic binary heap peek" 1000000 iterations: 62 ms
+"Stable binary heap peek" 1000000 iterations: 144 ms (x2.3 slower)
 
-"Classic binary heap peek" 1000000 iterations: 133 ms
-"Stable binary heap peek" 1000000 iterations: 3314 ms (x25 slower)
+"Classic binary heap pop" 1000000 iterations: 715 ms
+"Stable binary heap pop" 1000000 iterations: 16524 ms (x23 slower)
 ```
 
 ### Hash map
 ```
-"Classic hash map insert" 100000 iterations: 224 ms
-"Stable hash map insert" 100000 iterations: 7199 ms (x32 slower)
+"Classic hash map insert" 100000 iterations: 96 ms
+"Stable hash map insert" 100000 iterations: 387 ms (x4 slower)
 
-"Classic hash map remove" 100000 iterations: 123 ms
-"Stable hash map remove" 100000 iterations: 3618 ms (x29 slower)
+"Classic hash map search" 100000 iterations: 47 ms
+"Stable hash map search" 100000 iterations: 113 ms (x2.4 slower)
 
-"Classic hash map search" 100000 iterations: 69 ms
-"Stable hash map search" 100000 iterations: 2325 ms (x34 slower)
+"Classic hash map remove" 100000 iterations: 60 ms
+"Stable hash map remove" 100000 iterations: 99 ms (x1.6 slower)
 ```
 
 ### Hash set
 ```
-"Classic hash set insert" 100000 iterations: 209 ms
-"Stable hash set insert" 100000 iterations: 5977 ms (x28 slower)
+"Classic hash set insert" 100000 iterations: 79 ms
+"Stable hash set insert" 100000 iterations: 394 ms (x4.9 slower)
 
-"Classic hash set remove" 100000 iterations: 180 ms
-"Stable hash set remove" 100000 iterations: 2724 ms (x15 slower)
+"Classic hash set search" 100000 iterations: 54 ms
+"Stable hash set search" 100000 iterations: 97 ms (x1.8 slower)
 
-"Classic hash set search" 100000 iterations: 125 ms
-"Stable hash set search" 100000 iterations: 2007 ms (x16 slower)
+"Classic hash set remove" 100000 iterations: 56 ms
+"Stable hash set remove" 100000 iterations: 99 ms (x1.7 slower)
 ```
 
 ### BTree map
-BTree-based collections are not optimized at all
-
 ```
-"Classic btree map insert" 10000 iterations: 31 ms
-"Stable btree map insert" 10000 iterations: 8981 ms (x298 slower)
+"Classic btree map insert" 100000 iterations: 267 ms
+"Stable btree map insert" 100000 iterations: 17050 ms (x63 slower)
 
-"Classic btree map remove" 10000 iterations: 17 ms
-"Stable btree map remove" 10000 iterations: 19831 ms (x1166 slower)
+"Classic btree map search" 100000 iterations: 138 ms
+"Stable btree map search" 100000 iterations: 566 ms (x4.1 slower)
 
-"Classic btree map search" 10000 iterations: 15 ms
-"Stable btree map search" 10000 iterations: 20710 ms (x1380 slower)
+"Classic btree map remove" 100000 iterations: 147 ms
+"Stable btree map remove" 100000 iterations: 1349 ms (x9.1 slower)
 ```
 
 ### BTree set
-BTree-based collections are not optimized at all
+"Classic btree set insert" 100000 iterations: 312 ms
+"Stable btree set insert" 100000 iterations: 1771 ms (x5.6 slower)
 
-```
-"Classic btree set insert" 10000 iterations: 26 ms
-"Stable btree set insert" 10000 iterations: 8920 ms (x343 slower)
+"Classic btree set search" 100000 iterations: 170 ms
+"Stable btree set search" 100000 iterations: 600 ms (x3.5 slower)
 
-"Classic btree set remove" 10000 iterations: 13 ms
-"Stable btree set remove" 10000 iterations: 19601 ms (x1507 slower)
-
-"Classic btree set search" 10000 iterations: 16 ms
-"Stable btree set search" 10000 iterations: 20569 ms (x1285 slower)
+"Classic btree set remove" 100000 iterations: 134 ms
+"Stable btree set remove" 100000 iterations: 1317 ms (x9.8 slower)
 ```
 
 ## Performance counter canister
@@ -299,81 +262,79 @@ It can measure the amount of computations being performed during various operati
 
 ### Vec
 ```
-› standard_vec_push(100000) -> (45807839)
-› stable_vec_push(100000) -> (1040131571) --- x22 more operations
+› _a1_standard_vec_push(1000000) -> (59104497)
+› _a2_stable_vec_push(1000000) -> (139668340) - x2.3 slower
 
-› standard_vec_get(100000) -> (43799772)
-› stable_vec_get(100000) -> (219771252) --- x5 more operations
+› _b1_standard_vec_get(1000000) -> (28000204)
+› _b2_stable_vec_get(1000000) -> (101000204) - x3.6 slower
 
-› standard_vec_pop(100000) -> (4000207)
-› stable_vec_pop(100000) -> (535598950) --- x133 more operations
+› _c1_standard_vec_pop(1000000) -> (16000202)
+› _c2_stable_vec_pop(1000000) -> (101000202) - x6.3 slower
 ```
 
 ### Binary heap
 ```
-› standard_binary_heap_push(100000) -> (57167475)
-› stable_binary_heap_push(100000) -> (1546389616) --- x27 more operations
+› _d1_standard_binary_heap_push(10000) -> (3950685)
+› _d2_stable_binary_heap_push(10000) -> (47509416) - x12 slower
 
-› standard_binary_heap_peek(100000) -> (1900207)
-› stable_binary_heap_peek(100000) -> (170915502) --- x89 more operations
+› _e1_standard_binary_heap_peek(10000) -> (180202)
+› _e2_stable_binary_heap_peek(10000) -> (990202) - x5.5 slower
 
-› standard_binary_heap_pop(100000) -> (71568548)
-› stable_binary_heap_pop(100000) -> ERROR: gas limit reached
+› _f1_standard_binary_heap_pop(10000) -> (5470367)
+› _f2_stable_binary_heap_pop(10000) -> (68703887) - x12 slower
 ```
 
 ### Hash map
 ```
-› standard_hash_map_insert(100000) -> (149435570)
-› stable_hash_map_insert(100000) -> (4469212068) --- x29 more operations
+› _g1_standard_hash_map_insert(100000) -> (118009382)
+› _g2_stable_hash_map_insert(100000) -> (296932746) - x2.5 slower
 
-› standard_hash_map_get(100000) -> (66979460)
-› stable_hash_map_get(100000) -> (2269847152) --- x33 more operations
+› _h1_standard_hash_map_get(100000) -> (46628530)
+› _h2_stable_hash_map_get(100000) -> (75102338) - x1.6 slower
 
-› standard_hash_map_remove(100000) -> (71598538)
-› stable_hash_map_remove(100000) -> (2747512630) --- x38 more operations
+› _i1_standard_hash_map_remove(100000) -> (55432310)
+› _i2_stable_hash_map_remove(100000) -> (82431271) - x1.4 slower
 ```
 
 ### Hash set
 ```
-› standard_hash_set_insert(100000) -> (147637898)
-› stable_hash_set_insert(100000) -> (3926004598) --- x26 more operations
+› _j1_standard_hash_set_insert(100000) -> (119107220)
+› _j2_stable_hash_set_insert(100000) -> (280255730) - x2.3 slower
 
-› standard_hash_set_contains(100000) -> (64871426)
-› stable_hash_set_contains(100000) -> (2268756428) --- x34 more operations
+› _k1_standard_hash_set_contains(100000) -> (51403728)
+› _k2_stable_hash_set_contains(100000) -> (67146485) - x1.3 slower
 
-› standard_hash_set_remove(100000) -> (71589898)
-› stable_hash_set_remove(100000) -> (2722430999) --- x38 more operations
+› _l1_standard_hash_set_remove(100000) -> (55424480)
+› _l2_stable_hash_set_remove(100000) -> (81031271) - x1.4 slower
 ```
 
 ### BTree map
 ```
-› standard_btree_map_insert(5000) -> (3786833)
-› stable_btree_map_insert(5000) -> (91545892) --- x24 more operations
+› _m1_standard_btree_map_insert(10000) -> (16868602)
+› _m2_stable_btree_map_insert(10000) -> (399357425) - x23 slower
 
-› standard_btree_map_get(5000) -> (3169044)
-› stable_btree_map_get(5000) -> (49909234) --- x15 more operations
+› _n1_standard_btree_map_get(10000) -> (7040037)
+› _n2_stable_btree_map_get(10000) -> (101096721) - x14 slower
 
-› standard_btree_map_remove(5000) -> (7500781)
-› stable_btree_map_remove(5000) -> (1578852022) --- x210 more operations
+› _o1_standard_btree_map_remove(10000) -> (15155643)
+› _o2_stable_btree_map_remove(10000) -> (333109461) - x21 slower
 ```
 
 ### BTree set
 ```
-› standard_btree_set_insert(5000) -> (7032817)
-› stable_btree_set_insert(5000) -> (85273404) --- x12 more operations
+› _p1_standard_btree_set_insert(10000) -> (15914762)
+› _p2_stable_btree_set_insert(10000) -> (495462730) - x31 slower
 
-› standard_btree_set_contains(5000) -> (3103785)
-› stable_btree_set_contains(5000) -> (40595322) --- x13 more operations
+› _q1_standard_btree_set_contains(10000) -> (6830037)
+› _q2_stable_btree_set_contains(10000) -> (99122577) - x14 slower
 
-› standard_btree_set_remove(5000) -> (5003229)
-› stable_btree_set_remove(5000) -> (1578369655) --- x315 more operations
+› _r1_standard_btree_set_remove(10000) -> (10650814)
+› _r2_stable_btree_set_remove(10000) -> (317533303) - x29 slower
 ```
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.
 Feel free to propose PR's, architecture tips, bug reports or any other feedback.
-
-You can reach me out via [Telegram](https://t.me/joinu14), if I don't answer here for too long.
 
 ## Test coverage check
 * `cargo install tarpaulin`

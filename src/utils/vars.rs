@@ -85,19 +85,42 @@ pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name:
     unsafe { SBox::<T>::from_ptr(ptr).get_cloned() }
 }
 
+pub fn remove_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
+    if let Some(vars) = &mut *VARS.borrow_mut() {
+        let bytes = name_to_arr(name);
+
+        let sbox_ptr = vars
+            .remove(&bytes)
+            .unwrap_or_else(|| trap(format!("Invalid stable var name {}", name).as_str()));
+
+        let mut sbox = unsafe { SBox::<T>::from_ptr(sbox_ptr) };
+        let copy = sbox.get_cloned();
+        sbox.remove_from_stable();
+
+        copy
+    } else {
+        unreachable!("Stable variables are not initialized");
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::utils::vars::{get_var, set_var};
-    use crate::{stable, stable_memory_init};
+    use crate::{s, s_remove, stable, stable_memory_init};
+
+    type Var = Vec<u8>;
 
     #[test]
     fn basic_flow_works_fine() {
         stable::clear();
         stable_memory_init(true, 0);
 
-        set_var("var", vec![1u8, 2, 3, 4]);
-        let v = get_var::<Vec<u8>>("var");
+        s! { Var = vec![1u8, 2, 3, 4] };
+        let v = s!(Var);
 
         assert_eq!(v, vec![1u8, 2, 3, 4]);
+
+        let v1 = s_remove!(Var);
+
+        assert_eq!(v1, v);
     }
 }

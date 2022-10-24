@@ -42,7 +42,7 @@ where
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let res = if self.root.keys.len() == CAPACITY {
+        if self.root.keys.len() == CAPACITY {
             let mut temp = BTreeNode::new(false, false);
 
             self.root.is_root = false;
@@ -52,12 +52,9 @@ where
             self.root.children.insert(0, old_root);
 
             Self::split_child(&mut self.root, 0);
-            let res = Self::insert_non_full(&mut self.root, key, value);
+        }
 
-            res
-        } else {
-            Self::insert_non_full(&mut self.root, key, value)
-        };
+        let res = Self::insert_non_full(&mut self.root, key, value);
 
         if res.is_none() {
             self.len += 1;
