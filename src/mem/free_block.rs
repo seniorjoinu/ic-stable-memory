@@ -1,5 +1,6 @@
 use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, BLOCK_MIN_TOTAL_SIZE, FREE, PTR_SIZE};
 use crate::{stable, SSlice};
+use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct FreeBlock {
@@ -116,19 +117,25 @@ impl FreeBlock {
     }
 
     pub fn set_prev_free_ptr(ptr: u64, prev_ptr: u64) {
-        stable::write_word(ptr + PTR_SIZE as u64, prev_ptr);
+        stable::write(ptr + PTR_SIZE as u64, &prev_ptr.to_bytes());
     }
 
     pub fn get_prev_free_ptr(ptr: u64) -> u64 {
-        stable::read_word(ptr + PTR_SIZE as u64)
+        let mut buf = u64::super_size_u8_arr();
+        stable::read(ptr + PTR_SIZE as u64, &mut buf);
+
+        u64::from_bytes(buf)
     }
 
     pub fn set_next_free_ptr(ptr: u64, next_ptr: u64) {
-        stable::write_word(ptr + (PTR_SIZE * 2) as u64, next_ptr);
+        stable::write(ptr + (PTR_SIZE * 2) as u64, &next_ptr.to_bytes());
     }
 
     pub fn get_next_free_ptr(ptr: u64) -> u64 {
-        stable::read_word(ptr + (PTR_SIZE * 2) as u64)
+        let mut buf = u64::super_size_u8_arr();
+        stable::read(ptr + (PTR_SIZE * 2) as u64, &mut buf);
+
+        u64::from_bytes(buf)
     }
 
     pub fn get_total_size_bytes(&self) -> usize {

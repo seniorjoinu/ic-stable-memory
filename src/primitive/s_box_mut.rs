@@ -40,7 +40,7 @@ impl<'a, T: Readable<'a, LittleEndian>> SBoxMut<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let outer_slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
-        let inner_slice_ptr = outer_slice.read_word(0);
+        let inner_slice_ptr = outer_slice.as_bytes_read(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; inner_slice.get_size_bytes()];
@@ -53,7 +53,7 @@ impl<'a, T: Readable<'a, LittleEndian>> SBoxMut<T> {
     }
 
     pub fn get_cloned(&self) -> T {
-        let inner_slice_ptr = self.outer_slice.unwrap().read_word(0);
+        let inner_slice_ptr = self.outer_slice.unwrap().as_bytes_read(0);
         let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; inner_slice.get_size_bytes()];
@@ -66,7 +66,7 @@ impl<'a, T: Readable<'a, LittleEndian>> SBoxMut<T> {
 impl<T: Writable<LittleEndian>> SBoxMut<T> {
     fn repersist(&mut self) {
         if let Some(outer_slice) = self.outer_slice {
-            let inner_slice_ptr = outer_slice.read_word(0);
+            let inner_slice_ptr = outer_slice.as_bytes_read(0);
             let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
             let buf = self.inner.write_to_vec().unwrap();
@@ -83,7 +83,7 @@ impl<T: Writable<LittleEndian>> SBoxMut<T> {
             inner_slice.write_bytes(0, &buf);
 
             if should_rewrite_outer {
-                outer_slice.write_word(0, inner_slice.get_ptr());
+                outer_slice.as_bytes_write(0, inner_slice.get_ptr());
             }
         }
     }
@@ -144,7 +144,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated
             inner_slice.write_bytes(0, &buf);
 
             let outer_slice = allocate(u64::SIZE);
-            outer_slice.write_word(0, inner_slice.get_ptr());
+            outer_slice.as_bytes_write(0, inner_slice.get_ptr());
 
             self.outer_slice = Some(outer_slice);
         }
@@ -152,7 +152,7 @@ impl<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>> StableAllocated
 
     fn remove_from_stable(&mut self) {
         if let Some(outer_slice) = self.outer_slice {
-            let inner_slice_ptr = outer_slice.read_word(0);
+            let inner_slice_ptr = outer_slice.as_bytes_read(0);
             let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
             deallocate(outer_slice);

@@ -1,5 +1,6 @@
 use crate::mem::free_block::FreeBlock;
 use crate::utils::mem_context::stable;
+use copy_as_bytes::traits::AsBytes;
 use speedy::{Readable, Writable};
 use std::mem::size_of;
 use std::usize;
@@ -77,18 +78,8 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn write_word(&self, offset: usize, word: u64) {
-        Self::_write_word(self.ptr, offset, word)
-    }
-
-    #[inline]
     pub fn read_bytes(&self, offset: usize, data: &mut [u8]) {
         Self::_read_bytes(self.ptr, offset, data)
-    }
-
-    #[inline]
-    pub fn read_word(&self, offset: usize) -> u64 {
-        Self::_read_word(self.ptr, offset)
     }
 
     #[inline]
@@ -112,18 +103,8 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn _write_word(ptr: u64, offset: usize, word: u64) {
-        stable::write_word(ptr + (BLOCK_META_SIZE + offset) as u64, word)
-    }
-
-    #[inline]
     pub fn _read_bytes(ptr: u64, offset: usize, data: &mut [u8]) {
         stable::read(ptr + (BLOCK_META_SIZE + offset) as u64, data);
-    }
-
-    #[inline]
-    pub fn _read_word(ptr: u64, offset: usize) -> u64 {
-        stable::read_word(ptr + (BLOCK_META_SIZE + offset) as u64)
     }
 
     fn read_size(ptr: u64) -> Option<usize> {
@@ -154,6 +135,42 @@ impl SSlice {
 
         stable::write(ptr, &meta);
         stable::write(ptr + (BLOCK_META_SIZE + size) as u64, &meta);
+    }
+}
+
+impl SSlice {
+    pub fn _as_bytes_read<T: AsBytes>(ptr: u64, offset: usize) -> T
+    where
+        [(); T::SIZE]: Sized,
+    {
+        let mut buf = T::super_size_u8_arr();
+        SSlice::_read_bytes(ptr, offset, &mut buf);
+
+        T::from_bytes(buf)
+    }
+
+    #[inline]
+    pub fn _as_bytes_write<T: AsBytes>(ptr: u64, offset: usize, it: T)
+    where
+        [(); T::SIZE]: Sized,
+    {
+        SSlice::_write_bytes(ptr, offset, &it.to_bytes())
+    }
+
+    #[inline]
+    pub fn as_bytes_read<T: AsBytes>(&self, offset: usize) -> T
+    where
+        [(); T::SIZE]: Sized,
+    {
+        Self::_as_bytes_read(self.ptr, offset)
+    }
+
+    #[inline]
+    pub fn as_bytes_write<T: AsBytes>(&self, offset: usize, it: T)
+    where
+        [(); T::SIZE]: Sized,
+    {
+        Self::_as_bytes_write(self.ptr, offset, it)
     }
 }
 
