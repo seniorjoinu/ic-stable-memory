@@ -1,5 +1,6 @@
 use crate::allocate;
 use crate::mem::s_slice::SSlice;
+use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use std::cmp::Ordering;
@@ -51,10 +52,14 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
-    pub fn new() -> Self {
+    pub fn new(is_leaf: bool, is_root: bool) -> Self {
         let slice =
             allocate(node_meta_size() + (K::SIZE + V::SIZE + u64::SIZE) * CAPACITY + u64::SIZE);
         let buf = [0u8; node_meta_size()];
+
+        // FIXME: THIS IS UNSAFE - IN GENERAL WE DON'T KNOW HOW THE SERIALIZATION IS IMPLEMENTED INTERNALLY
+        buf[IS_LEAF_OFFSET] = if is_leaf { 1 } else { 0 };
+        buf[IS_ROOT_OFFSET] = if is_root { 1 } else { 0 };
 
         slice.write_bytes(0, &buf);
 
@@ -88,12 +93,12 @@ where
     }
 
     #[inline]
-    fn set_len(&mut self, it: usize) {
+    pub fn set_len(&mut self, it: usize) {
         SSlice::_as_bytes_write(self.ptr, LEN_OFFSET, it);
     }
 
     #[inline]
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         SSlice::_as_bytes_read(self.ptr, LEN_OFFSET)
     }
 
@@ -118,32 +123,32 @@ where
     }
 
     #[inline]
-    fn set_key(&mut self, idx: usize, k: K) {
+    pub fn set_key(&mut self, idx: usize, k: K) {
         SSlice::_as_bytes_write(self.ptr, KEYS_OFFSET + idx * K::SIZE, k);
     }
 
     #[inline]
-    fn get_key(&self, idx: usize) -> K {
+    pub fn get_key(&self, idx: usize) -> K {
         SSlice::_as_bytes_read(self.ptr, KEYS_OFFSET + idx * K::SIZE)
     }
 
     #[inline]
-    fn set_value(&mut self, idx: usize, v: V) {
+    pub fn set_value(&mut self, idx: usize, v: V) {
         SSlice::_as_bytes_write(self.ptr, VALUES_OFFSET::<K>() + idx * V::SIZE, v);
     }
 
     #[inline]
-    fn get_value(&self, idx: usize) -> V {
+    pub fn get_value(&self, idx: usize) -> V {
         SSlice::_as_bytes_read(self.ptr, VALUES_OFFSET::<K>() + idx * V::SIZE)
     }
 
     #[inline]
-    fn set_child_ptr(&mut self, idx: usize, c: u64) {
+    pub fn set_child_ptr(&mut self, idx: usize, c: u64) {
         SSlice::_as_bytes_write(self.ptr, CHILDREN_OFFSET::<K, V>() + idx * u64::SIZE, c);
     }
 
     #[inline]
-    fn get_child_ptr(&self, idx: usize) -> u64 {
+    pub fn get_child_ptr(&self, idx: usize) -> u64 {
         SSlice::_as_bytes_read(self.ptr, CHILDREN_OFFSET::<K, V>() + idx * u64::SIZE)
     }
 
@@ -216,7 +221,46 @@ impl<K: AsBytes + Ord, V: AsBytes> BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
+    [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
+    [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
 {
+    pub fn split_full_in_middle_no_pop(&mut self, is_leaf: bool) -> Self {
+        let new_node = Self::new(is_leaf, false);
+
+        let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
+        SSlice::_read_bytes(self.ptr, KEYS_OFFSET + B * K::SIZE, &mut keys_buf);
+        SSlice::_write_bytes(new_node.ptr, KEYS_OFFSET, &keys_buf);
+
+        let mut values_buf = [0u8; MIN_LEN_AFTER_SPLIT * V::SIZE];
+        SSlice::_read_bytes(
+            self.ptr,
+            VALUES_OFFSET::<K>() + B * V::SIZE,
+            &mut values_buf,
+        );
+        SSlice::_write_bytes(new_node.ptr, VALUES_OFFSET::<K>(), &values_buf);
+
+        if !is_leaf {
+            let mut childrent_buf = [0u8; B * u64::SIZE];
+            SSlice::_read_bytes(
+                self.ptr,
+                CHILDREN_OFFSET::<K, V>() + B * u64::SIZE,
+                &mut childrent_buf,
+            );
+            SSlice::_write_bytes(new_node.ptr, CHILDREN_OFFSET::<K, V>(), &childrent_buf);
+        }
+
+        new_node
+    }
+
+    pub fn split_full_in_middle(&mut self, is_leaf: bool) -> (Self, K, V) {
+        let k = self.get_key(B);
+        let v = self.get_value(B);
+
+        let new_node = self.split_full_in_middle_no_pop(is_leaf);
+
+        (new_node, k, v)
+    }
+
     pub fn insert_key(&mut self, k: K, idx: usize, len: usize) {
         debug_assert!(len < CAPACITY && idx <= len);
 
@@ -228,7 +272,7 @@ where
     }
 
     pub fn remove_key(&mut self, idx: usize, len: usize) -> K {
-        debug_assert!(len < CAPACITY && idx < len);
+        debug_assert!(len <= CAPACITY && idx < len);
 
         let k = self.get_key(idx);
 
@@ -250,7 +294,7 @@ where
     }
 
     pub fn remove_value(&mut self, idx: usize, len: usize) -> V {
-        debug_assert!(len < CAPACITY && idx < len);
+        debug_assert!(len <= CAPACITY && idx < len);
 
         let v = self.get_value(idx);
 
@@ -261,23 +305,23 @@ where
         v
     }
 
-    pub fn insert_child_ptr(&mut self, c: u64, idx: usize, len: usize) {
-        debug_assert!(len < CAPACITY + 1 && idx <= len);
+    pub fn insert_child_ptr(&mut self, c: u64, idx: usize, children_len: usize) {
+        debug_assert!(children_len < CAPACITY + 1 && idx <= children_len);
 
-        if idx != len {
-            self.children_shr(idx, len);
+        if idx != children_len {
+            self.children_shr(idx, children_len);
         }
 
         self.set_child_ptr(idx, c);
     }
 
-    pub fn remove_child_ptr(&mut self, idx: usize, len: usize) -> u64 {
-        debug_assert!(len < CAPACITY && idx < len);
+    pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize) -> u64 {
+        debug_assert!(children_len <= CAPACITY && idx < children_len);
 
         let c = self.get_child_ptr(idx);
 
-        if idx != len {
-            self.children_shl(idx + 1, len);
+        if idx != children_len {
+            self.children_shl(idx + 1, children_len);
         }
 
         c
@@ -325,13 +369,156 @@ where
     }
 }
 
+impl<K: StableAllocated + Ord, V: StableAllocated> BTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+    [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
+    [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
+{
+    // we definitely know, that this method is only called on non-leaves
+    pub fn insert_up(&mut self, k: K, v: V, new_node: Self) -> Result<(), (K, V, Self)> {
+        let len = self.len();
+
+        match self.find_idx(&k, len) {
+            Ok(_) => unreachable!(),
+            Err(idx) => {
+                if len == CAPACITY {
+                    // optimization - when we insert directly in the middle,
+                    // there is no point in popping the middle element up
+                    // we can simply split in half and say that the newly inserted element should go up
+                    if idx == MIN_LEN_AFTER_SPLIT {
+                        let mut another_new_node = self.split_full_in_middle_no_pop(false);
+                        another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
+
+                        self.insert_child_ptr(new_node.as_ptr(), B, B);
+                        self.set_len(B);
+
+                        return Err((k, v, another_new_node));
+                    }
+
+                    let (mut another_new_node, mid_k, mid_v) = self.split_full_in_middle(false);
+
+                    if idx < MIN_LEN_AFTER_SPLIT {
+                        self.insert_key(k, idx, MIN_LEN_AFTER_SPLIT);
+                        self.insert_value(v, idx, MIN_LEN_AFTER_SPLIT);
+
+                        self.insert_child_ptr(new_node.as_ptr(), idx + 1, B);
+                        self.set_len(B);
+
+                        another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
+                    } else {
+                        another_new_node.insert_key(
+                            k,
+                            idx - MIN_LEN_AFTER_SPLIT,
+                            MIN_LEN_AFTER_SPLIT,
+                        );
+                        another_new_node.insert_value(
+                            v,
+                            idx - MIN_LEN_AFTER_SPLIT,
+                            MIN_LEN_AFTER_SPLIT,
+                        );
+
+                        another_new_node.insert_child_ptr(
+                            new_node.as_ptr(),
+                            idx - MIN_LEN_AFTER_SPLIT + 1,
+                            B,
+                        );
+                        another_new_node.set_len(B);
+
+                        self.set_len(MIN_LEN_AFTER_SPLIT);
+                    }
+
+                    return Err((mid_k, mid_v, another_new_node));
+                }
+
+                self.insert_key(k, idx, len);
+                self.insert_value(v, idx, len);
+                self.insert_child_ptr(new_node.as_ptr(), idx + 1, len + 1);
+
+                self.set_len(len + 1);
+
+                Ok(())
+            }
+        }
+    }
+
+    pub fn insert_down(
+        &mut self,
+        mut k: K,
+        mut v: V,
+    ) -> Result<Result<Option<V>, (K, V, Self)>, (K, V, Self)> {
+        let len = self.len();
+
+        match self.find_idx(&k, len) {
+            Ok(idx) => {
+                v.move_to_stable();
+
+                let mut prev_value = self.get_value(idx);
+                self.set_value(idx, v);
+
+                prev_value.remove_from_stable();
+
+                Ok(Ok(Some(prev_value)))
+            }
+            Err(idx) => {
+                if !self.is_leaf() {
+                    let node = unsafe { BTreeNode::<K, V>::from_ptr(self.get_child_ptr(idx)) };
+
+                    return Err((k, v, node));
+                }
+
+                k.move_to_stable();
+                v.move_to_stable();
+
+                if len == CAPACITY {
+                    // optimization - when we insert directly in the middle,
+                    // there is no point in popping the middle element up
+                    // we can simply split in half and say that the newly inserted element should go up
+                    if idx == MIN_LEN_AFTER_SPLIT {
+                        let mut new_node = self.split_full_in_middle_no_pop(true);
+                        new_node.set_len(MIN_LEN_AFTER_SPLIT);
+                        self.set_len(B);
+
+                        return Ok(Err((k, v, new_node)));
+                    }
+
+                    let (mut new_node, mid_k, mid_v) = self.split_full_in_middle(true);
+
+                    if idx < MIN_LEN_AFTER_SPLIT {
+                        self.insert_key(k, idx, MIN_LEN_AFTER_SPLIT);
+                        self.insert_value(v, idx, MIN_LEN_AFTER_SPLIT);
+                        self.set_len(B);
+
+                        new_node.set_len(MIN_LEN_AFTER_SPLIT);
+                    } else {
+                        new_node.insert_key(k, idx - MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT);
+                        new_node.insert_value(v, idx - MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT);
+                        new_node.set_len(B);
+
+                        self.set_len(MIN_LEN_AFTER_SPLIT);
+                    }
+
+                    return Ok(Err((mid_k, mid_v, new_node)));
+                }
+
+                self.insert_key(k, idx, len);
+                self.insert_value(v, idx, len);
+                self.set_len(len + 1);
+
+                Ok(Ok(None))
+            }
+        }
+    }
+}
+
 impl<K: AsBytes, V: AsBytes> Default for BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
     fn default() -> Self {
-        Self::new()
+        Self::new(false, false)
     }
 }
 
