@@ -1,6 +1,7 @@
 use speedy::{Context, Readable, Reader, Writable, Writer};
 use std::marker::PhantomData;
 
+#[derive(Copy, Clone)]
 pub struct SPhantomData<T> {
     _marker: PhantomData<T>,
 }

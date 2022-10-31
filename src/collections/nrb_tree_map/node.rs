@@ -25,16 +25,16 @@ const IS_LEFT_CHILD_OFFSET: usize = IS_BLACK_OFFSET + bool::SIZE;
 const KEYS_OFFSET: usize = IS_LEFT_CHILD_OFFSET + bool::SIZE;
 
 #[inline]
-pub const fn VALUES_OFFSET<K: SuperSized>() -> usize {
+pub(crate) const fn VALUES_OFFSET<K: SuperSized>() -> usize {
     KEYS_OFFSET + CAPACITY * K::SIZE
 }
 
 #[inline]
-pub const fn node_meta_size() -> usize {
+pub(crate) const fn node_meta_size() -> usize {
     u64::SIZE * 3 + usize::SIZE + bool::SIZE * 2
 }
 
-pub struct NRBTreeNode<K, V> {
+pub(crate) struct NRBTreeNode<K, V> {
     ptr: u64,
     _marker_k: SPhantomData<K>,
     _marker_v: SPhantomData<V>,
@@ -46,13 +46,25 @@ where
     [(); V::SIZE]: Sized,
 {
     pub fn new() -> Self {
-        let slice = allocate(node_meta_size());
+        let slice = allocate(node_meta_size() + K::SIZE * CAPACITY + V::SIZE * CAPACITY);
         let buf = [0u8; node_meta_size()];
 
         slice.write_bytes(0, &buf);
 
         Self {
             ptr: slice.get_ptr(),
+            _marker_k: SPhantomData::new(),
+            _marker_v: SPhantomData::new(),
+        }
+    }
+
+    pub fn as_ptr(&self) -> u64 {
+        self.ptr
+    }
+
+    pub unsafe fn from_ptr(ptr: u64) -> Self {
+        Self {
+            ptr,
             _marker_k: SPhantomData::new(),
             _marker_v: SPhantomData::new(),
         }
@@ -212,12 +224,17 @@ where
                     let old_k = self.get_key(0);
                     let old_v = self.get_value(0);
 
+                    if idx == 1 {
+                        self.set_key(0, k);
+                        self.set_value(0, v);
+
+                        return Err((old_k, old_v, true));
+                    }
+
                     idx -= 1;
 
-                    if idx > 0 {
-                        self.keys_shl(1, idx);
-                        self.values_shl(1, idx);
-                    }
+                    self.keys_shl(1, idx);
+                    self.values_shl(1, idx);
 
                     self.set_key(idx, k);
                     self.set_value(idx, v);
@@ -228,10 +245,17 @@ where
                 let old_k = self.get_key(len - 1);
                 let old_v = self.get_value(len - 1);
 
-                self.keys_shr(idx, len - 2);
-                self.set_key(idx, k);
+                if idx == len - 1 {
+                    self.set_key(idx, k);
+                    self.set_value(idx, v);
 
+                    return Err((old_k, old_v, false));
+                }
+
+                self.keys_shr(idx, len - 2);
                 self.values_shr(idx, len - 2);
+
+                self.set_key(idx, k);
                 self.set_value(idx, v);
 
                 Err((old_k, old_v, false))
@@ -401,6 +425,18 @@ mod tests {
 
         let mut node = NRBTreeNode::<u64, u64>::new();
 
+        assert_eq!(node.get_left(), 0);
+        assert_eq!(node.get_right(), 0);
+        assert_eq!(node.get_parent(), 0);
+
+        node.set_left(1000);
+        node.set_right(2000);
+        node.set_parent(3000);
+
+        assert_eq!(node.get_left(), 1000);
+        assert_eq!(node.get_right(), 2000);
+        assert_eq!(node.get_parent(), 3000);
+
         for i in 10..(10 + CAPACITY) as u64 {
             assert!(node.insert(i * 2, i * 2).unwrap().is_none());
         }
@@ -424,6 +460,8 @@ mod tests {
         for i in 10..(10 + CAPACITY) as u64 {
             let (k, v, to_left) = node.insert(i * 2 + 1, i * 2 + 1).unwrap_err();
 
+            assert_eq!(node.len(), CAPACITY);
+
             println!("{}", i * 2 + 1);
             println!("{:?}", node);
         }
@@ -445,5 +483,9 @@ mod tests {
         assert_eq!(node.remove(&32).unwrap().unwrap(), 32);
         assert!(node.remove(&32).unwrap().is_none());
         assert_eq!(node.remove(&34).unwrap().unwrap(), 34);
+
+        assert_eq!(node.get_left(), 1000);
+        assert_eq!(node.get_right(), 2000);
+        assert_eq!(node.get_parent(), 3000);
     }
 }
