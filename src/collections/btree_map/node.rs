@@ -1,14 +1,15 @@
-use crate::allocate;
-use crate::mem::s_slice::SSlice;
+use crate::mem::allocator::EMPTY_PTR;
+use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
+use crate::{allocate, deallocate};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 
-const B: usize = 6;
-const CAPACITY: usize = 2 * B - 1;
-const MIN_LEN_AFTER_SPLIT: usize = B - 1;
+pub const B: usize = 6;
+pub const CAPACITY: usize = 2 * B - 1;
+pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
 
 // DEFAULTS ARE
 //
@@ -55,11 +56,11 @@ where
     pub fn new(is_leaf: bool, is_root: bool) -> Self {
         let slice =
             allocate(node_meta_size() + (K::SIZE + V::SIZE + u64::SIZE) * CAPACITY + u64::SIZE);
-        let buf = [0u8; node_meta_size()];
+        let mut buf = [0u8; node_meta_size()];
 
         // FIXME: THIS IS UNSAFE - IN GENERAL WE DON'T KNOW HOW THE SERIALIZATION IS IMPLEMENTED INTERNALLY
-        buf[IS_LEAF_OFFSET] = if is_leaf { 1 } else { 0 };
-        buf[IS_ROOT_OFFSET] = if is_root { 1 } else { 0 };
+        buf[IS_LEAF_OFFSET] = u8::from(is_leaf);
+        buf[IS_ROOT_OFFSET] = u8::from(is_root);
 
         slice.write_bytes(0, &buf);
 
@@ -70,16 +71,23 @@ where
         }
     }
 
+    #[inline]
     pub fn as_ptr(&self) -> u64 {
         self.ptr
     }
 
+    #[inline]
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         Self {
             ptr,
             _marker_k: SPhantomData::new(),
             _marker_v: SPhantomData::new(),
         }
+    }
+
+    #[inline]
+    pub unsafe fn copy(&self) -> Self {
+        Self::from_ptr(self.as_ptr())
     }
 
     #[inline]
@@ -224,6 +232,63 @@ where
     [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
     [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
 {
+    pub fn merge_min_len(
+        &mut self,
+        is_leaf: bool,
+        right: Self,
+        parent: &mut Self,
+        p_idx: usize,
+        p_len: usize,
+    ) {
+        let parent_k = parent.get_key(p_idx);
+        parent.remove_key(p_idx, p_len);
+
+        let parent_v = parent.get_value(p_idx);
+        parent.remove_value(p_idx, p_len);
+
+        parent.remove_child_ptr(p_idx + 1, p_len + 1);
+        parent.set_len(p_len - 1);
+
+        let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
+        SSlice::_read_bytes(right.ptr, KEYS_OFFSET, &mut keys_buf);
+        SSlice::_as_bytes_write(
+            self.ptr,
+            KEYS_OFFSET + MIN_LEN_AFTER_SPLIT * K::SIZE,
+            parent_k,
+        );
+        SSlice::_write_bytes(
+            self.ptr,
+            KEYS_OFFSET + MIN_LEN_AFTER_SPLIT * K::SIZE + K::SIZE,
+            &keys_buf,
+        );
+
+        let mut values_buf = [0u8; MIN_LEN_AFTER_SPLIT * V::SIZE];
+        SSlice::_read_bytes(right.ptr, VALUES_OFFSET::<K>(), &mut values_buf);
+        SSlice::_as_bytes_write(
+            self.ptr,
+            VALUES_OFFSET::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE,
+            parent_v,
+        );
+        SSlice::_write_bytes(
+            self.ptr,
+            VALUES_OFFSET::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE + V::SIZE,
+            &values_buf,
+        );
+
+        if !is_leaf {
+            let mut children_buf = [0u8; B * u64::SIZE];
+            SSlice::_read_bytes(right.ptr, CHILDREN_OFFSET::<K, V>(), &mut children_buf);
+            SSlice::_write_bytes(
+                self.ptr,
+                CHILDREN_OFFSET::<K, V>() + B * u64::SIZE,
+                &children_buf,
+            );
+        }
+
+        let slice = unsafe { SSlice::from_ptr(right.ptr, Side::Start).unwrap_unchecked() };
+        deallocate(slice);
+    }
+
     pub fn split_full_in_middle_no_pop(&mut self, is_leaf: bool) -> Self {
         let new_node = Self::new(is_leaf, false);
 
@@ -271,16 +336,12 @@ where
         self.set_key(idx, k);
     }
 
-    pub fn remove_key(&mut self, idx: usize, len: usize) -> K {
+    pub fn remove_key(&mut self, idx: usize, len: usize) {
         debug_assert!(len <= CAPACITY && idx < len);
-
-        let k = self.get_key(idx);
 
         if idx != len {
             self.keys_shl(idx + 1, len);
         }
-
-        k
     }
 
     pub fn insert_value(&mut self, v: V, idx: usize, len: usize) {
@@ -293,16 +354,12 @@ where
         self.set_value(idx, v);
     }
 
-    pub fn remove_value(&mut self, idx: usize, len: usize) -> V {
+    pub fn remove_value(&mut self, idx: usize, len: usize) {
         debug_assert!(len <= CAPACITY && idx < len);
-
-        let v = self.get_value(idx);
 
         if idx != len {
             self.values_shl(idx + 1, len);
         }
-
-        v
     }
 
     pub fn insert_child_ptr(&mut self, c: u64, idx: usize, children_len: usize) {
@@ -315,16 +372,12 @@ where
         self.set_child_ptr(idx, c);
     }
 
-    pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize) -> u64 {
+    pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize) {
         debug_assert!(children_len <= CAPACITY && idx < children_len);
-
-        let c = self.get_child_ptr(idx);
 
         if idx != children_len {
             self.children_shl(idx + 1, children_len);
         }
-
-        c
     }
 
     pub fn find_idx(&self, k: &K, len: usize) -> Result<usize, usize> {
@@ -376,8 +429,290 @@ where
     [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
     [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
 {
+    fn handle_violating_internal(mut node: Self, stop_ptr: u64) {
+        let parent_ptr = node.get_parent();
+
+        // TODO: MAKE SURE PARENTS ARE SET CORRECTLY
+        // TODO: NOT ONLY EMPTY BUT ALSO OTHER PTR
+
+        if parent_ptr == stop_ptr {
+            return;
+        }
+
+        let mut parent = unsafe { BTreeNode::<K, V>::from_ptr(parent_ptr) };
+        let p_len = parent.len();
+
+        // FIXME: not good - we have this in our stack
+        let mut i = 0;
+        let p_idx = loop {
+            let n_ptr = parent.get_child_ptr(i);
+            if n_ptr == node.ptr {
+                break i;
+            }
+
+            i += 1;
+            if i > p_len {
+                unreachable!();
+            }
+        };
+
+        if p_idx > 0 {
+            // at first let's try rotating if it's possible
+
+            let mut left = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx - 1)) };
+            let left_len = left.len();
+
+            if left_len > MIN_LEN_AFTER_SPLIT {
+                node.internal_violating_rotate_right(left, &mut parent, left_len, p_idx);
+                return;
+            }
+
+            if p_idx < p_len {
+                let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx + 1)) };
+                let right_len = right.len();
+
+                if right_len > MIN_LEN_AFTER_SPLIT {
+                    node.internal_violating_rotate_left(right, &mut parent, right_len, p_idx);
+                    return;
+                }
+            }
+
+            // if it is impossible to rotate, let's merge with the right neighbor,
+            // stealing an element from the parent
+
+            left.merge_min_len(false, node, &mut parent, p_idx, p_len);
+
+            if p_len == MIN_LEN_AFTER_SPLIT {
+                Self::handle_violating_internal(parent, stop_ptr);
+            }
+
+            return;
+        }
+
+        // the same goes here, but here we can only use the right neighbor
+
+        let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(1)) };
+        let right_len = right.len();
+
+        if right_len > MIN_LEN_AFTER_SPLIT {
+            node.internal_violating_rotate_left(right, &mut parent, right_len, 0);
+            return;
+        }
+
+        node.merge_min_len(false, right, &mut parent, 1, p_len);
+
+        if p_len == MIN_LEN_AFTER_SPLIT {
+            Self::handle_violating_internal(parent, stop_ptr);
+        }
+    }
+
+    pub fn delete_in_violating_leaf(
+        mut node: Self,
+        mut parent: Self,
+        p_idx: usize,
+        p_len: usize,
+        idx: usize,
+        stop_ptr: u64,
+    ) -> (K, V) {
+        if p_idx > 0 {
+            // at first let's try rotating if it's possible
+            let mut left = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx - 1)) };
+            let left_len = left.len();
+
+            if left_len > MIN_LEN_AFTER_SPLIT {
+                let k = node.get_key(idx);
+                let v = node.leaf_rotate_right(left, &mut parent, left_len, p_idx, idx);
+
+                return (k, v);
+            }
+
+            if p_idx < p_len {
+                let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx + 1)) };
+                let right_len = right.len();
+
+                if right_len > MIN_LEN_AFTER_SPLIT {
+                    let k = node.get_key(idx);
+                    let v = node.leaf_rotate_left(right, &mut parent, right_len, p_idx, idx);
+
+                    return (k, v);
+                }
+            }
+
+            // if it is impossible to rotate, let's merge with the right neighbor,
+            // stealing an element from the parent
+
+            left.merge_min_len(true, node, &mut parent, p_idx, p_len);
+
+            if p_len == MIN_LEN_AFTER_SPLIT {
+                Self::handle_violating_internal(parent, stop_ptr);
+            }
+
+            let k = left.get_key(idx + MIN_LEN_AFTER_SPLIT + 1);
+            let v = left.get_value(idx + MIN_LEN_AFTER_SPLIT + 1);
+
+            left.remove_key(idx + MIN_LEN_AFTER_SPLIT + 1, CAPACITY);
+            left.remove_value(idx + MIN_LEN_AFTER_SPLIT + 1, CAPACITY);
+            left.set_len(CAPACITY - 1);
+
+            return (k, v);
+        }
+
+        // the same goes here, but here we can only use the right neighbor
+
+        let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(1)) };
+        let right_len = right.len();
+
+        if right_len > MIN_LEN_AFTER_SPLIT {
+            let mut k = node.get_key(idx);
+            let mut v = node.leaf_rotate_left(right, &mut parent, right_len, 0, idx);
+
+            k.remove_from_stable();
+            v.remove_from_stable();
+
+            return (k, v);
+        }
+
+        node.merge_min_len(true, right, &mut parent, 0, p_len);
+
+        if p_len == MIN_LEN_AFTER_SPLIT {
+            Self::handle_violating_internal(parent, stop_ptr);
+        }
+
+        let mut k = node.get_key(idx);
+        let mut v = node.get_value(idx);
+
+        node.remove_key(idx, CAPACITY);
+        node.remove_value(idx, CAPACITY);
+        node.set_len(CAPACITY - 1);
+
+        k.remove_from_stable();
+        v.remove_from_stable();
+
+        (k, v)
+    }
+
+    pub fn leaf_rotate_right(
+        &mut self,
+        mut left: Self,
+        parent: &mut Self,
+        left_len: usize,
+        parent_idx: usize,
+        self_idx: usize,
+    ) -> V {
+        let left_last_k = left.get_key(left_len - 1);
+        left.remove_key(left_len - 1, left_len);
+
+        let left_last_v = left.get_value(left_len - 1);
+        left.remove_value(left_len - 1, left_len);
+
+        left.set_len(left_len - 1);
+
+        let parent_k = parent.get_key(parent_idx - 1);
+        let parent_v = parent.get_value(parent_idx - 1);
+
+        parent.set_key(parent_idx - 1, left_last_k);
+        parent.set_value(parent_idx - 1, left_last_v);
+
+        let v = self.get_value(self_idx);
+        self.set_key(self_idx, parent_k);
+        self.set_value(self_idx, parent_v);
+
+        v
+    }
+
+    pub fn internal_violating_rotate_right(
+        &mut self,
+        mut left: Self,
+        parent: &mut Self,
+        left_len: usize,
+        parent_idx: usize,
+    ) {
+        let left_last_k = left.get_key(left_len - 1);
+        left.remove_key(left_len - 1, left_len);
+
+        let left_last_v = left.get_value(left_len - 1);
+        left.remove_value(left_len - 1, left_len);
+
+        let left_last_c = left.get_child_ptr(left_len);
+        left.remove_child_ptr(left_len, left_len + 1);
+
+        left.set_len(left_len - 1);
+
+        let parent_k = parent.get_key(parent_idx - 1);
+        let parent_v = parent.get_value(parent_idx - 1);
+
+        parent.set_key(parent_idx - 1, left_last_k);
+        parent.set_value(parent_idx - 1, left_last_v);
+
+        self.insert_key(parent_k, 0, MIN_LEN_AFTER_SPLIT - 1);
+        self.insert_value(parent_v, 0, MIN_LEN_AFTER_SPLIT - 1);
+        self.insert_child_ptr(left_last_c, 0, MIN_LEN_AFTER_SPLIT);
+
+        self.set_len(MIN_LEN_AFTER_SPLIT);
+    }
+
+    pub fn leaf_rotate_left(
+        &mut self,
+        mut right: Self,
+        parent: &mut Self,
+        right_len: usize,
+        parent_idx: usize,
+        self_idx: usize,
+    ) -> V {
+        let right_first_k = right.get_key(0);
+        right.remove_key(0, right_len);
+
+        let right_first_v = right.get_value(0);
+        right.remove_value(0, right_len);
+
+        right.set_len(right_len - 1);
+
+        let parent_k = parent.get_key(parent_idx);
+        let parent_v = parent.get_value(parent_idx);
+
+        parent.set_key(parent_idx, right_first_k);
+        parent.set_value(parent_idx, right_first_v);
+
+        let v = self.get_value(self_idx);
+        self.set_key(self_idx, parent_k);
+        self.set_value(self_idx, parent_v);
+
+        v
+    }
+
+    pub fn internal_violating_rotate_left(
+        &mut self,
+        mut right: Self,
+        parent: &mut Self,
+        right_len: usize,
+        parent_idx: usize,
+    ) {
+        let right_first_k = right.get_key(0);
+        right.remove_key(0, right_len);
+
+        let right_first_v = right.get_value(0);
+        right.remove_value(0, right_len);
+
+        let right_first_c = right.get_child_ptr(0);
+        right.remove_child_ptr(0, right_len + 1);
+
+        right.set_len(right_len - 1);
+
+        let parent_k = parent.get_key(parent_idx);
+        let parent_v = parent.get_value(parent_idx);
+
+        parent.set_key(parent_idx, right_first_k);
+        parent.set_value(parent_idx, right_first_v);
+
+        self.insert_key(parent_k, MIN_LEN_AFTER_SPLIT - 1, MIN_LEN_AFTER_SPLIT - 1);
+        self.insert_value(parent_v, MIN_LEN_AFTER_SPLIT - 1, MIN_LEN_AFTER_SPLIT - 1);
+        self.insert_child_ptr(right_first_c, MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT);
+
+        self.set_len(MIN_LEN_AFTER_SPLIT);
+    }
+
     // we definitely know, that this method is only called on non-leaves
-    pub fn insert_up(&mut self, k: K, v: V, new_node: Self) -> Result<(), (K, V, Self)> {
+    pub fn insert_up(&mut self, k: K, v: V, mut new_node: Self) -> Result<(), (K, V, Self)> {
         let len = self.len();
 
         match self.find_idx(&k, len) {
@@ -392,6 +727,7 @@ where
                         another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
 
                         self.insert_child_ptr(new_node.as_ptr(), B, B);
+                        new_node.set_parent(self.as_ptr());
                         self.set_len(B);
 
                         return Err((k, v, another_new_node));
@@ -404,6 +740,8 @@ where
                         self.insert_value(v, idx, MIN_LEN_AFTER_SPLIT);
 
                         self.insert_child_ptr(new_node.as_ptr(), idx + 1, B);
+                        new_node.set_parent(self.as_ptr());
+
                         self.set_len(B);
 
                         another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
@@ -424,6 +762,7 @@ where
                             idx - MIN_LEN_AFTER_SPLIT + 1,
                             B,
                         );
+                        new_node.set_parent(another_new_node.as_ptr());
                         another_new_node.set_len(B);
 
                         self.set_len(MIN_LEN_AFTER_SPLIT);
@@ -435,6 +774,7 @@ where
                 self.insert_key(k, idx, len);
                 self.insert_value(v, idx, len);
                 self.insert_child_ptr(new_node.as_ptr(), idx + 1, len + 1);
+                new_node.set_parent(self.as_ptr());
 
                 self.set_len(len + 1);
 
@@ -521,6 +861,14 @@ where
         Self::new(false, false)
     }
 }
+
+impl<K, V> PartialEq for BTreeNode<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr.eq(&other.ptr)
+    }
+}
+
+impl<K, V> Eq for BTreeNode<K, V> {}
 
 impl<K: AsBytes + Debug, V: AsBytes + Debug> Debug for BTreeNode<K, V>
 where

@@ -6,6 +6,7 @@ use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 
 pub mod iter;
+pub mod map;
 pub mod node;
 
 const B: usize = 6;
