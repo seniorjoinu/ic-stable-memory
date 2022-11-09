@@ -1,4 +1,3 @@
-use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
 use crate::utils::phantom_data::SPhantomData;
@@ -15,7 +14,7 @@ pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
 //
 // parent: u64 = 0
 // len: usize = 0
-// is_leaf, is_root: bool = false
+// is_leaf: bool = false
 //
 // keys: [K; CAPACITY] = [uninit; CAPACITY]
 // values: [V; CAPACITY] = [uninit; CAPACITY]
@@ -24,22 +23,21 @@ pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
 const PARENT_OFFSET: usize = 0;
 const LEN_OFFSET: usize = PARENT_OFFSET + u64::SIZE;
 const IS_LEAF_OFFSET: usize = LEN_OFFSET + usize::SIZE;
-const IS_ROOT_OFFSET: usize = IS_LEAF_OFFSET + bool::SIZE;
-const KEYS_OFFSET: usize = IS_ROOT_OFFSET + bool::SIZE;
+const KEYS_OFFSET: usize = IS_LEAF_OFFSET + bool::SIZE;
 
 #[inline]
-pub(crate) const fn VALUES_OFFSET<K: SuperSized>() -> usize {
+pub(crate) const fn values_offset<K: SuperSized>() -> usize {
     KEYS_OFFSET + CAPACITY * K::SIZE
 }
 
 #[inline]
-pub(crate) const fn CHILDREN_OFFSET<K: SuperSized, V: SuperSized>() -> usize {
-    VALUES_OFFSET::<K>() + CAPACITY * V::SIZE
+pub(crate) const fn children_offset<K: SuperSized, V: SuperSized>() -> usize {
+    values_offset::<K>() + CAPACITY * V::SIZE
 }
 
 #[inline]
 pub(crate) const fn node_meta_size() -> usize {
-    u64::SIZE + usize::SIZE + bool::SIZE * 2
+    u64::SIZE + usize::SIZE + bool::SIZE
 }
 
 pub(crate) struct BTreeNode<K, V> {
@@ -53,14 +51,12 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
-    pub fn new(is_leaf: bool, is_root: bool) -> Self {
+    pub fn new(is_leaf: bool) -> Self {
         let slice =
             allocate(node_meta_size() + (K::SIZE + V::SIZE + u64::SIZE) * CAPACITY + u64::SIZE);
         let mut buf = [0u8; node_meta_size()];
 
-        // FIXME: THIS IS UNSAFE - IN GENERAL WE DON'T KNOW HOW THE SERIALIZATION IS IMPLEMENTED INTERNALLY
         buf[IS_LEAF_OFFSET] = u8::from(is_leaf);
-        buf[IS_ROOT_OFFSET] = u8::from(is_root);
 
         slice.write_bytes(0, &buf);
 
@@ -112,22 +108,10 @@ where
 
     #[inline]
     pub fn is_leaf(&self) -> bool {
-        SSlice::_as_bytes_read(self.ptr, IS_LEAF_OFFSET)
-    }
+        let mut buf = [0u8];
+        SSlice::_read_bytes(self.ptr, IS_LEAF_OFFSET, &mut buf);
 
-    #[inline]
-    pub fn set_is_leaf(&mut self, it: bool) {
-        SSlice::_as_bytes_write(self.ptr, IS_LEAF_OFFSET, it);
-    }
-
-    #[inline]
-    pub fn is_root(&self) -> bool {
-        SSlice::_as_bytes_read(self.ptr, IS_ROOT_OFFSET)
-    }
-
-    #[inline]
-    pub fn set_is_root(&mut self, it: bool) {
-        SSlice::_as_bytes_write(self.ptr, IS_ROOT_OFFSET, it)
+        buf[0] == 1
     }
 
     #[inline]
@@ -142,27 +126,29 @@ where
 
     #[inline]
     pub fn set_value(&mut self, idx: usize, v: V) {
-        SSlice::_as_bytes_write(self.ptr, VALUES_OFFSET::<K>() + idx * V::SIZE, v);
+        SSlice::_as_bytes_write(self.ptr, values_offset::<K>() + idx * V::SIZE, v);
     }
 
     #[inline]
     pub fn get_value(&self, idx: usize) -> V {
-        SSlice::_as_bytes_read(self.ptr, VALUES_OFFSET::<K>() + idx * V::SIZE)
+        SSlice::_as_bytes_read(self.ptr, values_offset::<K>() + idx * V::SIZE)
     }
 
     #[inline]
     pub fn set_child_ptr(&mut self, idx: usize, c: u64) {
-        SSlice::_as_bytes_write(self.ptr, CHILDREN_OFFSET::<K, V>() + idx * u64::SIZE, c);
+        SSlice::_as_bytes_write(self.ptr, children_offset::<K, V>() + idx * u64::SIZE, c);
     }
 
     #[inline]
     pub fn get_child_ptr(&self, idx: usize) -> u64 {
-        SSlice::_as_bytes_read(self.ptr, CHILDREN_OFFSET::<K, V>() + idx * u64::SIZE)
+        SSlice::_as_bytes_read(self.ptr, children_offset::<K, V>() + idx * u64::SIZE)
     }
 
     #[inline]
     fn keys_shr(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * K::SIZE];
+        debug_assert!(idx2 < CAPACITY);
+
+        let mut buf = vec![0u8; (idx2 - idx1) * K::SIZE];
 
         SSlice::_read_bytes(self.ptr, KEYS_OFFSET + idx1 * K::SIZE, &mut buf);
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + (idx1 + 1) * K::SIZE, &buf);
@@ -170,7 +156,9 @@ where
 
     #[inline]
     fn keys_shl(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * K::SIZE];
+        debug_assert!(idx1 > 0);
+
+        let mut buf = vec![0u8; (idx2 - idx1) * K::SIZE];
 
         SSlice::_read_bytes(self.ptr, KEYS_OFFSET + idx1 * K::SIZE, &mut buf);
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + (idx1 - 1) * K::SIZE, &buf);
@@ -178,48 +166,56 @@ where
 
     #[inline]
     fn values_shr(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * V::SIZE];
+        debug_assert!(idx2 < CAPACITY);
 
-        SSlice::_read_bytes(self.ptr, VALUES_OFFSET::<K>() + idx1 * V::SIZE, &mut buf);
-        SSlice::_write_bytes(self.ptr, VALUES_OFFSET::<K>() + (idx1 + 1) * V::SIZE, &buf);
+        let mut buf = vec![0u8; (idx2 - idx1) * V::SIZE];
+
+        SSlice::_read_bytes(self.ptr, values_offset::<K>() + idx1 * V::SIZE, &mut buf);
+        SSlice::_write_bytes(self.ptr, values_offset::<K>() + (idx1 + 1) * V::SIZE, &buf);
     }
 
     #[inline]
     fn values_shl(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * V::SIZE];
+        debug_assert!(idx1 > 0);
 
-        SSlice::_read_bytes(self.ptr, VALUES_OFFSET::<K>() + idx1 * V::SIZE, &mut buf);
-        SSlice::_write_bytes(self.ptr, VALUES_OFFSET::<K>() + (idx1 - 1) * V::SIZE, &buf);
+        let mut buf = vec![0u8; (idx2 - idx1) * V::SIZE];
+
+        SSlice::_read_bytes(self.ptr, values_offset::<K>() + idx1 * V::SIZE, &mut buf);
+        SSlice::_write_bytes(self.ptr, values_offset::<K>() + (idx1 - 1) * V::SIZE, &buf);
     }
 
     #[inline]
     fn children_shr(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * u64::SIZE];
+        debug_assert!(idx2 <= CAPACITY);
+
+        let mut buf = vec![0u8; (idx2 - idx1) * u64::SIZE];
 
         SSlice::_read_bytes(
             self.ptr,
-            CHILDREN_OFFSET::<K, V>() + idx1 * u64::SIZE,
+            children_offset::<K, V>() + idx1 * u64::SIZE,
             &mut buf,
         );
         SSlice::_write_bytes(
             self.ptr,
-            CHILDREN_OFFSET::<K, V>() + (idx1 + 1) * u64::SIZE,
+            children_offset::<K, V>() + (idx1 + 1) * u64::SIZE,
             &buf,
         );
     }
 
     #[inline]
     fn children_shl(&mut self, idx1: usize, idx2: usize) {
-        let mut buf = vec![0u8; (idx2 - idx1 + 1) * u64::SIZE];
+        debug_assert!(idx1 > 0);
+
+        let mut buf = vec![0u8; (idx2 - idx1) * u64::SIZE];
 
         SSlice::_read_bytes(
             self.ptr,
-            CHILDREN_OFFSET::<K, V>() + idx1 * u64::SIZE,
+            children_offset::<K, V>() + idx1 * u64::SIZE,
             &mut buf,
         );
         SSlice::_write_bytes(
             self.ptr,
-            CHILDREN_OFFSET::<K, V>() + (idx1 - 1) * u64::SIZE,
+            children_offset::<K, V>() + (idx1 - 1) * u64::SIZE,
             &buf,
         );
     }
@@ -243,19 +239,28 @@ where
         let parent_k = parent.get_key(p_idx);
         parent.remove_key(p_idx, p_len);
 
-        let parent_v = parent.get_value(p_idx);
-        parent.remove_value(p_idx, p_len);
-
-        parent.remove_child_ptr(p_idx + 1, p_len + 1);
-        parent.set_len(p_len - 1);
-
-        let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
-        SSlice::_read_bytes(right.ptr, KEYS_OFFSET, &mut keys_buf);
         SSlice::_as_bytes_write(
             self.ptr,
             KEYS_OFFSET + MIN_LEN_AFTER_SPLIT * K::SIZE,
             parent_k,
         );
+
+        let parent_v = parent.get_value(p_idx);
+        parent.remove_value(p_idx, p_len);
+
+        SSlice::_as_bytes_write(
+            self.ptr,
+            values_offset::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE,
+            parent_v,
+        );
+
+        parent.set_len(p_len - 1);
+
+        // removing the child, since we're going to delete it
+        parent.remove_child_ptr(p_idx + 1, p_len + 1);
+
+        let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
+        SSlice::_read_bytes(right.ptr, KEYS_OFFSET, &mut keys_buf);
         SSlice::_write_bytes(
             self.ptr,
             KEYS_OFFSET + MIN_LEN_AFTER_SPLIT * K::SIZE + K::SIZE,
@@ -263,24 +268,19 @@ where
         );
 
         let mut values_buf = [0u8; MIN_LEN_AFTER_SPLIT * V::SIZE];
-        SSlice::_read_bytes(right.ptr, VALUES_OFFSET::<K>(), &mut values_buf);
-        SSlice::_as_bytes_write(
-            self.ptr,
-            VALUES_OFFSET::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE,
-            parent_v,
-        );
+        SSlice::_read_bytes(right.ptr, values_offset::<K>(), &mut values_buf);
         SSlice::_write_bytes(
             self.ptr,
-            VALUES_OFFSET::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE + V::SIZE,
+            values_offset::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE + V::SIZE,
             &values_buf,
         );
 
         if !is_leaf {
             let mut children_buf = [0u8; B * u64::SIZE];
-            SSlice::_read_bytes(right.ptr, CHILDREN_OFFSET::<K, V>(), &mut children_buf);
+            SSlice::_read_bytes(right.ptr, children_offset::<K, V>(), &mut children_buf);
             SSlice::_write_bytes(
                 self.ptr,
-                CHILDREN_OFFSET::<K, V>() + B * u64::SIZE,
+                children_offset::<K, V>() + B * u64::SIZE,
                 &children_buf,
             );
         }
@@ -290,7 +290,7 @@ where
     }
 
     pub fn split_full_in_middle_no_pop(&mut self, is_leaf: bool) -> Self {
-        let new_node = Self::new(is_leaf, false);
+        let new_node = Self::new(is_leaf);
 
         let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
         SSlice::_read_bytes(self.ptr, KEYS_OFFSET + B * K::SIZE, &mut keys_buf);
@@ -299,27 +299,27 @@ where
         let mut values_buf = [0u8; MIN_LEN_AFTER_SPLIT * V::SIZE];
         SSlice::_read_bytes(
             self.ptr,
-            VALUES_OFFSET::<K>() + B * V::SIZE,
+            values_offset::<K>() + B * V::SIZE,
             &mut values_buf,
         );
-        SSlice::_write_bytes(new_node.ptr, VALUES_OFFSET::<K>(), &values_buf);
+        SSlice::_write_bytes(new_node.ptr, values_offset::<K>(), &values_buf);
 
         if !is_leaf {
             let mut childrent_buf = [0u8; B * u64::SIZE];
             SSlice::_read_bytes(
                 self.ptr,
-                CHILDREN_OFFSET::<K, V>() + B * u64::SIZE,
+                children_offset::<K, V>() + B * u64::SIZE,
                 &mut childrent_buf,
             );
-            SSlice::_write_bytes(new_node.ptr, CHILDREN_OFFSET::<K, V>(), &childrent_buf);
+            SSlice::_write_bytes(new_node.ptr, children_offset::<K, V>(), &childrent_buf);
         }
 
         new_node
     }
 
     pub fn split_full_in_middle(&mut self, is_leaf: bool) -> (Self, K, V) {
-        let k = self.get_key(B);
-        let v = self.get_value(B);
+        let k = self.get_key(MIN_LEN_AFTER_SPLIT);
+        let v = self.get_value(MIN_LEN_AFTER_SPLIT);
 
         let new_node = self.split_full_in_middle_no_pop(is_leaf);
 
@@ -373,7 +373,7 @@ where
     }
 
     pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize) {
-        debug_assert!(children_len <= CAPACITY && idx < children_len);
+        debug_assert!(children_len <= CAPACITY + 1 && idx < children_len);
 
         if idx != children_len {
             self.children_shl(idx + 1, children_len);
@@ -381,6 +381,10 @@ where
     }
 
     pub fn find_idx(&self, k: &K, len: usize) -> Result<usize, usize> {
+        if len == 0 {
+            return Err(0);
+        }
+
         let mut min = 0;
         let mut max = len;
         let mut mid = (max - min) / 2;
@@ -429,14 +433,11 @@ where
     [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
     [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
 {
-    fn handle_violating_internal(mut node: Self, stop_ptr: u64) {
+    pub fn handle_violating_internal(mut node: Self) -> Option<Self> {
         let parent_ptr = node.get_parent();
 
-        // TODO: MAKE SURE PARENTS ARE SET CORRECTLY
-        // TODO: NOT ONLY EMPTY BUT ALSO OTHER PTR
-
-        if parent_ptr == stop_ptr {
-            return;
+        if parent_ptr == 0 {
+            return None;
         }
 
         let mut parent = unsafe { BTreeNode::<K, V>::from_ptr(parent_ptr) };
@@ -464,7 +465,7 @@ where
 
             if left_len > MIN_LEN_AFTER_SPLIT {
                 node.internal_violating_rotate_right(left, &mut parent, left_len, p_idx);
-                return;
+                return None;
             }
 
             if p_idx < p_len {
@@ -473,20 +474,21 @@ where
 
                 if right_len > MIN_LEN_AFTER_SPLIT {
                     node.internal_violating_rotate_left(right, &mut parent, right_len, p_idx);
-                    return;
+                    return None;
                 }
             }
 
             // if it is impossible to rotate, let's merge with the right neighbor,
             // stealing an element from the parent
 
-            left.merge_min_len(false, node, &mut parent, p_idx, p_len);
+            left.merge_min_len(false, node, &mut parent, p_idx - 1, p_len);
+            left.set_len(MIN_LEN_AFTER_SPLIT * 2);
 
-            if p_len == MIN_LEN_AFTER_SPLIT {
-                Self::handle_violating_internal(parent, stop_ptr);
-            }
-
-            return;
+            return if p_len == MIN_LEN_AFTER_SPLIT {
+                Some(parent)
+            } else {
+                None
+            };
         }
 
         // the same goes here, but here we can only use the right neighbor
@@ -496,13 +498,16 @@ where
 
         if right_len > MIN_LEN_AFTER_SPLIT {
             node.internal_violating_rotate_left(right, &mut parent, right_len, 0);
-            return;
+            return None;
         }
 
-        node.merge_min_len(false, right, &mut parent, 1, p_len);
+        node.merge_min_len(false, right, &mut parent, 0, p_len);
+        node.set_len(MIN_LEN_AFTER_SPLIT * 2);
 
         if p_len == MIN_LEN_AFTER_SPLIT {
-            Self::handle_violating_internal(parent, stop_ptr);
+            Some(parent)
+        } else {
+            None
         }
     }
 
@@ -512,8 +517,8 @@ where
         p_idx: usize,
         p_len: usize,
         idx: usize,
-        stop_ptr: u64,
-    ) -> (K, V) {
+    ) -> (K, V, Option<Self>) {
+        // if there is a left neighbor
         if p_idx > 0 {
             // at first let's try rotating if it's possible
             let mut left = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx - 1)) };
@@ -523,9 +528,10 @@ where
                 let k = node.get_key(idx);
                 let v = node.leaf_rotate_right(left, &mut parent, left_len, p_idx, idx);
 
-                return (k, v);
+                return (k, v, None);
             }
 
+            // if failed and there is alsa a right neighbor
             if p_idx < p_len {
                 let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx + 1)) };
                 let right_len = right.len();
@@ -534,18 +540,14 @@ where
                     let k = node.get_key(idx);
                     let v = node.leaf_rotate_left(right, &mut parent, right_len, p_idx, idx);
 
-                    return (k, v);
+                    return (k, v, None);
                 }
             }
 
-            // if it is impossible to rotate, let's merge with the right neighbor,
+            // if it is impossible to rotate, let's merge with the left neighbor,
             // stealing an element from the parent
 
-            left.merge_min_len(true, node, &mut parent, p_idx, p_len);
-
-            if p_len == MIN_LEN_AFTER_SPLIT {
-                Self::handle_violating_internal(parent, stop_ptr);
-            }
+            left.merge_min_len(true, node, &mut parent, p_idx - 1, p_len);
 
             let k = left.get_key(idx + MIN_LEN_AFTER_SPLIT + 1);
             let v = left.get_value(idx + MIN_LEN_AFTER_SPLIT + 1);
@@ -554,7 +556,11 @@ where
             left.remove_value(idx + MIN_LEN_AFTER_SPLIT + 1, CAPACITY);
             left.set_len(CAPACITY - 1);
 
-            return (k, v);
+            return if p_len == MIN_LEN_AFTER_SPLIT {
+                (k, v, Some(parent))
+            } else {
+                (k, v, None)
+            };
         }
 
         // the same goes here, but here we can only use the right neighbor
@@ -569,14 +575,10 @@ where
             k.remove_from_stable();
             v.remove_from_stable();
 
-            return (k, v);
+            return (k, v, None);
         }
 
         node.merge_min_len(true, right, &mut parent, 0, p_len);
-
-        if p_len == MIN_LEN_AFTER_SPLIT {
-            Self::handle_violating_internal(parent, stop_ptr);
-        }
 
         let mut k = node.get_key(idx);
         let mut v = node.get_value(idx);
@@ -588,7 +590,11 @@ where
         k.remove_from_stable();
         v.remove_from_stable();
 
-        (k, v)
+        if p_len == MIN_LEN_AFTER_SPLIT {
+            (k, v, Some(parent))
+        } else {
+            (k, v, None)
+        }
     }
 
     pub fn leaf_rotate_right(
@@ -743,28 +749,27 @@ where
                         new_node.set_parent(self.as_ptr());
 
                         self.set_len(B);
-
                         another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
                     } else {
                         another_new_node.insert_key(
                             k,
-                            idx - MIN_LEN_AFTER_SPLIT,
+                            idx - MIN_LEN_AFTER_SPLIT - 1,
                             MIN_LEN_AFTER_SPLIT,
                         );
                         another_new_node.insert_value(
                             v,
-                            idx - MIN_LEN_AFTER_SPLIT,
+                            idx - MIN_LEN_AFTER_SPLIT - 1,
                             MIN_LEN_AFTER_SPLIT,
                         );
 
                         another_new_node.insert_child_ptr(
                             new_node.as_ptr(),
-                            idx - MIN_LEN_AFTER_SPLIT + 1,
+                            idx - MIN_LEN_AFTER_SPLIT,
                             B,
                         );
                         new_node.set_parent(another_new_node.as_ptr());
-                        another_new_node.set_len(B);
 
+                        another_new_node.set_len(B);
                         self.set_len(MIN_LEN_AFTER_SPLIT);
                     }
 
@@ -832,8 +837,12 @@ where
 
                         new_node.set_len(MIN_LEN_AFTER_SPLIT);
                     } else {
-                        new_node.insert_key(k, idx - MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT);
-                        new_node.insert_value(v, idx - MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT);
+                        new_node.insert_key(k, idx - MIN_LEN_AFTER_SPLIT - 1, MIN_LEN_AFTER_SPLIT);
+                        new_node.insert_value(
+                            v,
+                            idx - MIN_LEN_AFTER_SPLIT - 1,
+                            MIN_LEN_AFTER_SPLIT,
+                        );
                         new_node.set_len(B);
 
                         self.set_len(MIN_LEN_AFTER_SPLIT);
@@ -858,7 +867,7 @@ where
     [(); V::SIZE]: Sized,
 {
     fn default() -> Self {
-        Self::new(false, false)
+        Self::new(false)
     }
 }
 

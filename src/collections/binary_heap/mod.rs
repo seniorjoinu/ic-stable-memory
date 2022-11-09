@@ -89,6 +89,7 @@ where
         loop {
             let parent = self.inner.get_copy(idx).unwrap();
 
+            // FIXME: check overflow
             let left_child_idx = (idx + 1) * 2 - 1;
             let right_child_idx = (idx + 1) * 2;
 

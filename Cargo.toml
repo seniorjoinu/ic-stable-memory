@@ -17,9 +17,11 @@ speedy = "0.8.3"
 candid = "0.7.18"
 serde = "1.0.146"
 num-bigint = "0.4.3"
+sha2 = "0.10.6"
 
 # copy_as_bytes = "0.1.1"
 copy_as_bytes = { path = "../copy_as_bytes" }
 
 [dev-dependencies]
 rand = "0.8.5"
+ic-certified-map = "0.3.1"
