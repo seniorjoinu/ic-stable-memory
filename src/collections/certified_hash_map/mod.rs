@@ -7,8 +7,10 @@ use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
 use candid::types::ic_types::{hash_tree, Sha256Digest};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
+use sha2::digest::Reset;
 use sha2::{Digest, Sha256};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use std::fmt::Debug;
 pub mod iter;
 
 const DEFAULT_CAPACITY: usize = 4;
@@ -116,18 +118,53 @@ where
                     continue;
                 }
                 HashMapKey::Empty => {
-                    let at = if let Some(a) = remembered_at { a } else { at };
+                    let mut at = if let Some(a) = remembered_at { a } else { at };
 
                     key.move_to_stable();
                     value.move_to_stable();
 
                     Self::write_key_at(table, at, HashMapKey::Occupied(key));
-                    Self::write_key_hash_at(table, at, key_hash);
                     Self::write_val_at(table, at, value);
-
-                    self.recalculate_branch_hashes(table, at);
+                    Self::write_key_hash_at(table, at, key_hash);
 
                     self.len += 1;
+
+                    let (lc_hash, rc_hash) = self.get_children_hashes(table, at);
+                    let mut node_hash = Self::hash_node(&key_hash, &lc_hash, &rc_hash);
+                    Self::write_node_hash_at(table, at, node_hash);
+
+                    if at == 0 {
+                        break;
+                    }
+
+                    let mut is_left = at % 2 == 1;
+
+                    while at > 0 {
+                        node_hash = if is_left {
+                            let r = if at < self.capacity - 1 {
+                                Self::read_node_hash_at(table, at + 1)
+                            } else {
+                                EMPTY_HASH
+                            };
+
+                            at /= 2;
+
+                            let key_hash = Self::read_key_hash_at(table, at);
+
+                            Self::hash_node(&key_hash, &node_hash, &r)
+                        } else {
+                            let l = Self::read_node_hash_at(table, at - 1);
+
+                            at = (at - 1) / 2;
+
+                            let key_hash = Self::read_key_hash_at(table, at);
+                            Self::hash_node(&key_hash, &l, &node_hash)
+                        };
+
+                        Self::write_node_hash_at(table, at, node_hash);
+
+                        is_left = at % 2 == 1
+                    }
 
                     break;
                 }
@@ -139,7 +176,7 @@ where
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        if let Some(at) = self.find_inner_idx(key) {
+        if let Some(mut at) = self.find_inner_idx(key) {
             let table = unsafe { self.table.as_ref().unwrap_unchecked() };
             let mut prev_key = Self::read_key_at(table, at, true).unwrap();
             let mut prev_value = Self::read_val_at(table, at);
@@ -150,9 +187,44 @@ where
             Self::write_key_at(table, at, HashMapKey::Tombstone);
             Self::write_key_hash_at(table, at, EMPTY_HASH);
 
-            self.recalculate_branch_hashes(table, at);
-
             self.len -= 1;
+
+            let (lc_hash, rc_hash) = self.get_children_hashes(table, at);
+            let mut node_hash = Self::hash_node(&EMPTY_HASH, &lc_hash, &rc_hash);
+            Self::write_node_hash_at(table, at, node_hash);
+
+            if at == 0 {
+                return Some(prev_value);
+            }
+
+            let mut is_left = at % 2 == 1;
+
+            while at > 0 {
+                node_hash = if is_left {
+                    let r = if at < self.capacity - 1 {
+                        Self::read_node_hash_at(table, at + 1)
+                    } else {
+                        EMPTY_HASH
+                    };
+
+                    at /= 2;
+
+                    let key_hash = Self::read_key_hash_at(table, at);
+
+                    Self::hash_node(&key_hash, &node_hash, &r)
+                } else {
+                    let l = Self::read_node_hash_at(table, at - 1);
+
+                    at = (at - 1) / 2;
+
+                    let key_hash = Self::read_key_hash_at(table, at);
+                    Self::hash_node(&key_hash, &l, &node_hash)
+                };
+
+                Self::write_node_hash_at(table, at, node_hash);
+
+                is_left = at % 2 == 1
+            }
 
             Some(prev_value)
         } else {
@@ -169,13 +241,71 @@ where
         self.find_inner_idx(key).is_some()
     }
 
-    pub fn witness_key(&self, key: &K) -> hash_tree::HashTree {
-        if let Some(idx) = self.find_inner_idx(key) {
-            hash_tree::leaf()
-            hash_tree::empty()
+    pub fn witness_key(&self, key: &K) -> MerkleWitness<K> {
+        if let Some(mut idx) = self.find_inner_idx(key) {
+            let table = unsafe { self.table.as_ref().unwrap_unchecked() };
+            let k = Self::read_key_at(table, idx, true).unwrap();
+            let mut result = Vec::new();
+
+            let (lc_hash, rc_hash) = self.get_children_hashes(table, idx);
+
+            result.push(MerkleNode::new(
+                MerkleValue::Inline(k),
+                MerkleChild::Pruned(lc_hash),
+                MerkleChild::Pruned(rc_hash),
+            ));
+
+            if idx == 0 {
+                return Some(result);
+            }
+
+            let mut is_left = idx % 2 == 1;
+
+            while idx > 0 {
+                if is_left {
+                    let r = if idx < self.capacity - 1 {
+                        Self::read_node_hash_at(table, idx + 1)
+                    } else {
+                        EMPTY_HASH
+                    };
+
+                    idx /= 2;
+
+                    let key_hash = Self::read_key_hash_at(table, idx);
+
+                    result.push(MerkleNode::new(
+                        MerkleValue::Pruned(key_hash),
+                        MerkleChild::Hole,
+                        MerkleChild::Pruned(r),
+                    ));
+                } else {
+                    let l = Self::read_node_hash_at(table, idx - 1);
+
+                    // TODO: LEFT CHILD MADNESS
+                    idx = (idx - 1) / 2;
+
+                    let key_hash = Self::read_key_hash_at(table, idx);
+
+                    result.push(MerkleNode::new(
+                        MerkleValue::Pruned(key_hash),
+                        MerkleChild::Pruned(l),
+                        MerkleChild::Hole,
+                    ));
+                }
+
+                is_left = idx % 2 == 1
+            }
+
+            Some(result)
         } else {
-            hash_tree::empty()
+            None
         }
+    }
+
+    pub fn get_root_hash(&self) -> Option<Sha256Digest> {
+        let table = self.table.as_ref()?;
+
+        Some(Self::read_node_hash_at(table, 0))
     }
 
     fn find_inner_idx(&self, key: &K) -> Option<usize> {
@@ -217,13 +347,17 @@ where
             let node_hash = self.make_node_hash(table, idx, &key_hash);
             Self::write_node_hash_at(table, idx, node_hash);
 
-            idx /= 2;
+            if idx % 2 == 1 {
+                idx /= 2;
+            } else {
+                idx = (idx - 1) / 2;
+            }
         }
 
         // for root
-        let key_hash = Self::read_key_hash_at(table, idx);
-        let node_hash = self.make_node_hash(table, idx, &key_hash);
-        Self::write_node_hash_at(table, idx, node_hash);
+        let key_hash = Self::read_key_hash_at(table, 0);
+        let node_hash = self.make_node_hash(table, 0, &key_hash);
+        Self::write_node_hash_at(table, 0, node_hash);
     }
 
     #[inline]
@@ -254,10 +388,10 @@ where
     }
 
     fn hash_node(
-        key_hash: &[u8; 32],
-        left_child_hash: &[u8; 32],
-        right_child_hash: &[u8; 32],
-    ) -> [u8; 32] {
+        key_hash: &Sha256Digest,
+        left_child_hash: &Sha256Digest,
+        right_child_hash: &Sha256Digest,
+    ) -> Sha256Digest {
         let mut hasher = Sha256::default();
         hasher.update(key_hash);
         hasher.update(left_child_hash);
@@ -356,18 +490,20 @@ where
     }
 
     fn make_node_hash(&self, slice: &SSlice, idx: usize, key_hash: &[u8; 32]) -> [u8; 32] {
-        let (lc_hash, rc_hash) = if idx > (self.capacity - 1) / 2 {
-            (EMPTY_HASH, EMPTY_HASH)
-        } else if let Some(r) = (idx + 1).checked_mul(2) {
-            (
-                Self::read_key_hash_at(slice, r - 1),
-                Self::read_key_hash_at(slice, r),
-            )
-        } else {
-            (EMPTY_HASH, EMPTY_HASH)
-        };
+        let (lc_hash, rc_hash) = self.get_children_hashes(slice, idx);
 
         Self::hash_node(key_hash, &lc_hash, &rc_hash)
+    }
+
+    fn get_children_hashes(&self, slice: &SSlice, idx: usize) -> (Sha256Digest, Sha256Digest) {
+        if idx > (self.capacity - 1) / 2 {
+            (EMPTY_HASH, EMPTY_HASH)
+        } else {
+            (
+                Self::read_node_hash_at(slice, (idx + 1) * 2 - 1),
+                Self::read_node_hash_at(slice, (idx + 1) * 2),
+            )
+        }
     }
 
     #[inline]
@@ -384,11 +520,16 @@ where
 
         if let Some(old_table) = self.table {
             let new_capacity = self.capacity * 2;
+            let old_capacity = self.capacity;
 
             let new_table = allocate(Self::to_offset_or_size(new_capacity));
             new_table.write_bytes(0, &vec![0u8; new_table.get_size_bytes()]);
 
-            for idx in 0..self.capacity {
+            self.table = Some(new_table);
+            self.capacity = new_capacity;
+            self.len = 0;
+
+            for idx in 0..old_capacity {
                 let k = Self::read_key_at(&old_table, idx, true);
                 if matches!(k, HashMapKey::Empty | HashMapKey::Tombstone) {
                     continue;
@@ -396,47 +537,10 @@ where
 
                 let key = k.unwrap();
                 let val = Self::read_val_at(&old_table, idx);
-                let key_hash = Self::read_key_hash_at(&old_table, idx);
-                let key_n_hash = Self::key_n_hash(&key_hash);
 
-                let mut i = 0;
-
-                loop {
-                    let at = (key_n_hash + i / 2 + i * i / 2) % new_capacity as usize;
-                    i += 1;
-
-                    match Self::read_key_at(&new_table, at, false) {
-                        HashMapKey::OccupiedNull => {
-                            continue;
-                        }
-                        HashMapKey::Empty => {
-                            Self::write_key_at(&new_table, at, HashMapKey::Occupied(key));
-                            Self::write_val_at(&new_table, at, val);
-                            Self::write_key_hash_at(&new_table, at, key_hash);
-
-                            break;
-                        }
-                        _ => unreachable!(),
-                    }
-                }
+                // inefficient at all
+                self.insert(key, val);
             }
-
-            // recalculate hashes for every non-leaf node
-            let mut i = (new_capacity - 1) / 2;
-            while i > 0 {
-                let key_hash = Self::read_key_hash_at(&new_table, i);
-                let node_hash = self.make_node_hash(&new_table, i, &key_hash);
-                Self::write_node_hash_at(&new_table, i, node_hash);
-
-                i /= 2;
-            }
-
-            let key_hash = Self::read_key_hash_at(&new_table, 0);
-            let node_hash = self.make_node_hash(&new_table, 0, &key_hash);
-            Self::write_node_hash_at(&new_table, 0, node_hash);
-
-            self.capacity = new_capacity;
-            self.table = Some(new_table);
 
             deallocate(old_table);
         } else {
@@ -451,6 +555,36 @@ where
 impl<K, V> Default for SCertifiedHashMap<K, V> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<K: Debug + StableAllocated + AsRef<[u8]> + Eq, V: StableAllocated> SCertifiedHashMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    fn debug_print(&self) {
+        print!("SCertifiedHashMap[");
+
+        let table = self.table.as_ref().unwrap();
+        for i in 0..self.capacity {
+            let key = Self::read_key_at(table, i, true);
+            let key_hash = Self::read_key_hash_at(table, i);
+            let node_hash = Self::read_node_hash_at(table, i);
+
+            let (lc, rc) = self.get_children_hashes(table, i);
+
+            print!("(key: {:?}, ", key);
+            print!("key hash: {:?}, ", key_hash);
+            print!("node hash: {:?}, ", node_hash);
+            print!("lc: {:?}, ", lc);
+            print!("rc: {:?})", rc);
+
+            if i < self.capacity - 1 {
+                print!(", ")
+            }
+        }
+        println!("]");
     }
 }
 
@@ -496,6 +630,7 @@ impl<K, V> Writable<LittleEndian> for SCertifiedHashMap<K, V> {
     }
 }
 
+#[derive(Debug)]
 enum HashMapKey<K> {
     Empty,
     Tombstone,
@@ -580,14 +715,104 @@ where
     }
 }
 
+// TODO: remove in favor of HashTree
+#[derive(Debug)]
+pub enum MerkleValue<V> {
+    Pruned(Sha256Digest),
+    Inline(V),
+}
+
+impl<V> MerkleValue<V> {
+    pub fn unwrap(self) -> V {
+        match self {
+            MerkleValue::Inline(v) => v,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum MerkleChild {
+    Pruned(Sha256Digest),
+    Hole,
+}
+
+impl MerkleChild {
+    pub fn unwrap(self) -> Sha256Digest {
+        match self {
+            MerkleChild::Pruned(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MerkleNode<V> {
+    pub value: MerkleValue<V>,
+    pub left_child: MerkleChild,
+    pub right_child: MerkleChild,
+}
+
+impl<V> MerkleNode<V> {
+    pub fn new(value: MerkleValue<V>, left: MerkleChild, right: MerkleChild) -> Self {
+        Self {
+            value,
+            left_child: left,
+            right_child: right,
+        }
+    }
+}
+
+pub type MerkleWitness<V> = Option<Vec<MerkleNode<V>>>;
+
+pub fn reconstruct<V: AsRef<[u8]>>(proof: MerkleWitness<V>) -> Option<(V, Sha256Digest)> {
+    let mut branch = proof?;
+    let leaf = branch.remove(0);
+
+    let value = leaf.value.unwrap();
+
+    let mut hasher = Sha256::default();
+    hasher.update(value.as_ref());
+
+    let value_hash: Sha256Digest = hasher.finalize_reset().into();
+
+    hasher.update(value_hash);
+    hasher.update(leaf.left_child.unwrap());
+    hasher.update(leaf.right_child.unwrap());
+
+    let mut node_hash: Sha256Digest = hasher.finalize_reset().into();
+
+    for node in branch {
+        match node.value {
+            MerkleValue::Pruned(vh) => hasher.update(vh),
+            _ => unreachable!(),
+        };
+
+        match node.left_child {
+            MerkleChild::Pruned(l_ch) => hasher.update(l_ch),
+            MerkleChild::Hole => hasher.update(node_hash),
+        };
+
+        match node.right_child {
+            MerkleChild::Pruned(r_ch) => hasher.update(r_ch),
+            MerkleChild::Hole => hasher.update(node_hash),
+        }
+
+        node_hash = hasher.finalize_reset().into();
+    }
+
+    Some((value, node_hash))
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::collections::certified_hash_map::SCertifiedHashMap;
+    use crate::collections::certified_hash_map::{reconstruct, SCertifiedHashMap};
     use crate::init_allocator;
     use crate::primitive::StableAllocated;
     use crate::utils::mem_context::stable;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn simple_flow_works_well() {
@@ -773,6 +998,67 @@ mod tests {
         }
 
         assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn certification_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SCertifiedHashMap::new();
+
+        for i in 0..100u32 {
+            map.insert(i.to_le_bytes(), i);
+            let root = map.get_root_hash().unwrap();
+
+            for j in 0..i + 1 {
+                let witness = map.witness_key(&j.to_le_bytes());
+                let (key, root_1) = reconstruct(witness).unwrap();
+
+                assert_eq!(key, j.to_le_bytes());
+                assert_eq!(root_1, root);
+            }
+        }
+
+        for i in 1..100u32 {
+            map.remove(&(i - 1).to_le_bytes());
+            let root = map.get_root_hash().unwrap();
+
+            for j in i..100u32 {
+                let witness = map.witness_key(&j.to_le_bytes());
+                let (key, root_1) = reconstruct(witness).unwrap();
+
+                assert_eq!(key, j.to_le_bytes());
+                assert_eq!(root_1, root);
+            }
+        }
+    }
+
+    #[test]
+    fn temp() {
+        let root: [u8; 32] = [
+            117, 172, 207, 23, 249, 86, 64, 13, 141, 118, 221, 244, 59, 167, 146, 131, 2, 208, 92,
+            125, 47, 73, 186, 106, 105, 12, 12, 189, 93, 226, 251, 49,
+        ];
+        let lc1: [u8; 32] = [
+            163, 137, 231, 53, 154, 167, 230, 227, 20, 182, 133, 206, 16, 84, 50, 120, 12, 141, 55,
+            73, 100, 176, 36, 162, 71, 248, 93, 83, 5, 226, 87, 119,
+        ];
+        let rc1: [u8; 32] = [
+            103, 104, 214, 159, 154, 190, 59, 76, 149, 10, 19, 232, 240, 23, 244, 250, 35, 251,
+            221, 143, 24, 165, 92, 31, 162, 238, 204, 35, 106, 253, 118, 158,
+        ];
+        let kh1: [u8; 32] = [0; 32];
+
+        let mut hasher = Sha256::default();
+        hasher.update(kh1);
+        hasher.update(lc1);
+        hasher.update(rc1);
+
+        let root1: [u8; 32] = hasher.finalize().into();
+
+        assert_eq!(root, root1);
     }
 
     #[test]
