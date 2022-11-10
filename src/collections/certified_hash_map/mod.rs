@@ -5,13 +5,14 @@ use crate::primitive::StableAllocated;
 use crate::utils::math::fast_log2;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
-use candid::types::ic_types::{hash_tree, Sha256Digest};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use sha2::digest::Reset;
 use sha2::{Digest, Sha256};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::fmt::Debug;
 pub mod iter;
+
+type Sha256Digest = [u8; 32];
 
 const DEFAULT_CAPACITY: usize = 4;
 const EMPTY_HASH: Sha256Digest = [0u8; 32];
