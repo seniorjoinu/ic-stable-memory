@@ -10,8 +10,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 pub mod iter;
+pub mod map;
+pub mod node;
 
-const LOAD_FACTOR: f64 = 0.75;
 const DEFAULT_CAPACITY: usize = 5;
 
 const EMPTY: u8 = 0;
@@ -33,6 +34,7 @@ impl<K, V> SHashMap<K, V> {
         Self::new_with_capacity(DEFAULT_CAPACITY)
     }
 
+    #[inline]
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             len: 0,
@@ -43,18 +45,22 @@ impl<K, V> SHashMap<K, V> {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    #[inline]
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    #[inline]
     pub unsafe fn stable_drop_collection(&mut self) {
         if let Some(slice) = self.table {
             deallocate(slice);
@@ -62,6 +68,7 @@ impl<K, V> SHashMap<K, V> {
         }
     }
 
+    #[inline]
     fn hash<T: Hash>(&self, val: &T) -> u64 {
         let mut hasher = DefaultHasher::new();
         val.hash(&mut hasher);
@@ -69,13 +76,18 @@ impl<K, V> SHashMap<K, V> {
         hasher.finish()
     }
 
+    #[inline]
     fn to_offset_or_size(idx: usize, size_k: usize, size_v: usize) -> usize {
         idx * (1 + size_k + size_v)
     }
 
+    #[inline]
     fn is_about_to_grow(&self) -> bool {
-        // TODO: optimize - can be calculated once at each resize
-        self.table.is_none() || self.len as f64 > (self.capacity as f64) * LOAD_FACTOR
+        if self.table.is_none() {
+            return true;
+        }
+        
+        self.len > (self.capacity * 3) >> 2
     }
 }
 
@@ -96,7 +108,7 @@ where
         let mut remembered_at = None;
 
         loop {
-            let at = (key_hash + i * i) % self.capacity;
+            let at = Self::calculate_next_index(key_hash, i, self.capacity);
 
             i += 1;
 
@@ -143,124 +155,72 @@ where
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.table?;
+        let (idx, mut prev_key) = self.find_inner_idx(key)?;
+        let table = unsafe { self.table.as_ref().unwrap_unchecked() };
+        
+        let mut prev_value = Self::read_val_at(table, idx);
 
-        let mut prev = None;
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
+        prev_key.remove_from_stable();
+        prev_value.remove_from_stable();
 
-        let table = self.table.as_ref().unwrap();
+        Self::write_key_at(table, idx, HashMapKey::Tombstone);
 
-        loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(mut prev_key) => {
-                    if prev_key.eq(key) {
-                        let mut prev_value = Self::read_val_at(table, at);
-
-                        prev_key.remove_from_stable();
-                        prev_value.remove_from_stable();
-
-                        prev = Some(prev_value);
-                        Self::write_key_at(table, at, HashMapKey::Tombstone);
-
-                        self.len -= 1;
-
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        prev
+        self.len -= 1;
+        
+        Some(prev_value)
     }
 
+    #[inline]
     pub fn get_copy(&self, key: &K) -> Option<V> {
-        self.table?;
+        let (idx, _) = self.find_inner_idx(key)?;
+        let table = unsafe { self.table.as_ref().unwrap_unchecked() };
 
-        let mut prev = None;
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
-
-        let table = self.table.as_ref().unwrap();
-
-        loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
-                        prev = Some(Self::read_val_at(table, at));
-
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        prev
+        Some(Self::read_val_at(table, idx))
     }
 
+    #[inline]
     pub fn contains_key(&self, key: &K) -> bool {
-        if self.table.is_none() {
-            return false;
-        }
-
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
-
-        let table = self.table.as_ref().unwrap();
-
-        loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
-                        return true;
-                    } else {
-                        continue;
-                    }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        false
+        self.find_inner_idx(key).is_some()
     }
 
+    #[inline]
     pub fn iter(&self) -> SHashMapIter<K, V> {
         SHashMapIter::new(self)
     }
 
+    fn find_inner_idx(&self, key: &K) -> Option<(usize, K)> {
+        self.table?;
+
+        let key_hash = self.hash(key) as usize;
+        let mut i = 0;
+
+        let table = self.table.as_ref().unwrap();
+
+        loop {
+            let at = Self::calculate_next_index(key_hash, i, self.capacity);
+            i += 1;
+
+            match Self::read_key_at(table, at, true) {
+                HashMapKey::Occupied(prev_key) => {
+                    if prev_key.eq(key) {
+                        return Some((at, prev_key));
+                    } else {
+                        continue;
+                    }
+                }
+                HashMapKey::Tombstone => {
+                    continue;
+                }
+                HashMapKey::Empty => {
+                    break;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        None
+    }
+    
     fn read_key_at(slice: &SSlice, idx: usize, read_value: bool) -> HashMapKey<K> {
         let mut key_flag = [0u8];
         let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE);
@@ -316,6 +276,11 @@ where
         let val_bytes = val.to_bytes();
 
         slice.write_bytes(at, &val_bytes);
+    }
+    
+    #[inline]
+    fn calculate_next_index(key_n_hash: usize, i: usize, capacity: usize) -> usize {
+        (key_n_hash + i / 2 + i * i / 2) % capacity
     }
 
     fn maybe_reallocate(&mut self) {
@@ -374,6 +339,7 @@ where
 }
 
 impl<K, V> Default for SHashMap<K, V> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
