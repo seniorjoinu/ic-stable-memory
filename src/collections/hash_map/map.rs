@@ -81,6 +81,10 @@ where
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
+        if self.is_empty() {
+            return None;
+        }
+
         let mut node = self.get_or_create_root();
         let mut level = 0;
 
@@ -91,23 +95,20 @@ where
                     let value = node.remove_internal_no_len_mod(&mut key, idx);
 
                     let is_left = Self::should_go_left(key_hash);
-
                     let child = Self::get_child(&node, is_left);
 
                     if let Some(c) = child {
                         break (c, value);
-                    }
+                    } else {
+                        let len = node.read_len() - 1;
+                        node.write_len(len);
 
-                    let len = node.read_len();
-                    if len == 1 {
-                        if !self.is_root(&node) {
+                        if len == 0 && !self.is_root(&node) {
                             self.remove_node(node);
-                        } else {
-                            node.write_len(0);
                         }
-                    }
 
-                    return Some(value);
+                        return Some(value);
+                    }
                 }
                 Err(key_hash) => {
                     let is_left = Self::should_go_left(key_hash);
@@ -118,7 +119,9 @@ where
                         node.read_right()
                     };
 
-                    debug_assert!(ptr != 0);
+                    if ptr == 0 {
+                        return None;
+                    }
 
                     level += 1;
                     node = unsafe { SHashTreeNode::<K, V>::from_ptr(ptr) };
@@ -140,11 +143,11 @@ where
             }
 
             let (replace_k, replace_v) = child.take_any_leaf_non_empty_no_len_mod();
-            let len = child.read_len();
-            if len == 1 {
+            let len = child.read_len() - 1;
+            child.write_len(len);
+
+            if len == 0 {
                 self.remove_node(child);
-            } else {
-                child.write_len(len - 1);
             }
 
             node.replace_internal_not_full(replace_k, replace_v, level);
@@ -154,12 +157,18 @@ where
     }
 
     pub fn get_copy(&self, key: &K) -> Option<V> {
+        if self.is_empty() {
+            return None;
+        }
+
         let mut node = unsafe { self.root.as_ref()?.copy() };
         let mut level = 0;
 
         loop {
             match node.find_inner_idx(key, level) {
-                Ok((idx, _, _)) => return Some(node.read_val_at(idx)),
+                Ok((idx, _, _)) => {
+                    return Some(node.read_val_at(idx));
+                }
                 Err(key_hash) => {
                     let is_left = Self::should_go_left(key_hash);
 
@@ -181,12 +190,16 @@ where
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+
         if let Some(mut node) = unsafe { self.root.as_ref().map(|it| it.copy()) } {
             let mut level = 0;
 
             loop {
                 match node.find_inner_idx(key, level) {
-                    Ok((idx, _, _)) => {
+                    Ok(_) => {
                         return true;
                     }
                     Err(key_hash) => {
@@ -266,7 +279,7 @@ where
 
     #[inline]
     const fn should_go_left(key_hash: usize) -> bool {
-        key_hash % CAPACITY < HALF_CAPACITY
+        key_hash & 1 == 1
     }
 
     fn get_or_create_root(&mut self) -> SHashTreeNode<K, V> {
@@ -298,6 +311,35 @@ mod tests {
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     use speedy::{Readable, Writable};
+
+    #[test]
+    fn insert_remove_read() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SHashTreeMap::new();
+        let iterations = 2000;
+
+        for i in 0..iterations {
+            assert!(map.insert(i, i).is_none());
+
+            for j in 0..i {
+                assert_eq!(map.get_copy(&j).unwrap(), j);
+            }
+        }
+
+        for i in 0..iterations {
+            assert_eq!(map.remove(&i).unwrap(), i);
+
+            if map.len() > 1 {
+                for j in ((i + 1)..iterations).rev() {
+                    let res = map.get_copy(&j);
+                    assert_eq!(res.unwrap(), j);
+                }
+            }
+        }
+    }
 
     #[test]
     fn simple_flow_works_well() {
@@ -413,8 +455,8 @@ mod tests {
         let mut vec = (200..300).collect::<Vec<_>>();
         vec.shuffle(&mut thread_rng());
 
-        for i in vec {
-            map.remove(&i);
+        for (idx, i) in vec.into_iter().enumerate() {
+            map.remove(&i).unwrap();
         }
 
         for i in 500..5000 {
@@ -428,8 +470,13 @@ mod tests {
         let mut vec = (0..5000).collect::<Vec<_>>();
         vec.shuffle(&mut thread_rng());
 
-        for i in vec {
-            map.remove(&i);
+        for (idx, i) in vec.into_iter().enumerate() {
+            println!("{} {}", idx, i);
+            let res = map.remove(&i);
+
+            if res.is_none() {
+                println!();
+            }
         }
 
         // unsafe { map.stable_drop() };

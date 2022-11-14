@@ -4,8 +4,8 @@ use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use zwohash::ZwoHasher;
 
 // BY DEFAULT:
 // LEN: usize = 0
@@ -25,6 +25,7 @@ pub const fn values_offset<K: SuperSized>() -> usize {
 
 pub const CAPACITY: usize = 12;
 pub const HALF_CAPACITY: usize = 6;
+pub const THREE_QUARTERS_CAPACITY: usize = 9;
 const LAST_IDX: usize = CAPACITY - 1;
 
 const EMPTY: u8 = 0;
@@ -67,7 +68,7 @@ impl<K, V> SHashTreeNode<K, V> {
 
     #[inline]
     pub fn hash<T: Hash>(&self, val: &T, level: u64) -> KeyHash {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
         level.hash(&mut hasher);
 
@@ -124,6 +125,25 @@ where
 
                         return Ok((Some(prev_value), false));
                     } else {
+                        if i == LAST_IDX {
+                            let len = self.len();
+                            if self.is_full(len) {
+                                return Err((key, value, key_hash));
+                            }
+
+                            let at = remembered_at.unwrap();
+
+                            key.move_to_stable();
+                            value.move_to_stable();
+
+                            self.write_key_at(at, HashMapKey::Occupied(key));
+                            self.write_val_at(at, value);
+
+                            self.write_len(len + 1);
+
+                            return Ok((None, true));
+                        }
+
                         continue;
                     }
                 }
@@ -131,6 +151,26 @@ where
                     if remembered_at.is_none() {
                         remembered_at = Some(at);
                     }
+
+                    if i == LAST_IDX {
+                        let len = self.len();
+                        if self.is_full(len) {
+                            return Err((key, value, key_hash));
+                        }
+
+                        let at = remembered_at.unwrap();
+
+                        key.move_to_stable();
+                        value.move_to_stable();
+
+                        self.write_key_at(at, HashMapKey::Occupied(key));
+                        self.write_val_at(at, value);
+
+                        self.write_len(len + 1);
+
+                        return Ok((None, true));
+                    }
+
                     continue;
                 }
                 HashMapKey::Empty => {
@@ -156,12 +196,7 @@ where
         }
     }
 
-    pub fn replace_internal_not_full(
-        &mut self,
-        mut key: K,
-        mut value: V,
-        level: u64,
-    ) {
+    pub fn replace_internal_not_full(&mut self, key: K, value: V, level: u64) {
         let key_hash = self.hash(&key, level);
 
         let mut i = 0;
@@ -174,18 +209,18 @@ where
             match self.read_key_at(at, false) {
                 HashMapKey::OccupiedNull => {
                     continue;
-                },
+                }
                 HashMapKey::Occupied(_) => unreachable!(),
                 _ => {
                     self.write_key_at(at, HashMapKey::Occupied(key));
                     self.write_val_at(at, value);
-                    
+
                     break;
                 }
             }
         }
     }
-    
+
     pub fn remove_internal_no_len_mod(&mut self, prev_key: &mut K, idx: usize) -> V {
         let mut prev_value = self.read_val_at(idx);
 
@@ -222,8 +257,8 @@ where
     }
 
     #[inline]
-    fn is_full(&self, len: usize) -> bool {
-        len >= (CAPACITY * 3) >> 2
+    pub const fn is_full(&self, len: usize) -> bool {
+        len == THREE_QUARTERS_CAPACITY
     }
 
     pub fn find_inner_idx(&self, key: &K, level: u64) -> Result<(usize, K, KeyHash), KeyHash> {
@@ -232,6 +267,7 @@ where
 
         loop {
             let at = Self::calculate_next_index(key_hash, i, CAPACITY);
+
             i += 1;
 
             match self.read_key_at(at, true) {
@@ -239,17 +275,25 @@ where
                     if prev_key.eq(key) {
                         return Ok((at, prev_key, key_hash));
                     } else {
+                        if i == LAST_IDX {
+                            return Err(key_hash);
+                        }
+
                         continue;
                     }
                 }
                 HashMapKey::Tombstone => {
+                    if i == LAST_IDX {
+                        return Err(key_hash);
+                    }
+
                     continue;
                 }
                 HashMapKey::Empty => {
                     return Err(key_hash);
                 }
                 _ => unreachable!(),
-            }
+            };
         }
     }
 
@@ -348,7 +392,42 @@ where
 
     #[inline]
     const fn calculate_next_index(key_n_hash: usize, i: usize, capacity: usize) -> usize {
-        (key_n_hash + i / 2 + i * i / 2) % capacity
+        (key_n_hash + i) % capacity
+    }
+
+    pub fn debug_print(&self) {
+        print!(
+            "Node({}, {}, {}, {})[",
+            self.read_len(),
+            self.read_left(),
+            self.read_right(),
+            self.read_parent()
+        );
+        for i in 0..CAPACITY {
+            let mut k_flag = [0u8];
+            let mut k = [0u8; K::SIZE];
+            let mut v = [0u8; V::SIZE];
+
+            SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i, &mut k_flag);
+            SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i + 1, &mut k);
+            SSlice::_read_bytes(self.table_ptr, values_offset::<K>() + V::SIZE * i, &mut v);
+
+            print!("(");
+
+            match k_flag[0] {
+                EMPTY => print!("<empty> = "),
+                TOMBSTONE => print!("<tombstone> = "),
+                OCCUPIED => print!("<occupied> = "),
+                _ => unreachable!(),
+            };
+
+            print!("{:?}, {:?})", k, v);
+
+            if i < CAPACITY - 1 {
+                print!(", ");
+            }
+        }
+        println!("]");
     }
 }
 

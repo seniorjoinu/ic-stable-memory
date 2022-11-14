@@ -1,6 +1,8 @@
 #![feature(thread_local)]
 #![feature(generic_const_exprs)]
 
+extern crate core;
+
 use crate::mem::allocator::StableMemoryAllocator;
 use mem::s_slice::SSlice;
 use std::cell::RefCell;
