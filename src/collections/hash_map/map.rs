@@ -1,7 +1,12 @@
-use crate::collections::hash_map::node::{values_offset, SHashTreeNode, CAPACITY, HALF_CAPACITY};
+use crate::collections::hash_map::node::SHashTreeNode;
 use crate::primitive::StableAllocated;
 use std::hash::Hash;
 
+const MAX_CAPACITY: usize = 3221225473;
+
+// non-reallocating big hash map based on rope data structure
+// linked list of hashmaps, from big ones to small ones
+// infinite; both: logarithmic and amortized const
 pub struct SHashTreeMap<K, V> {
     root: Option<SHashTreeNode<K, V>>,
     len: u64,
@@ -24,57 +29,53 @@ impl<K, V> SHashTreeMap<K, V> {
     }
 }
 
-// TODO: optimization tips
-// 1. Non-leaves are always full
-// 2. When removing the leaf, you can track parent and is_left, without reading them once again
-
 impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashTreeMap<K, V>
 where
     [u8; K::SIZE]: Sized,
     [u8; V::SIZE]: Sized,
-    [u8; values_offset::<K>() + V::SIZE * CAPACITY]: Sized,
 {
     pub fn insert(&mut self, mut k: K, mut v: V) -> Option<V> {
         let mut node = self.get_or_create_root();
-        let mut level = 0;
+        let mut capacity = node.read_capacity();
+        let root_capacity = capacity;
 
         loop {
-            match node.insert(k, v, level) {
-                Ok((res, should_update_len)) => {
+            match node.insert(k, v, capacity) {
+                Ok((res, should_update_len, _)) => {
                     if should_update_len {
                         self.len += 1;
                     }
 
                     return res;
                 }
-                Err((_k, _v, key_hash)) => {
+                Err((_k, _v)) => {
                     k = _k;
                     v = _v;
 
-                    let is_left = Self::should_go_left(key_hash);
+                    let next = node.read_next();
 
-                    let ptr = if is_left {
-                        node.read_left()
-                    } else {
-                        node.read_right()
-                    };
-
-                    node = if ptr == 0 {
-                        let mut child = SHashTreeNode::default();
-                        child.write_parent(node.table_ptr);
-
-                        if is_left {
-                            node.write_left(child.table_ptr);
+                    node = if next == 0 {
+                        let new_root_capacity = if root_capacity == MAX_CAPACITY {
+                            MAX_CAPACITY
                         } else {
-                            node.write_right(child.table_ptr);
-                        }
+                            root_capacity * 2 - 1
+                        };
 
-                        child
+                        let mut new_root = SHashTreeNode::new(new_root_capacity);
+
+                        let root = self.get_root_unchecked();
+                        new_root.write_next(root.table_ptr);
+
+                        capacity = new_root_capacity;
+                        self.root = Some(unsafe { new_root.copy() });
+
+                        new_root
                     } else {
-                        unsafe { SHashTreeNode::from_ptr(ptr) }
-                    };
+                        let next = unsafe { SHashTreeNode::from_ptr(next) };
+                        capacity = next.read_capacity();
 
-                    level += 1;
+                        next
+                    };
                 }
             }
         }
@@ -86,200 +87,84 @@ where
         }
 
         let mut node = self.get_or_create_root();
-        let mut level = 0;
+        let mut capacity = node.read_capacity();
 
-        let (mut child, value) = loop {
-            match node.find_inner_idx(key, level) {
-                Ok((idx, mut key, key_hash)) => {
+        loop {
+            match node.remove(key, capacity) {
+                Some(v) => {
                     self.len -= 1;
-                    let value = node.remove_internal_no_len_mod(&mut key, idx);
 
-                    let is_left = Self::should_go_left(key_hash);
-                    let child = Self::get_child(&node, is_left);
-
-                    if let Some(c) = child {
-                        break (c, value);
-                    } else {
-                        let len = node.read_len() - 1;
-                        node.write_len(len);
-
-                        if len == 0 && !self.is_root(&node) {
-                            self.remove_node(node);
-                        }
-
-                        return Some(value);
-                    }
+                    return Some(v);
                 }
-                Err(key_hash) => {
-                    let is_left = Self::should_go_left(key_hash);
+                None => {
+                    let next = node.read_next();
 
-                    let ptr = if is_left {
-                        node.read_left()
-                    } else {
-                        node.read_right()
-                    };
-
-                    if ptr == 0 {
+                    if next == 0 {
                         return None;
                     }
 
-                    level += 1;
-                    node = unsafe { SHashTreeNode::<K, V>::from_ptr(ptr) };
+                    node = unsafe { SHashTreeNode::from_ptr(next) };
+                    capacity = node.read_capacity();
                 }
-            }
-        };
-
-        let mut child_level = level + 1;
-
-        loop {
-            let key_hash = child.hash(key, child_level);
-            let is_left = Self::should_go_left(key_hash);
-
-            if let Some(c) = Self::get_child(&child, is_left) {
-                child = c;
-                child_level += 1;
-
-                continue;
-            }
-
-            let (replace_k, replace_v) = child.take_any_leaf_non_empty_no_len_mod();
-            let len = child.read_len() - 1;
-            child.write_len(len);
-
-            if len == 0 {
-                self.remove_node(child);
-            }
-
-            node.replace_internal_not_full(replace_k, replace_v, level);
-
-            return Some(value);
+            };
         }
     }
 
     pub fn get_copy(&self, key: &K) -> Option<V> {
+        let (node, idx, capacity) = self.find_key(key)?;
+        Some(node.read_val_at(idx, capacity))
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.find_key(key).is_some()
+    }
+
+    fn find_key(&self, key: &K) -> Option<(SHashTreeNode<K, V>, usize, usize)> {
         if self.is_empty() {
             return None;
         }
 
-        let mut node = unsafe { self.root.as_ref()?.copy() };
-        let mut level = 0;
+        let mut non_empty_node_opt: Option<(SHashTreeNode<K, V>, usize)> = None;
+        let mut node = self.get_root_unchecked();
+        let mut capacity = node.read_capacity();
 
         loop {
-            match node.find_inner_idx(key, level) {
-                Ok((idx, _, _)) => {
-                    return Some(node.read_val_at(idx));
-                }
-                Err(key_hash) => {
-                    let is_left = Self::should_go_left(key_hash);
+            match node.find_inner_idx(key, capacity) {
+                Some((idx, k)) => {
+                    let res = if let Some((mut non_empty_node, its_capacity)) = non_empty_node_opt {
+                        let val = node.remove_by_idx(idx, capacity);
 
-                    let ptr = if is_left {
-                        node.read_left()
+                        // ignoring the result, because it cannot fail
+                        match non_empty_node.insert(k, val, its_capacity) {
+                            Ok((_, _, i)) => (non_empty_node, i, its_capacity),
+                            _ => unreachable!(),
+                        }
                     } else {
-                        node.read_right()
+                        (node, idx, capacity)
                     };
 
-                    if ptr == 0 {
+                    return Some(res);
+                }
+                None => {
+                    let next = node.read_next();
+
+                    if non_empty_node_opt.is_none() {
+                        let len = node.read_len();
+
+                        if !node.is_full(len, capacity) {
+                            non_empty_node_opt = Some((node, capacity));
+                        }
+                    }
+
+                    if next == 0 {
                         return None;
                     }
 
-                    node = unsafe { SHashTreeNode::<K, V>::from_ptr(ptr) };
-                    level += 1;
+                    node = unsafe { SHashTreeNode::from_ptr(next) };
+                    capacity = node.read_capacity();
                 }
-            }
+            };
         }
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool {
-        if self.is_empty() {
-            return false;
-        }
-
-        if let Some(mut node) = unsafe { self.root.as_ref().map(|it| it.copy()) } {
-            let mut level = 0;
-
-            loop {
-                match node.find_inner_idx(key, level) {
-                    Ok(_) => {
-                        return true;
-                    }
-                    Err(key_hash) => {
-                        let is_left = Self::should_go_left(key_hash);
-
-                        let ptr = if is_left {
-                            node.read_left()
-                        } else {
-                            node.read_right()
-                        };
-
-                        if ptr == 0 {
-                            return false;
-                        }
-
-                        node = unsafe { SHashTreeNode::<K, V>::from_ptr(ptr) };
-                        level += 1;
-                    }
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    fn get_child(node: &SHashTreeNode<K, V>, is_left: bool) -> Option<SHashTreeNode<K, V>> {
-        if is_left {
-            let left = node.read_left();
-
-            if left == 0 {
-                let right = node.read_right();
-
-                if right == 0 {
-                    None
-                } else {
-                    Some(unsafe { SHashTreeNode::<K, V>::from_ptr(right) })
-                }
-            } else {
-                Some(unsafe { SHashTreeNode::from_ptr(left) })
-            }
-        } else {
-            let right = node.read_right();
-
-            if right == 0 {
-                let left = node.read_left();
-
-                if left == 0 {
-                    None
-                } else {
-                    Some(unsafe { SHashTreeNode::from_ptr(left) })
-                }
-            } else {
-                Some(unsafe { SHashTreeNode::from_ptr(right) })
-            }
-        }
-    }
-
-    fn remove_node(&self, mut node: SHashTreeNode<K, V>) {
-        let mut parent = unsafe { SHashTreeNode::<K, V>::from_ptr(node.read_parent()) };
-        let left = parent.read_left();
-
-        if left == node.table_ptr {
-            parent.write_left(0);
-        } else {
-            debug_assert!(parent.read_right() == node.table_ptr);
-
-            parent.write_right(0);
-        }
-
-        unsafe { node.stable_drop_collection() };
-    }
-
-    #[inline]
-    fn is_root(&self, node: &SHashTreeNode<K, V>) -> bool {
-        self.root.as_ref().unwrap().table_ptr == node.table_ptr
-    }
-
-    #[inline]
-    const fn should_go_left(key_hash: usize) -> bool {
-        key_hash & 1 == 1
     }
 
     fn get_or_create_root(&mut self) -> SHashTreeNode<K, V> {
@@ -290,6 +175,10 @@ where
 
             unsafe { self.root.as_ref().unwrap_unchecked().copy() }
         }
+    }
+
+    fn get_root_unchecked(&self) -> SHashTreeNode<K, V> {
+        unsafe { self.root.as_ref().map(|it| it.copy()).unwrap_unchecked() }
     }
 }
 

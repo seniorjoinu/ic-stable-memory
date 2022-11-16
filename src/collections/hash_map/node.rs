@@ -8,33 +8,30 @@ use std::hash::{Hash, Hasher};
 use zwohash::ZwoHasher;
 
 // BY DEFAULT:
-// LEN: usize = 0
-// LEFT, RIGHT, PARENT: u64 = 0
+// LEN, CAPACITY: usize = 0
+// NEXT: u64 = 0
 // KEYS: [K; CAPACITY] = [zeroed(K); CAPACITY]
 // VALUES: [V; CAPACITY] = [zeroed(V); CAPACITY]
 
 const LEN_OFFSET: usize = 0;
-const LEFT_OFFSET: usize = LEN_OFFSET + usize::SIZE;
-const RIGHT_OFFSET: usize = LEFT_OFFSET + u64::SIZE;
-const PARENT_OFFSET: usize = RIGHT_OFFSET + u64::SIZE;
-const KEYS_OFFSET: usize = PARENT_OFFSET + u64::SIZE;
+const CAPACITY_OFFSET: usize = LEN_OFFSET + usize::SIZE;
+const NEXT_OFFSET: usize = CAPACITY_OFFSET + usize::SIZE;
+const KEYS_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
 
-pub const fn values_offset<K: SuperSized>() -> usize {
-    KEYS_OFFSET + (1 + K::SIZE) * CAPACITY
+#[inline]
+pub const fn values_offset<K: SuperSized>(capacity: usize) -> usize {
+    KEYS_OFFSET + (1 + K::SIZE) * capacity
 }
 
-pub const CAPACITY: usize = 12;
-pub const HALF_CAPACITY: usize = 6;
-pub const THREE_QUARTERS_CAPACITY: usize = 9;
-const LAST_IDX: usize = CAPACITY - 1;
+pub const DEFAULT_CAPACITY: usize = 7;
 
 const EMPTY: u8 = 0;
-const OCCUPIED: u8 = 1;
-const TOMBSTONE: u8 = 255;
+const OCCUPIED: u8 = 255;
 
 pub type KeyHash = usize;
 
-// reallocating, open addressing, quadratic probing small hashmap
+// all for maximum cache-efficiency
+// fixed-size, open addressing, linear probing, 3/4 load factor, non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
 pub struct SHashTreeNode<K, V> {
     pub(crate) table_ptr: u64,
     _marker_k: SPhantomData<K>,
@@ -66,11 +63,9 @@ impl<K, V> SHashTreeNode<K, V> {
         deallocate(slice);
     }
 
-    #[inline]
-    pub fn hash<T: Hash>(&self, val: &T, level: u64) -> KeyHash {
+    pub fn hash<T: Hash>(val: &T) -> KeyHash {
         let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
-        level.hash(&mut hasher);
 
         hasher.finish() as KeyHash
     }
@@ -80,15 +75,15 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashTreeNode<K, V>
 where
     [u8; K::SIZE]: Sized,
     [u8; V::SIZE]: Sized,
-    [u8; values_offset::<K>() + V::SIZE * CAPACITY]: Sized,
 {
     #[inline]
-    pub fn new() -> Self {
-        let size = values_offset::<K>() + V::SIZE * CAPACITY;
+    pub fn new(capacity: usize) -> Self {
+        let size = values_offset::<K>(capacity) + V::SIZE * capacity;
         let table = allocate(size);
 
-        let zeroed = [0u8; values_offset::<K>() + V::SIZE * CAPACITY];
+        let zeroed = vec![0u8; size];
         table.write_bytes(0, &zeroed);
+        table.as_bytes_write(CAPACITY_OFFSET, capacity);
 
         Self {
             table_ptr: table.get_ptr(),
@@ -101,154 +96,83 @@ where
         &mut self,
         mut key: K,
         mut value: V,
-        level: u64,
-    ) -> Result<(Option<V>, bool), (K, V, KeyHash)> {
-        let key_hash = self.hash(&key, level);
-
-        let mut i = 0;
-
-        let mut remembered_at = None;
+        capacity: usize,
+    ) -> Result<(Option<V>, bool, usize), (K, V)> {
+        let key_hash = Self::hash(&key);
+        let mut i = key_hash % capacity;
 
         loop {
-            let at = Self::calculate_next_index(key_hash, i, CAPACITY);
-
-            i += 1;
-
-            match self.read_key_at(at, true) {
+            match self.read_key_at(i, true) {
                 HashMapKey::Occupied(prev_key) => {
                     if prev_key.eq(&key) {
-                        let mut prev_value = self.read_val_at(at);
+                        let mut prev_value = self.read_val_at(i, capacity);
                         prev_value.remove_from_stable();
 
                         value.move_to_stable();
-                        self.write_val_at(at, value);
+                        self.write_val_at(i, value, capacity);
 
-                        return Ok((Some(prev_value), false));
+                        return Ok((Some(prev_value), false, i));
                     } else {
-                        if i == LAST_IDX {
-                            let len = self.len();
-                            if self.is_full(len) {
-                                return Err((key, value, key_hash));
-                            }
-
-                            let at = remembered_at.unwrap();
-
-                            key.move_to_stable();
-                            value.move_to_stable();
-
-                            self.write_key_at(at, HashMapKey::Occupied(key));
-                            self.write_val_at(at, value);
-
-                            self.write_len(len + 1);
-
-                            return Ok((None, true));
-                        }
+                        i = (i + 1) % capacity;
 
                         continue;
                     }
                 }
-                HashMapKey::Tombstone => {
-                    if remembered_at.is_none() {
-                        remembered_at = Some(at);
-                    }
-
-                    if i == LAST_IDX {
-                        let len = self.len();
-                        if self.is_full(len) {
-                            return Err((key, value, key_hash));
-                        }
-
-                        let at = remembered_at.unwrap();
-
-                        key.move_to_stable();
-                        value.move_to_stable();
-
-                        self.write_key_at(at, HashMapKey::Occupied(key));
-                        self.write_val_at(at, value);
-
-                        self.write_len(len + 1);
-
-                        return Ok((None, true));
-                    }
-
-                    continue;
-                }
                 HashMapKey::Empty => {
                     let len = self.len();
-                    if self.is_full(len) {
-                        return Err((key, value, key_hash));
+                    if self.is_full(len, capacity) {
+                        return Err((key, value));
                     }
-
-                    let at = if let Some(a) = remembered_at { a } else { at };
 
                     key.move_to_stable();
                     value.move_to_stable();
 
-                    self.write_key_at(at, HashMapKey::Occupied(key));
-                    self.write_val_at(at, value);
+                    self.write_key_at(i, HashMapKey::Occupied(key));
+                    self.write_val_at(i, value, capacity);
 
                     self.write_len(len + 1);
 
-                    return Ok((None, true));
+                    return Ok((None, true, i));
                 }
                 _ => unreachable!(),
             }
         }
     }
 
-    pub fn replace_internal_not_full(&mut self, key: K, value: V, level: u64) {
-        let key_hash = self.hash(&key, level);
-
-        let mut i = 0;
+    pub fn remove_by_idx(&mut self, mut i: usize, capacity: usize) -> V {
+        let prev_value = self.read_val_at(i, capacity);
+        let mut j = i;
 
         loop {
-            let at = Self::calculate_next_index(key_hash, i, CAPACITY);
+            j = (j + 1) % capacity;
+            if j == i {
+                break;
+            }
+            match self.read_key_at(j, true) {
+                HashMapKey::Empty => break,
+                HashMapKey::Occupied(next_key) => {
+                    let k = Self::hash(&next_key) % capacity;
+                    if (j < i) ^ (k <= i) ^ (k > j) {
+                        self.write_key_at(i, HashMapKey::Occupied(next_key));
+                        self.write_val_at(i, self.read_val_at(j, capacity), capacity);
 
-            i += 1;
-
-            match self.read_key_at(at, false) {
-                HashMapKey::OccupiedNull => {
-                    continue;
+                        i = j;
+                    }
                 }
-                HashMapKey::Occupied(_) => unreachable!(),
-                _ => {
-                    self.write_key_at(at, HashMapKey::Occupied(key));
-                    self.write_val_at(at, value);
-
-                    break;
-                }
+                _ => unreachable!(),
             }
         }
-    }
 
-    pub fn remove_internal_no_len_mod(&mut self, prev_key: &mut K, idx: usize) -> V {
-        let mut prev_value = self.read_val_at(idx);
-
-        prev_key.remove_from_stable();
-        prev_value.remove_from_stable();
-
-        self.write_key_at(idx, HashMapKey::Tombstone);
+        self.write_key_at(i, HashMapKey::Empty);
+        self.write_len(self.read_len() - 1);
 
         prev_value
     }
 
-    pub fn take_any_leaf_non_empty_no_len_mod(&mut self) -> (K, V) {
-        for i in 0..CAPACITY {
-            let k = self.read_key_at(i, true);
-            match k {
-                HashMapKey::Empty => continue,
-                HashMapKey::Tombstone => continue,
-                HashMapKey::Occupied(key) => {
-                    let value = self.read_val_at(i);
-                    self.write_key_at(i, HashMapKey::Tombstone);
+    pub fn remove(&mut self, key: &K, capacity: usize) -> Option<V> {
+        let (i, _) = self.find_inner_idx(key, capacity)?;
 
-                    return (key, value);
-                }
-                HashMapKey::OccupiedNull => unreachable!(),
-            }
-        }
-
-        unreachable!();
+        Some(self.remove_by_idx(i, capacity))
     }
 
     #[inline]
@@ -257,40 +181,26 @@ where
     }
 
     #[inline]
-    pub const fn is_full(&self, len: usize) -> bool {
-        len == THREE_QUARTERS_CAPACITY
+    pub const fn is_full(&self, len: usize, capacity: usize) -> bool {
+        len == (capacity >> 2) * 3
     }
 
-    pub fn find_inner_idx(&self, key: &K, level: u64) -> Result<(usize, K, KeyHash), KeyHash> {
-        let key_hash = self.hash(key, level);
-        let mut i = 0;
+    pub fn find_inner_idx(&self, key: &K, capacity: usize) -> Option<(usize, K)> {
+        let key_hash = Self::hash(key);
+        let mut i = key_hash % capacity;
 
         loop {
-            let at = Self::calculate_next_index(key_hash, i, CAPACITY);
-
-            i += 1;
-
-            match self.read_key_at(at, true) {
+            match self.read_key_at(i, true) {
                 HashMapKey::Occupied(prev_key) => {
                     if prev_key.eq(key) {
-                        return Ok((at, prev_key, key_hash));
+                        return Some((i, prev_key));
                     } else {
-                        if i == LAST_IDX {
-                            return Err(key_hash);
-                        }
-
+                        i = (i + 1) % capacity;
                         continue;
                     }
                 }
-                HashMapKey::Tombstone => {
-                    if i == LAST_IDX {
-                        return Err(key_hash);
-                    }
-
-                    continue;
-                }
                 HashMapKey::Empty => {
-                    return Err(key_hash);
+                    return None;
                 }
                 _ => unreachable!(),
             };
@@ -303,18 +213,13 @@ where
     }
 
     #[inline]
-    pub fn read_left(&self) -> u64 {
-        SSlice::_as_bytes_read(self.table_ptr, LEFT_OFFSET)
+    pub fn read_capacity(&self) -> usize {
+        SSlice::_as_bytes_read(self.table_ptr, CAPACITY_OFFSET)
     }
 
     #[inline]
-    pub fn read_right(&self) -> u64 {
-        SSlice::_as_bytes_read(self.table_ptr, RIGHT_OFFSET)
-    }
-
-    #[inline]
-    pub fn read_parent(&self) -> u64 {
-        SSlice::_as_bytes_read(self.table_ptr, PARENT_OFFSET)
+    pub fn read_next(&self) -> u64 {
+        SSlice::_as_bytes_read(self.table_ptr, NEXT_OFFSET)
     }
 
     fn read_key_at(&self, idx: usize, read_value: bool) -> HashMapKey<K> {
@@ -325,7 +230,6 @@ where
 
         match key_flag[0] {
             EMPTY => HashMapKey::Empty,
-            TOMBSTONE => HashMapKey::Tombstone,
             OCCUPIED => {
                 if read_value {
                     let k = SSlice::_as_bytes_read(self.table_ptr, offset + 1);
@@ -340,8 +244,8 @@ where
     }
 
     #[inline]
-    pub fn read_val_at(&self, idx: usize) -> V {
-        let offset = values_offset::<K>() + V::SIZE * idx;
+    pub fn read_val_at(&self, idx: usize, capacity: usize) -> V {
+        let offset = values_offset::<K>(capacity) + V::SIZE * idx;
 
         SSlice::_as_bytes_read(self.table_ptr, offset)
     }
@@ -352,18 +256,13 @@ where
     }
 
     #[inline]
-    pub fn write_left(&mut self, left: u64) {
-        SSlice::_as_bytes_write(self.table_ptr, LEFT_OFFSET, left)
+    pub fn write_capacity(&mut self, capacity: usize) {
+        SSlice::_as_bytes_write(self.table_ptr, CAPACITY_OFFSET, capacity)
     }
 
     #[inline]
-    pub fn write_right(&mut self, right: u64) {
-        SSlice::_as_bytes_write(self.table_ptr, RIGHT_OFFSET, right)
-    }
-
-    #[inline]
-    pub fn write_parent(&mut self, parent: u64) {
-        SSlice::_as_bytes_write(self.table_ptr, PARENT_OFFSET, parent)
+    pub fn write_next(&mut self, next: u64) {
+        SSlice::_as_bytes_write(self.table_ptr, NEXT_OFFSET, next)
     }
 
     fn write_key_at(&mut self, idx: usize, key: HashMapKey<K>) {
@@ -371,7 +270,6 @@ where
 
         let key_flag = match key {
             HashMapKey::Empty => [EMPTY],
-            HashMapKey::Tombstone => [TOMBSTONE],
             HashMapKey::Occupied(k) => {
                 SSlice::_as_bytes_write(self.table_ptr, offset + 1, k);
 
@@ -384,46 +282,43 @@ where
     }
 
     #[inline]
-    fn write_val_at(&mut self, idx: usize, val: V) {
-        let offset = values_offset::<K>() + V::SIZE * idx;
+    fn write_val_at(&mut self, idx: usize, val: V, capacity: usize) {
+        let offset = values_offset::<K>(capacity) + V::SIZE * idx;
 
         SSlice::_as_bytes_write(self.table_ptr, offset, val);
     }
 
-    #[inline]
-    const fn calculate_next_index(key_n_hash: usize, i: usize, capacity: usize) -> usize {
-        (key_n_hash + i) % capacity
-    }
-
-    pub fn debug_print(&self) {
+    pub fn debug_print(&self, capacity: usize) {
         print!(
-            "Node({}, {}, {}, {})[",
+            "Node({}, {}, {})[",
             self.read_len(),
-            self.read_left(),
-            self.read_right(),
-            self.read_parent()
+            self.read_capacity(),
+            self.read_next(),
         );
-        for i in 0..CAPACITY {
+        for i in 0..capacity {
             let mut k_flag = [0u8];
             let mut k = [0u8; K::SIZE];
             let mut v = [0u8; V::SIZE];
 
             SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i, &mut k_flag);
             SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i + 1, &mut k);
-            SSlice::_read_bytes(self.table_ptr, values_offset::<K>() + V::SIZE * i, &mut v);
+            SSlice::_read_bytes(
+                self.table_ptr,
+                values_offset::<K>(capacity) + V::SIZE * i,
+                &mut v,
+            );
 
             print!("(");
 
             match k_flag[0] {
                 EMPTY => print!("<empty> = "),
-                TOMBSTONE => print!("<tombstone> = "),
                 OCCUPIED => print!("<occupied> = "),
                 _ => unreachable!(),
             };
 
             print!("{:?}, {:?})", k, v);
 
-            if i < CAPACITY - 1 {
+            if i < capacity - 1 {
                 print!(", ");
             }
         }
@@ -435,11 +330,10 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> Default for SHashTreeNo
 where
     [u8; K::SIZE]: Sized,
     [u8; V::SIZE]: Sized,
-    [u8; values_offset::<K>() + V::SIZE * CAPACITY]: Sized,
 {
     #[inline]
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_CAPACITY)
     }
 }
 
@@ -470,7 +364,6 @@ impl<K, V> Writable<LittleEndian> for SHashTreeNode<K, V> {
 
 enum HashMapKey<K> {
     Empty,
-    Tombstone,
     Occupied(K),
     OccupiedNull,
 }
