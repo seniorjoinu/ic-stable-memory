@@ -1,5 +1,7 @@
-use crate::collections::btree_map::node::{BTreeNode, MIN_LEN_AFTER_SPLIT};
+use crate::collections::btree_map::node::{BTreeNode, B, MIN_LEN_AFTER_SPLIT};
+use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
+use crate::{deallocate, SSlice};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use std::fmt::Debug;
 
@@ -100,15 +102,18 @@ where
                         let p = unsafe { parent.unwrap_unchecked() };
                         let p_idx = unsafe { parent_idx.unwrap_unchecked() };
                         let p_len = unsafe { parent_len.unwrap_unchecked() };
+                        let p_idx_to_rotate = if p_idx == p_len { p_idx - 1 } else { p_idx };
 
-                        let (mut k, mut v, mut p_opt) =
-                            BTreeNode::delete_in_violating_leaf(node, p, p_idx, p_len, idx);
+                        let (mut k, mut v, p_opt) = BTreeNode::delete_in_violating_leaf(
+                            node,
+                            idx,
+                            p,
+                            p_idx_to_rotate,
+                            p_idx,
+                            p_len,
+                        );
 
-                        // if we merged and have stolen an element from the parent, we may wanna fix it
-                        // if it violates
-                        while let Some(parent_to_handle) = p_opt {
-                            p_opt = BTreeNode::<K, V>::handle_violating_internal(parent_to_handle);
-                        }
+                        self.handle_violating_internal(p_opt);
 
                         k.remove_from_stable();
                         v.remove_from_stable();
@@ -117,95 +122,7 @@ where
                         return Some(v);
                     }
 
-                    // if the element is not in a leaf
-                    // go to left subtree's max child or to right subtree's min child
-                    let mut child = unsafe {
-                        BTreeNode::<K, V>::from_ptr(node.get_child_ptr(
-                            if idx > MIN_LEN_AFTER_SPLIT {
-                                idx
-                            } else {
-                                idx + 1
-                            },
-                        ))
-                    };
-
-                    let mut child_parent = unsafe { node.copy() };
-                    let mut child_p_idx = idx;
-                    let mut child_p_len = len;
-
-                    let mut child_is_leaf = child.is_leaf();
-                    let mut child_len = child.len();
-
-                    loop {
-                        if !child_is_leaf {
-                            child_is_leaf = child.is_leaf();
-                            child_len = child.len();
-                            child_parent = child;
-                            child_p_idx = child_len - 1;
-                            child_p_len = child_len;
-
-                            child = unsafe {
-                                BTreeNode::<K, V>::from_ptr(child_parent.get_child_ptr(
-                                    if idx > MIN_LEN_AFTER_SPLIT {
-                                        child_len
-                                    } else {
-                                        0
-                                    },
-                                ))
-                            };
-
-                            continue;
-                        }
-
-                        break;
-                    }
-
-                    let mut k = node.get_key(idx);
-                    let mut v = node.get_value(idx);
-
-                    k.remove_from_stable();
-                    v.remove_from_stable();
-
-                    let child_idx = if idx > MIN_LEN_AFTER_SPLIT {
-                        child_len - 1
-                    } else {
-                        0
-                    };
-
-                    let replace_k = child.get_key(child_idx);
-                    let replace_v = child.get_value(child_idx);
-
-                    node.set_key(idx, replace_k);
-                    node.set_value(idx, replace_v);
-
-                    // if we can simply remove from the leaf - then do it
-                    if child_len > MIN_LEN_AFTER_SPLIT {
-                        child.remove_key(child_idx, child_len);
-                        child.remove_value(child_idx, child_len);
-                        child.set_len(child_len - 1);
-
-                        self.len -= 1;
-                        return Some(v);
-                    }
-
-                    child.set_key(child_idx, k);
-                    child.set_value(child_idx, v);
-
-                    // FIXME: optimize unnecessary reads here
-                    let (_, v, mut p_opt) = BTreeNode::delete_in_violating_leaf(
-                        child,
-                        child_parent,
-                        child_p_idx,
-                        child_p_len,
-                        child_idx,
-                    );
-
-                    while let Some(parent_to_handle) = p_opt {
-                        p_opt = BTreeNode::<K, V>::handle_violating_internal(parent_to_handle);
-                    }
-
-                    self.len -= 1;
-                    return Some(v);
+                    return Some(self.delete_non_leaf(node, len, idx));
                 }
                 Err(idx) => {
                     if is_leaf {
@@ -218,6 +135,112 @@ where
                     parent_idx = Some(idx);
 
                     node = unsafe { BTreeNode::<K, V>::from_ptr(node.get_child_ptr(idx)) };
+                }
+            }
+        }
+    }
+
+    fn delete_non_leaf(&mut self, mut node: BTreeNode<K, V>, len: usize, idx: usize) -> V {
+        print!("delete non leaf ");
+        // go to left subtree's max child or to right subtree's min child
+        let to_left = idx >= len / 2;
+
+        let mut parent = unsafe { node.copy() };
+        let mut parent_len = len;
+        let mut node_idx_in_parent = if to_left { idx } else { idx + 1 };
+        let mut parent_value_idx_to_rotate = if to_left { idx } else { idx + 1 };
+
+        print!("NODE: to_left {}; parent_len {}; node_idx_in_parent {}; parent_value_idx_to_rotate {}; ", to_left, parent_len, node_idx_in_parent, parent_value_idx_to_rotate);
+
+        let mut child =
+            unsafe { BTreeNode::<K, V>::from_ptr(node.get_child_ptr(node_idx_in_parent)) };
+        let mut child_len = child.len();
+        let mut child_is_leaf = child.is_leaf();
+        let mut idx_to_delete = if to_left { child_len - 1 } else { 0 };
+
+        loop {
+            if !child_is_leaf {
+                parent = unsafe { child.copy() };
+                parent_len = child_len;
+                node_idx_in_parent = if to_left { child_len } else { 0 };
+                parent_value_idx_to_rotate = idx_to_delete;
+
+                child =
+                    unsafe { BTreeNode::<K, V>::from_ptr(child.get_child_ptr(node_idx_in_parent)) };
+                child_len = child.len();
+                child_is_leaf = child.is_leaf();
+                idx_to_delete = if to_left { child_len - 1 } else { 0 };
+            } else {
+                break;
+            }
+        }
+
+        print!(
+            "LEAF: child_len {}; idx_to_delete {} ",
+            child_len, idx_to_delete
+        );
+
+        let mut k = node.get_key(idx);
+        let mut v = node.get_value(idx);
+
+        k.remove_from_stable();
+        v.remove_from_stable();
+
+        // FIXME: there should be a way to simply copy bits, without deserialization
+        let replace_k = child.get_key(idx_to_delete);
+        let replace_v = child.get_value(idx_to_delete);
+        node.set_key(idx, replace_k);
+        node.set_value(idx, replace_v);
+
+        // if we can simply remove from the leaf - then do it
+        if child_len > MIN_LEN_AFTER_SPLIT {
+            println!("has more than enough - quick exit");
+
+            child.remove_key(idx_to_delete, child_len);
+            child.remove_value(idx_to_delete, child_len);
+            child.set_len(child_len - 1);
+
+            self.len -= 1;
+            return v;
+        }
+
+        println!("IS ABOUT TO VIOLATE - DELETE BY ROTATING/MERGING");
+
+        // FIXME: this should be unnecessary
+        child.set_key(idx_to_delete, k);
+        child.set_value(idx_to_delete, v);
+
+        // FIXME: optimize unnecessary reads here
+        let (_, v, p_opt) = BTreeNode::delete_in_violating_leaf(
+            child,
+            idx_to_delete,
+            parent,
+            parent_value_idx_to_rotate,
+            node_idx_in_parent,
+            parent_len,
+        );
+
+        self.handle_violating_internal(p_opt);
+
+        self.len -= 1;
+
+        v
+    }
+
+    fn handle_violating_internal(&mut self, mut p_opt: Option<BTreeNode<K, V>>) {
+        while let Some(parent_to_handle) = p_opt {
+            p_opt = match BTreeNode::<K, V>::handle_violating_internal(parent_to_handle) {
+                Ok(p) => p,
+                Err(mut new_root) => {
+                    let slice = unsafe {
+                        SSlice::from_ptr(new_root.as_ptr(), Side::Start).unwrap_unchecked()
+                    };
+                    deallocate(slice);
+
+                    new_root.set_parent(0);
+                    self.root = Some(new_root);
+
+                    None
                 }
             }
         }
@@ -380,47 +403,35 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let example = vec![
-            (10, 1),
-            (20, 2),
-            (30, 3),
-            (40, 4),
-            (50, 5),
-            (60, 6),
-            (70, 7),
-            (80, 8),
-            (90, 9),
-        ];
+        let mut example = Vec::new();
+        for i in 0..100 {
+            example.push(i);
+        }
+
+        example.shuffle(&mut thread_rng());
 
         let mut map = SBTreeMap::new();
 
         println!("INSERTION");
 
-        assert!(map.insert(30, 3).is_none());
-        assert!(map.insert(90, 9).is_none());
-        assert!(map.insert(10, 1).is_none());
-        assert!(map.insert(70, 7).is_none());
-        assert!(map.insert(80, 8).is_none());
-        assert!(map.insert(50, 5).is_none());
-        assert!(map.insert(20, 2).is_none());
-        assert!(map.insert(60, 6).is_none());
-        assert!(map.insert(40, 4).is_none());
+        for i in &example {
+            println!("{}", i);
+            assert!(map.insert(*i, *i).is_none());
 
-        assert_eq!(map.len(), 9);
+            map.debug_print();
+            println!();
+        }
 
         println!("DELETION");
 
-        assert_eq!(map.remove(&30).unwrap(), 3);
-        assert_eq!(map.remove(&70).unwrap(), 7);
-        assert_eq!(map.remove(&50).unwrap(), 5);
-        assert_eq!(map.remove(&40).unwrap(), 4);
-        assert_eq!(map.remove(&60).unwrap(), 6);
-        assert_eq!(map.remove(&20).unwrap(), 2);
-        assert_eq!(map.remove(&80).unwrap(), 8);
-        assert_eq!(map.remove(&10).unwrap(), 1);
-        assert_eq!(map.remove(&90).unwrap(), 9);
+        for i in &example {
+            println!("{}", i);
+            assert!(map.remove(i).is_some());
 
-        let len = map.len;
+            map.debug_print();
+            println!();
+        }
+
         assert!(map.is_empty());
 
         // unsafe { map.stable_drop() };
@@ -436,14 +447,22 @@ mod tests {
 
         println!("INSERTION");
 
-        for i in 0..10 {
+        for i in 0..100 {
             map.insert(i, 0);
+
+            println!("{}", i);
+            map.debug_print();
+            println!();
         }
 
         println!("DELETION");
 
-        for i in 0..10 {
+        for i in 0..100 {
             map.remove(&i).unwrap();
+
+            println!("{}", i);
+            map.debug_print();
+            println!();
         }
 
         // unsafe { map.stable_drop() };

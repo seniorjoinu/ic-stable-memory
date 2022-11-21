@@ -237,6 +237,7 @@ where
         p_len: usize,
     ) {
         let parent_k = parent.get_key(p_idx);
+        println!("HERE: {} {}", p_idx, p_len);
         parent.remove_key(p_idx, p_len);
 
         SSlice::_as_bytes_write(
@@ -261,19 +262,11 @@ where
 
         let mut keys_buf = [0u8; MIN_LEN_AFTER_SPLIT * K::SIZE];
         SSlice::_read_bytes(right.ptr, KEYS_OFFSET, &mut keys_buf);
-        SSlice::_write_bytes(
-            self.ptr,
-            KEYS_OFFSET + MIN_LEN_AFTER_SPLIT * K::SIZE + K::SIZE,
-            &keys_buf,
-        );
+        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + B * K::SIZE, &keys_buf);
 
         let mut values_buf = [0u8; MIN_LEN_AFTER_SPLIT * V::SIZE];
         SSlice::_read_bytes(right.ptr, values_offset::<K>(), &mut values_buf);
-        SSlice::_write_bytes(
-            self.ptr,
-            values_offset::<K>() + MIN_LEN_AFTER_SPLIT * V::SIZE + V::SIZE,
-            &values_buf,
-        );
+        SSlice::_write_bytes(self.ptr, values_offset::<K>() + B * V::SIZE, &values_buf);
 
         if !is_leaf {
             let mut children_buf = [0u8; B * u64::SIZE];
@@ -433,11 +426,17 @@ where
     [(); MIN_LEN_AFTER_SPLIT * K::SIZE]: Sized,
     [(); MIN_LEN_AFTER_SPLIT * V::SIZE]: Sized,
 {
-    pub fn handle_violating_internal(mut node: Self) -> Option<Self> {
+    pub fn handle_violating_internal(mut node: Self) -> Result<Option<Self>, Self> {
         let parent_ptr = node.get_parent();
 
         if parent_ptr == 0 {
-            return None;
+            let len = node.len();
+
+            if len > 0 {
+                return Ok(None);
+            }
+
+            return Err(node);
         }
 
         let mut parent = unsafe { BTreeNode::<K, V>::from_ptr(parent_ptr) };
@@ -465,7 +464,7 @@ where
 
             if left_len > MIN_LEN_AFTER_SPLIT {
                 node.internal_violating_rotate_right(left, &mut parent, left_len, p_idx);
-                return None;
+                return Ok(None);
             }
 
             if p_idx < p_len {
@@ -474,7 +473,7 @@ where
 
                 if right_len > MIN_LEN_AFTER_SPLIT {
                     node.internal_violating_rotate_left(right, &mut parent, right_len, p_idx);
-                    return None;
+                    return Ok(None);
                 }
             }
 
@@ -485,9 +484,9 @@ where
             left.set_len(MIN_LEN_AFTER_SPLIT * 2);
 
             return if p_len == MIN_LEN_AFTER_SPLIT {
-                Some(parent)
+                Ok(Some(parent))
             } else {
-                None
+                Ok(None)
             };
         }
 
@@ -498,47 +497,74 @@ where
 
         if right_len > MIN_LEN_AFTER_SPLIT {
             node.internal_violating_rotate_left(right, &mut parent, right_len, 0);
-            return None;
+            return Ok(None);
         }
 
         node.merge_min_len(false, right, &mut parent, 0, p_len);
         node.set_len(MIN_LEN_AFTER_SPLIT * 2);
 
         if p_len == MIN_LEN_AFTER_SPLIT {
-            Some(parent)
+            Ok(Some(parent))
         } else {
-            None
+            Ok(None)
         }
     }
 
     pub fn delete_in_violating_leaf(
         mut node: Self,
+        idx_to_delete: usize,
         mut parent: Self,
-        p_idx: usize,
-        p_len: usize,
-        idx: usize,
+        parent_idx_to_rotate: usize,
+        node_idx_in_parent: usize,
+        parent_len: usize,
     ) -> (K, V, Option<Self>) {
+        print!("delete in violating leaf idx_to_delete {}; parent_idx_to_rotate {}; node_idx_in_parent {} ", idx_to_delete, parent_idx_to_rotate, node_idx_in_parent);
+
         // if there is a left neighbor
-        if p_idx > 0 {
+        if node_idx_in_parent > 0 {
             // at first let's try rotating if it's possible
-            let mut left = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx - 1)) };
+            let mut left = unsafe {
+                BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(node_idx_in_parent - 1))
+            };
             let left_len = left.len();
 
+            print!("LEFT: left_len {} ", left_len);
+
             if left_len > MIN_LEN_AFTER_SPLIT {
-                let k = node.get_key(idx);
-                let v = node.leaf_rotate_right(left, &mut parent, left_len, p_idx, idx);
+                println!("- more than enough - rotate right and exit");
+
+                let k = node.get_key(idx_to_delete);
+                let v = node.leaf_rotate_right(
+                    left,
+                    &mut parent,
+                    left_len,
+                    parent_idx_to_rotate,
+                    idx_to_delete,
+                );
 
                 return (k, v, None);
             }
 
             // if failed and there is alsa a right neighbor
-            if p_idx < p_len {
-                let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(p_idx + 1)) };
+            if node_idx_in_parent < parent_len {
+                let right = unsafe {
+                    BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(node_idx_in_parent + 1))
+                };
                 let right_len = right.len();
 
+                print!("RIGHT: right_len {} ", right_len);
+
                 if right_len > MIN_LEN_AFTER_SPLIT {
-                    let k = node.get_key(idx);
-                    let v = node.leaf_rotate_left(right, &mut parent, right_len, p_idx, idx);
+                    println!("- more than enough - rotate left and exit");
+
+                    let k = node.get_key(idx_to_delete);
+                    let v = node.leaf_rotate_left(
+                        right,
+                        &mut parent,
+                        right_len,
+                        parent_idx_to_rotate,
+                        idx_to_delete,
+                    );
 
                     return (k, v, None);
                 }
@@ -547,18 +573,21 @@ where
             // if it is impossible to rotate, let's merge with the left neighbor,
             // stealing an element from the parent
 
-            left.merge_min_len(true, node, &mut parent, p_idx - 1, p_len);
+            print!("merge with left, ");
+            left.merge_min_len(true, node, &mut parent, parent_idx_to_rotate, parent_len);
 
-            let k = left.get_key(idx + MIN_LEN_AFTER_SPLIT + 1);
-            let v = left.get_value(idx + MIN_LEN_AFTER_SPLIT + 1);
+            let k = left.get_key(idx_to_delete + B);
+            let v = left.get_value(idx_to_delete + B);
 
-            left.remove_key(idx + MIN_LEN_AFTER_SPLIT + 1, CAPACITY);
-            left.remove_value(idx + MIN_LEN_AFTER_SPLIT + 1, CAPACITY);
+            left.remove_key(idx_to_delete + B, CAPACITY);
+            left.remove_value(idx_to_delete + B, CAPACITY);
             left.set_len(CAPACITY - 1);
 
-            return if p_len == MIN_LEN_AFTER_SPLIT {
+            return if parent_len == MIN_LEN_AFTER_SPLIT {
+                println!("parent now violates - fixing");
                 (k, v, Some(parent))
             } else {
+                println!("parent is fine");
                 (k, v, None)
             };
         }
@@ -568,9 +597,13 @@ where
         let right = unsafe { BTreeNode::<K, V>::from_ptr(parent.get_child_ptr(1)) };
         let right_len = right.len();
 
+        print!("RIGHT: right_len {} ", right_len);
+
         if right_len > MIN_LEN_AFTER_SPLIT {
-            let mut k = node.get_key(idx);
-            let mut v = node.leaf_rotate_left(right, &mut parent, right_len, 0, idx);
+            let mut k = node.get_key(idx_to_delete);
+            let mut v = node.leaf_rotate_left(right, &mut parent, right_len, 0, idx_to_delete);
+
+            println!("- more than enough - rotate left and exit");
 
             k.remove_from_stable();
             v.remove_from_stable();
@@ -578,21 +611,24 @@ where
             return (k, v, None);
         }
 
-        node.merge_min_len(true, right, &mut parent, 0, p_len);
+        print!("merge with right, ");
+        node.merge_min_len(true, right, &mut parent, 0, parent_len);
 
-        let mut k = node.get_key(idx);
-        let mut v = node.get_value(idx);
+        let mut k = node.get_key(idx_to_delete);
+        let mut v = node.get_value(idx_to_delete);
 
-        node.remove_key(idx, CAPACITY);
-        node.remove_value(idx, CAPACITY);
+        node.remove_key(idx_to_delete, CAPACITY);
+        node.remove_value(idx_to_delete, CAPACITY);
         node.set_len(CAPACITY - 1);
 
         k.remove_from_stable();
         v.remove_from_stable();
 
-        if p_len == MIN_LEN_AFTER_SPLIT {
+        if parent_len == MIN_LEN_AFTER_SPLIT {
+            println!("parent now violates - fixing");
             (k, v, Some(parent))
         } else {
+            println!("parent is fine");
             (k, v, None)
         }
     }
@@ -620,8 +656,12 @@ where
         parent.set_value(parent_idx - 1, left_last_v);
 
         let v = self.get_value(self_idx);
-        self.set_key(self_idx, parent_k);
-        self.set_value(self_idx, parent_v);
+
+        self.remove_key(self_idx, MIN_LEN_AFTER_SPLIT);
+        self.remove_value(self_idx, MIN_LEN_AFTER_SPLIT);
+
+        self.insert_key(parent_k, 0, MIN_LEN_AFTER_SPLIT - 1);
+        self.insert_value(parent_v, 0, MIN_LEN_AFTER_SPLIT - 1);
 
         v
     }
@@ -680,8 +720,11 @@ where
         parent.set_value(parent_idx, right_first_v);
 
         let v = self.get_value(self_idx);
-        self.set_key(self_idx, parent_k);
-        self.set_value(self_idx, parent_v);
+        self.remove_key(self_idx, MIN_LEN_AFTER_SPLIT);
+        self.remove_value(self_idx, MIN_LEN_AFTER_SPLIT);
+
+        self.set_key(MIN_LEN_AFTER_SPLIT - 1, parent_k);
+        self.set_value(MIN_LEN_AFTER_SPLIT - 1, parent_v);
 
         v
     }
@@ -728,7 +771,7 @@ where
                     // optimization - when we insert directly in the middle,
                     // there is no point in popping the middle element up
                     // we can simply split in half and say that the newly inserted element should go up
-                    if idx == MIN_LEN_AFTER_SPLIT {
+                    if idx == B {
                         let mut another_new_node = self.split_full_in_middle_no_pop(false);
                         another_new_node.set_len(MIN_LEN_AFTER_SPLIT);
 
@@ -741,7 +784,7 @@ where
 
                     let (mut another_new_node, mid_k, mid_v) = self.split_full_in_middle(false);
 
-                    if idx < MIN_LEN_AFTER_SPLIT {
+                    if idx < B {
                         self.insert_key(k, idx, MIN_LEN_AFTER_SPLIT);
                         self.insert_value(v, idx, MIN_LEN_AFTER_SPLIT);
 
@@ -820,7 +863,7 @@ where
                     // optimization - when we insert directly in the middle,
                     // there is no point in popping the middle element up
                     // we can simply split in half and say that the newly inserted element should go up
-                    if idx == MIN_LEN_AFTER_SPLIT {
+                    if idx == B {
                         let mut new_node = self.split_full_in_middle_no_pop(true);
                         new_node.set_len(MIN_LEN_AFTER_SPLIT);
                         self.set_len(B);
@@ -830,7 +873,7 @@ where
 
                     let (mut new_node, mid_k, mid_v) = self.split_full_in_middle(true);
 
-                    if idx < MIN_LEN_AFTER_SPLIT {
+                    if idx < B {
                         self.insert_key(k, idx, MIN_LEN_AFTER_SPLIT);
                         self.insert_value(v, idx, MIN_LEN_AFTER_SPLIT);
                         self.set_len(B);

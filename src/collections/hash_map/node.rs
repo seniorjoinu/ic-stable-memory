@@ -77,19 +77,25 @@ where
     [u8; V::SIZE]: Sized,
 {
     #[inline]
-    pub fn new(capacity: usize) -> Self {
-        let size = values_offset::<K>(capacity) + V::SIZE * capacity;
-        let table = allocate(size);
+    pub fn new(capacity: usize) -> Option<Self> {
+        if let Some(Some(size)) = (1 + K::SIZE + V::SIZE)
+            .checked_mul(capacity)
+            .map(|it| it.checked_add(KEYS_OFFSET))
+        {
+            let table = allocate(size as usize);
 
-        let zeroed = vec![0u8; size];
-        table.write_bytes(0, &zeroed);
-        table.as_bytes_write(CAPACITY_OFFSET, capacity);
+            let zeroed = vec![0u8; size as usize];
+            table.write_bytes(0, &zeroed);
+            table.as_bytes_write(CAPACITY_OFFSET, capacity);
 
-        Self {
-            table_ptr: table.get_ptr(),
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
+            return Some(Self {
+                table_ptr: table.get_ptr(),
+                _marker_k: SPhantomData::default(),
+                _marker_v: SPhantomData::default(),
+            });
         }
+
+        None
     }
 
     pub fn insert(
@@ -333,7 +339,7 @@ where
 {
     #[inline]
     fn default() -> Self {
-        Self::new(DEFAULT_CAPACITY)
+        unsafe { Self::new(DEFAULT_CAPACITY).unwrap_unchecked() }
     }
 }
 

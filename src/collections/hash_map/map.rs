@@ -2,8 +2,6 @@ use crate::collections::hash_map::node::SHashTreeNode;
 use crate::primitive::StableAllocated;
 use std::hash::Hash;
 
-const MAX_CAPACITY: usize = 3221225473;
-
 // non-reallocating big hash map based on rope data structure
 // linked list of hashmaps, from big ones to small ones
 // infinite; both: logarithmic and amortized const
@@ -55,13 +53,14 @@ where
                     let next = node.read_next();
 
                     node = if next == 0 {
-                        let new_root_capacity = if root_capacity == MAX_CAPACITY {
-                            MAX_CAPACITY
-                        } else {
-                            root_capacity * 2 - 1
-                        };
-
-                        let mut new_root = SHashTreeNode::new(new_root_capacity);
+                        let mut new_root_capacity = root_capacity * 2 - 1;
+                        let mut new_root =
+                            if let Some(new_root) = SHashTreeNode::new(new_root_capacity) {
+                                new_root
+                            } else {
+                                new_root_capacity = root_capacity;
+                                unsafe { SHashTreeNode::new(root_capacity).unwrap_unchecked() }
+                            };
 
                         let root = self.get_root_unchecked();
                         new_root.write_next(root.table_ptr);
