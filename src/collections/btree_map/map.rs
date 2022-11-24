@@ -5,6 +5,8 @@ use crate::{deallocate, SSlice};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use std::fmt::Debug;
 
+// FIXME: REMOVE PARENTS, MAKE IT INTO A B+ TREE
+
 pub struct SBTreeMap<K, V> {
     root: Option<BTreeNode<K, V>>,
     len: u64,
@@ -102,18 +104,11 @@ where
                         let p = unsafe { parent.unwrap_unchecked() };
                         let p_idx = unsafe { parent_idx.unwrap_unchecked() };
                         let p_len = unsafe { parent_len.unwrap_unchecked() };
-                        let p_idx_to_rotate = if p_idx == p_len { p_idx - 1 } else { p_idx };
 
-                        let (mut k, mut v, p_opt) = BTreeNode::delete_in_violating_leaf(
-                            node,
-                            idx,
-                            p,
-                            p_idx_to_rotate,
-                            p_idx,
-                            p_len,
-                        );
+                        let (mut k, mut v, nodes_opt) =
+                            BTreeNode::delete_in_violating_leaf(node, idx, p, p_idx, p_idx, p_len);
 
-                        self.handle_violating_internal(p_opt);
+                        self.handle_violating_internal(nodes_opt);
 
                         k.remove_from_stable();
                         v.remove_from_stable();
@@ -211,7 +206,7 @@ where
         child.set_value(idx_to_delete, v);
 
         // FIXME: optimize unnecessary reads here
-        let (_, v, p_opt) = BTreeNode::delete_in_violating_leaf(
+        let (_, v, nodes_opt) = BTreeNode::delete_in_violating_leaf(
             child,
             idx_to_delete,
             parent,
@@ -220,25 +215,28 @@ where
             parent_len,
         );
 
-        self.handle_violating_internal(p_opt);
+        self.handle_violating_internal(nodes_opt);
 
         self.len -= 1;
 
         v
     }
 
-    fn handle_violating_internal(&mut self, mut p_opt: Option<BTreeNode<K, V>>) {
-        while let Some(parent_to_handle) = p_opt {
-            p_opt = match BTreeNode::<K, V>::handle_violating_internal(parent_to_handle) {
-                Ok(p) => p,
-                Err(mut new_root) => {
-                    let slice = unsafe {
-                        SSlice::from_ptr(new_root.as_ptr(), Side::Start).unwrap_unchecked()
-                    };
+    fn handle_violating_internal(
+        &mut self,
+        mut nodes_opt: Option<(BTreeNode<K, V>, BTreeNode<K, V>)>,
+    ) {
+        while let Some((node, mut child)) = nodes_opt {
+            nodes_opt = match BTreeNode::<K, V>::handle_violating_internal(unsafe { node.copy() }) {
+                Ok(it) => it,
+                Err(_) => {
+                    let slice =
+                        unsafe { SSlice::from_ptr(node.as_ptr(), Side::Start).unwrap_unchecked() };
+
                     deallocate(slice);
 
-                    new_root.set_parent(0);
-                    self.root = Some(new_root);
+                    child.set_parent(0);
+                    self.root = Some(child);
 
                     None
                 }
