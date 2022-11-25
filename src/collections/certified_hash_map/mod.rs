@@ -6,11 +6,13 @@ use crate::utils::math::fast_log2;
 use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
-use sha2::digest::Reset;
 use sha2::{Digest, Sha256};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::fmt::Debug;
+
 pub mod iter;
+pub mod map;
+pub mod node;
 
 type Sha256Digest = [u8; 32];
 

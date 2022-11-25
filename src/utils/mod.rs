@@ -6,6 +6,7 @@ pub mod math;
 pub mod mem_context;
 pub mod phantom_data;
 pub mod vars;
+pub mod certification;
 
 pub struct MemMetrics {
     pub available: u64,
