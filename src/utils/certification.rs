@@ -1,4 +1,6 @@
+use crate::collections::certified_hash_map::node::SCertifiedHashMapNode;
 use sha2::{Digest, Sha256};
+use std::fmt::Debug;
 
 pub type Sha256Digest = [u8; 32];
 
@@ -37,49 +39,22 @@ impl_for_primitive!(isize);
 
 pub const EMPTY_SHA256: Sha256Digest = [0u8; 32];
 
+#[derive(Debug)]
 pub enum MerkleKV<K, V> {
     Plain((K, V)),
-    PrunedKey((Sha256Digest, V)),
-    PrunedValue((K, Sha256Digest)),
     Pruned(Sha256Digest),
 }
 
 impl<K: ToHashableBytes, V: ToHashableBytes> MerkleKV<K, V> {
-    pub fn calculate_kv_hash(&self) -> Sha256Digest {
-        let mut hasher = Sha256::default();
-
-        let (k_sha256, v_sha256) = match self {
-            MerkleKV::Plain((k, v)) => {
-                hasher.update(k.to_hashable_bytes());
-                let k_sha256: Sha256Digest = hasher.finalize_reset().into();
-
-                hasher.update(v.to_hashable_bytes());
-                let v_sha256: Sha256Digest = hasher.finalize_reset().into();
-
-                (k_sha256, v_sha256)
-            }
-            MerkleKV::PrunedKey((k_sha256, v)) => {
-                hasher.update(v.to_hashable_bytes());
-                let v_sha256: Sha256Digest = hasher.finalize_reset().into();
-
-                (*k_sha256, v_sha256)
-            }
-            MerkleKV::PrunedValue((k, v_sha256)) => {
-                hasher.update(k.to_hashable_bytes());
-                let k_sha256: Sha256Digest = hasher.finalize_reset().into();
-
-                (k_sha256, *v_sha256)
-            }
-            MerkleKV::Pruned(hash) => return *hash,
-        };
-
-        hasher.update(k_sha256);
-        hasher.update(v_sha256);
-
-        hasher.finalize().into()
+    pub fn calculate_entry_sha256(&self, hasher: &mut Sha256) -> Sha256Digest {
+        match self {
+            MerkleKV::Plain((k, v)) => SCertifiedHashMapNode::<K, V>::sha256_entry(k, v, hasher),
+            _ => unreachable!(),
+        }
     }
 }
 
+#[derive(Debug)]
 pub enum MerkleChild {
     Pruned(Sha256Digest),
     Hole,
@@ -94,6 +69,7 @@ impl MerkleChild {
     }
 }
 
+#[derive(Debug)]
 pub struct MerkleNode<K, V> {
     key_value: MerkleKV<K, V>,
     left_child: MerkleChild,
@@ -115,6 +91,7 @@ impl<K, V> MerkleNode<K, V> {
 }
 
 // TODO: support multi-witnesses
+#[derive(Debug)]
 pub struct MerkleWitness<K, V> {
     pub tree: Vec<MerkleNode<K, V>>,
     pub additional_hashes: Vec<Option<Sha256Digest>>,
@@ -132,12 +109,13 @@ impl<K: ToHashableBytes, V: ToHashableBytes> MerkleWitness<K, V> {
         let mut branch = self.tree;
         let leaf = branch.remove(0);
 
-        let kv_hash = leaf.key_value.calculate_kv_hash();
+        let mut hasher = Sha256::default();
+
+        let kv_hash = leaf.key_value.calculate_entry_sha256(&mut hasher);
 
         let lc = leaf.left_child.unwrap();
         let rc = leaf.right_child.unwrap();
 
-        let mut hasher = Sha256::default();
         hasher.update(kv_hash);
         hasher.update(lc);
         hasher.update(rc);

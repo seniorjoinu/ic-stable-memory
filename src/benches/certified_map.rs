@@ -4,7 +4,7 @@ mod btree_map_benchmark {
     use crate::{init_allocator, measure, stable};
     use std::collections::BTreeMap;
 
-    const ITERATIONS: usize = 1_000_0;
+    const ITERATIONS: usize = 10_000;
 
     #[test]
     #[ignore]
