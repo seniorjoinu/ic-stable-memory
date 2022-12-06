@@ -1,153 +1,121 @@
 use crate::collections::certified_hash_map::node::SCertifiedHashMapNode;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fmt::Debug;
 
 pub type Sha256Digest = [u8; 32];
-
-pub trait ToHashableBytes {
-    type Out: AsRef<[u8]>;
-
-    fn to_hashable_bytes(&self) -> Self::Out;
-}
-
-macro_rules! impl_for_primitive {
-    ($ty:ty) => {
-        impl ToHashableBytes for $ty {
-            type Out = [u8; std::mem::size_of::<$ty>()];
-
-            fn to_hashable_bytes(&self) -> Self::Out {
-                self.to_le_bytes()
-            }
-        }
-    };
-}
-
-impl_for_primitive!(u8);
-impl_for_primitive!(u16);
-impl_for_primitive!(u32);
-impl_for_primitive!(u64);
-impl_for_primitive!(u128);
-impl_for_primitive!(usize);
-impl_for_primitive!(i8);
-impl_for_primitive!(i16);
-impl_for_primitive!(i32);
-impl_for_primitive!(i64);
-impl_for_primitive!(i128);
-impl_for_primitive!(f32);
-impl_for_primitive!(f64);
-impl_for_primitive!(isize);
-
 pub const EMPTY_SHA256: Sha256Digest = [0u8; 32];
 
 #[derive(Debug)]
-pub enum MerkleKV<K, V> {
-    Plain((K, V)),
+pub enum MerkleHash {
+    Inline(Sha256Digest),
     Pruned(Sha256Digest),
-}
-
-impl<K: ToHashableBytes, V: ToHashableBytes> MerkleKV<K, V> {
-    pub fn calculate_entry_sha256(&self, hasher: &mut Sha256) -> Sha256Digest {
-        match self {
-            MerkleKV::Plain((k, v)) => SCertifiedHashMapNode::<K, V>::sha256_entry(k, v, hasher),
-            _ => unreachable!(),
-        }
-    }
+    None,
 }
 
 #[derive(Debug)]
 pub enum MerkleChild {
+    Hole(MerkleNode),
     Pruned(Sha256Digest),
-    Hole,
-}
-
-impl MerkleChild {
-    pub fn unwrap(self) -> Sha256Digest {
-        match self {
-            MerkleChild::Pruned(d) => d,
-            _ => unreachable!(),
-        }
-    }
+    None,
 }
 
 #[derive(Debug)]
-pub struct MerkleNode<K, V> {
-    key_value: MerkleKV<K, V>,
-    left_child: MerkleChild,
-    right_child: MerkleChild,
+pub struct MerkleNode {
+    pub entry_hash: MerkleHash,
+    pub left_child: MerkleChild,
+    pub right_child: MerkleChild,
+    pub additional_left_child: MerkleChild,
+    pub additional_right_child: MerkleChild,
 }
 
-impl<K, V> MerkleNode<K, V> {
-    pub fn new(
-        key_value: MerkleKV<K, V>,
-        left_child: MerkleChild,
-        right_child: MerkleChild,
-    ) -> Self {
+// TODO: think about making a tip into a normal merkle tree
+
+impl MerkleNode {
+    pub fn new(entry_hash: MerkleHash, left_child: MerkleChild, right_child: MerkleChild) -> Self {
         Self {
-            key_value,
+            entry_hash,
             left_child,
             right_child,
+            additional_left_child: MerkleChild::None,
+            additional_right_child: MerkleChild::None,
         }
+    }
+
+    fn reconstruct(
+        &self,
+        inlined_hashes: &mut HashSet<Sha256Digest>,
+        hasher: &mut Sha256,
+    ) -> Option<Sha256Digest> {
+        let entry_hash = match &self.entry_hash {
+            MerkleHash::None => EMPTY_SHA256,
+            MerkleHash::Pruned(h) => *h,
+            MerkleHash::Inline(h) => {
+                if !inlined_hashes.remove(h) {
+                    return None;
+                }
+
+                *h
+            }
+        };
+
+        let left_child_hash = match self.left_child {
+            MerkleChild::None => EMPTY_SHA256,
+            MerkleChild::Pruned(h) => *h,
+            MerkleChild::Hole(n) => n.reconstruct(inlined_hashes, hasher)?,
+        };
+
+        let right_child_hash = match self.right_child {
+            MerkleChild::None => EMPTY_SHA256,
+            MerkleChild::Pruned(h) => *h,
+            MerkleChild::Hole(n) => n.reconstruct(inlined_hashes, hasher)?,
+        };
+
+        hasher.update(self.entry_hash);
+        hasher.update(left_child_hash);
+        hasher.update(right_child_hash);
+
+        hasher.finalize_reset().into()
     }
 }
 
-// TODO: support multi-witnesses
 #[derive(Debug)]
-pub struct MerkleWitness<K, V> {
-    pub tree: Vec<MerkleNode<K, V>>,
-    pub additional_hashes: Vec<Option<Sha256Digest>>,
+pub struct MerkleWitness {
+    pub tree: MerkleNode,
+    pub inlined_hashes: HashSet<Sha256Digest>,
 }
 
-impl<K: ToHashableBytes, V: ToHashableBytes> MerkleWitness<K, V> {
-    pub fn new(tree: Vec<MerkleNode<K, V>>, additional_hashes: Vec<Option<Sha256Digest>>) -> Self {
+#[derive(Debug, Copy, Clone)]
+pub enum ReconstructionError {
+    CopiesOrUnknownEntriesInTree,
+    UnkownEntriesInlined,
+}
+
+impl MerkleWitness {
+    pub fn new<I>(tree: MerkleNode, inlined_hashes: I) -> Self
+    where
+        I: IntoIterator<Item = Sha256Digest>,
+    {
         Self {
             tree,
-            additional_hashes,
+            inlined_hashes: inlined_hashes.into_iter().collect(),
         }
     }
 
-    pub fn reconstruct(self) -> (MerkleKV<K, V>, Sha256Digest) {
-        let mut branch = self.tree;
-        let leaf = branch.remove(0);
-
+    pub fn reconstruct(self) -> Result<(HashSet<Sha256Digest>, Sha256Digest), ReconstructionError> {
         let mut hasher = Sha256::default();
+        let mut i_hashes = self.inlined_hashes.clone();
 
-        let kv_hash = leaf.key_value.calculate_entry_sha256(&mut hasher);
+        let root_hash = self
+            .tree
+            .reconstruct(&mut i_hashes, &mut hasher)
+            .ok_or(ReconstructionError::CopiesOrUnknownEntriesInTree)?;
 
-        let lc = leaf.left_child.unwrap();
-        let rc = leaf.right_child.unwrap();
-
-        hasher.update(kv_hash);
-        hasher.update(lc);
-        hasher.update(rc);
-
-        let mut node_hash: Sha256Digest = hasher.finalize_reset().into();
-
-        for node in branch {
-            match node.key_value {
-                MerkleKV::Pruned(vh) => hasher.update(vh),
-                _ => unreachable!(),
-            };
-
-            match node.left_child {
-                MerkleChild::Pruned(l_ch) => hasher.update(l_ch),
-                MerkleChild::Hole => hasher.update(node_hash),
-            };
-
-            match node.right_child {
-                MerkleChild::Pruned(r_ch) => hasher.update(r_ch),
-                MerkleChild::Hole => hasher.update(node_hash),
-            }
-
-            node_hash = hasher.finalize_reset().into();
+        // no extra hashes should present
+        if !i_hashes.is_empty() {
+            return Err(ReconstructionError::UnkownEntriesInlined);
         }
 
-        for add_opt in self.additional_hashes {
-            match add_opt {
-                Some(add) => hasher.update(add),
-                None => hasher.update(node_hash),
-            }
-        }
-
-        (leaf.key_value, hasher.finalize_reset().into())
+        Ok((self.inlined_hashes, root_hash))
     }
 }

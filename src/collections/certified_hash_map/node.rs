@@ -1,23 +1,18 @@
 use crate::mem::s_slice::Side;
-use crate::primitive::StableAllocated;
 use crate::utils::certification::{
-    MerkleChild, MerkleKV, MerkleNode, Sha256Digest, ToHashableBytes, EMPTY_SHA256,
+    MerkleChild, MerkleHash, MerkleNode, Sha256Digest, EMPTY_SHA256,
 };
-use crate::utils::phantom_data::SPhantomData;
 use crate::{allocate, deallocate, SSlice};
 use copy_as_bytes::traits::{AsBytes, SuperSized};
 use sha2::{Digest, Sha256};
 use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::hash::{Hash, Hasher};
-use zwohash::ZwoHasher;
 
 // BY DEFAULT:
 // LEN, CAPACITY: usize = 0
 // NEXT: u64 = 0
 // NODE_HASHES: [Sha256Digest; CAPACITY] = [zeroed(Sha256Digest); CAPACITY]
 // ENTRY_HASHES: [Sha256Digest; CAPACITY] = [zeroed(Sha256Digest); CAPACITY]
-// KEYS: [K; CAPACITY] = [zeroed(K); CAPACITY]
-// VALUES: [V; CAPACITY] = [zeroed(V); CAPACITY]
 
 const LEN_OFFSET: usize = 0;
 const CAPACITY_OFFSET: usize = LEN_OFFSET + usize::SIZE;
@@ -29,19 +24,13 @@ pub const fn entry_hashes_offset(capacity: usize) -> usize {
     NODE_HASHES_OFFSET + Sha256Digest::SIZE * capacity
 }
 
-// TODO: check for overflow or use u64
-
 #[inline]
-pub const fn keys_offset(capacity: usize) -> usize {
-    entry_hashes_offset(capacity) + Sha256Digest::SIZE * capacity
-}
-
-#[inline]
-pub const fn values_offset<K: SuperSized>(capacity: usize) -> usize {
-    keys_offset(capacity) + (K::SIZE + 1) * capacity
+pub const fn entry_hash_idx_offset(idx: usize, capacity: usize) -> usize {
+    NODE_HASHES_OFFSET + Sha256Digest::SIZE * capacity + (1 + Sha256Digest::SIZE) * idx
 }
 
 pub const DEFAULT_CAPACITY: usize = 7;
+pub const MAX_CAPACITY: usize = 2usize.pow(26);
 
 const EMPTY: u8 = 0;
 const OCCUPIED: u8 = 255;
@@ -50,28 +39,20 @@ pub type KeyHash = usize;
 
 // all for maximum cache-efficiency
 // fixed-size, open addressing, linear probing, 3/4 load factor, non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
-pub struct SCertifiedHashMapNode<K, V> {
+pub struct SCertifiedHashMapNode {
     pub(crate) table_ptr: u64,
-    _marker_k: SPhantomData<K>,
-    _marker_v: SPhantomData<V>,
 }
 
-impl<K, V> SCertifiedHashMapNode<K, V> {
+impl SCertifiedHashMapNode {
     #[inline]
     pub unsafe fn from_ptr(table_ptr: u64) -> Self {
-        Self {
-            table_ptr,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
-        }
+        Self { table_ptr }
     }
 
     #[inline]
     pub unsafe fn copy(&self) -> Self {
         Self {
             table_ptr: self.table_ptr,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
         }
     }
 
@@ -82,17 +63,14 @@ impl<K, V> SCertifiedHashMapNode<K, V> {
     }
 }
 
-impl<K: StableAllocated + ToHashableBytes + Eq + Hash, V: StableAllocated + ToHashableBytes>
-    SCertifiedHashMapNode<K, V>
-where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
-{
+impl SCertifiedHashMapNode {
     #[inline]
     pub fn new(capacity: usize) -> Option<Self> {
-        let bytes_capacity_opt = (1 + K::SIZE + V::SIZE)
-            .checked_mul(capacity)
-            .map(|it| it.checked_add(keys_offset(capacity)));
+        if capacity >= MAX_CAPACITY {
+            return None;
+        }
+
+        let bytes_capacity_opt = entry_hashes_offset(capacity) + Sha256Digest::SIZE * capacity;
 
         if let Some(Some(size)) = bytes_capacity_opt {
             let table = allocate(size as usize);
@@ -103,8 +81,6 @@ where
 
             return Some(Self {
                 table_ptr: table.get_ptr(),
-                _marker_k: SPhantomData::default(),
-                _marker_v: SPhantomData::default(),
             });
         }
 
@@ -113,40 +89,17 @@ where
 
     pub fn insert(
         &mut self,
-        mut key: K,
-        mut value: V,
+        hash: Sha256Digest,
         capacity: usize,
         hasher: &mut Sha256,
-    ) -> Result<(Option<V>, bool, usize, Sha256Digest), (K, V)> {
-        let key_hash = Self::hash(&key);
-        let entry_sha256 = Self::sha256_entry(&key, &value, hasher);
-
-        let mut i = key_hash % capacity;
+    ) -> Result<(bool, usize, Option<Sha256Digest>), Sha256Digest> {
+        let mut i = Self::hash_to_idx(&hash) % capacity;
 
         loop {
-            match self.read_key_at(i, true, capacity) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(&key) {
-                        let mut prev_value = self.read_val_at(i, capacity);
-                        prev_value.remove_from_stable();
-
-                        value.move_to_stable();
-                        self.write_val_at(i, value, capacity);
-
-                        let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(i, capacity);
-
-                        let mut node_sha256 =
-                            Self::sha256_node(entry_sha256, lc_sha256, rc_sha256, hasher);
-
-                        self.write_node_hash_at(i, node_sha256);
-                        self.write_entry_hash_at(i, entry_sha256, capacity);
-
-                        if i > 0 {
-                            node_sha256 =
-                                self.recalculate_merkle_tree(node_sha256, i, capacity, hasher);
-                        }
-
-                        return Ok((Some(prev_value), false, i, node_sha256));
+            match self.read_entry_hash_at(i, true, capacity) {
+                HashMapKey::Occupied(found_hash) => {
+                    if found_hash.eq(&hash) {
+                        return Ok((false, i, None));
                     } else {
                         i = (i + 1) % capacity;
 
@@ -156,35 +109,240 @@ where
                 HashMapKey::Empty => {
                     let len = self.len();
                     if self.is_full(len, capacity) {
-                        return Err((key, value));
+                        return Err(hash);
                     }
 
-                    self.write_len(len + 1);
-
-                    key.move_to_stable();
-                    value.move_to_stable();
-
-                    self.write_key_at(i, HashMapKey::Occupied(key), capacity);
-                    self.write_val_at(i, value, capacity);
-
                     let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(i, capacity);
+                    let mut node_sha256 = Self::sha256_node(hash, lc_sha256, rc_sha256, hasher);
 
-                    let mut node_sha256 =
-                        Self::sha256_node(entry_sha256, lc_sha256, rc_sha256, hasher);
-
+                    self.write_len(len + 1);
                     self.write_node_hash_at(i, node_sha256);
-                    self.write_entry_hash_at(i, entry_sha256, capacity);
+                    self.write_entry_hash_at(i, HashMapKey::Occupied(hash), capacity);
 
                     if i > 0 {
                         node_sha256 =
                             self.recalculate_merkle_tree(node_sha256, i, capacity, hasher);
                     }
 
-                    return Ok((None, true, i, node_sha256));
+                    return Ok((true, i, Some(node_sha256)));
                 }
                 _ => unreachable!(),
             }
         }
+    }
+
+    pub fn remove_by_idx(
+        &mut self,
+        mut i: usize,
+        capacity: usize,
+        hasher: &mut Sha256,
+    ) -> Sha256Digest {
+        let mut j = i;
+
+        let mut is = Vec::new();
+        self.write_len(self.read_len() - 1);
+
+        loop {
+            j = (j + 1) % capacity;
+            if j == i {
+                break;
+            }
+            match self.read_entry_hash_at(j, true, capacity) {
+                HashMapKey::Empty => break,
+                HashMapKey::Occupied(next_hash) => {
+                    let k = Self::hash_to_idx(&next_hash) % capacity;
+
+                    if (j < i) ^ (k <= i) ^ (k > j) {
+                        self.write_entry_hash_at(i, HashMapKey::Occupied(next_hash), capacity);
+
+                        is.push(i);
+
+                        i = j;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.write_entry_hash_at(i, HashMapKey::Empty, capacity);
+        let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(i, capacity);
+
+        let node_hash = Self::sha256_node(EMPTY_SHA256, lc_sha256, rc_sha256, hasher);
+        self.write_node_hash_at(i, node_hash);
+
+        let mut root_hash = if i > 0 {
+            self.recalculate_merkle_tree(node_hash, i, capacity, hasher)
+        } else {
+            node_hash
+        };
+
+        // FIXME: PROBABLY INVALID
+        // FIXME: we need a smarter function that will recalculate hashes of multiple keys at once
+        for idx in is.into_iter().rev() {
+            let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(idx, capacity);
+            let entry_sha256 = self.read_entry_hash_at_anyway(idx, capacity);
+
+            let node_hash = Self::sha256_node(entry_sha256, lc_sha256, rc_sha256, hasher);
+            self.write_node_hash_at(idx, node_hash);
+
+            root_hash = self.recalculate_merkle_tree(node_hash, idx, capacity, hasher);
+        }
+
+        root_hash
+    }
+
+    pub fn remove(
+        &mut self,
+        hash: &Sha256Digest,
+        capacity: usize,
+        hasher: &mut Sha256,
+    ) -> Option<Sha256Digest> {
+        let (i, _) = self.find_inner_idx(hash, capacity)?;
+
+        Some(self.remove_by_idx(i, capacity, hasher))
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.read_len()
+    }
+
+    #[inline]
+    pub const fn is_full(&self, len: usize, capacity: usize) -> bool {
+        if capacity < 12 {
+            len == capacity * 3 / 4
+        } else {
+            len == capacity / 4 * 3
+        }
+    }
+
+    pub fn find_inner_idx(
+        &self,
+        hash: &Sha256Digest,
+        capacity: usize,
+    ) -> Option<(usize, Sha256Digest)> {
+        let mut i = Self::hash_to_idx(hash) % capacity;
+
+        loop {
+            match self.read_entry_hash_at(i, true, capacity) {
+                HashMapKey::Occupied(found_hash) => {
+                    if found_hash.eq(hash) {
+                        return Some((i, found_hash));
+                    } else {
+                        i = (i + 1) % capacity;
+                        continue;
+                    }
+                }
+                HashMapKey::Empty => {
+                    return None;
+                }
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    pub fn witness_indices(
+        &self,
+        sorted_indices: &mut Vec<usize>,
+        capacity: usize,
+        hasher: &mut Sha256,
+    ) -> MerkleNode {
+        let mut sorted_nodes = Vec::new();
+
+        // insert root anyway, even if it was not requested
+        // this way even if no indices were passed to this function, it will return the valid root node
+        if sorted_indices.is_empty() || sorted_indices[0] != 0 {
+            sorted_indices.insert(0, 0);
+        }
+
+        for i in &sorted_indices {
+            sorted_nodes.push(MerkleNode::new(
+                self.read_entry_hash_at_anyway(i, capacity),
+                MerkleChild::None,
+                MerkleChild::None,
+            ));
+        }
+
+        while sorted_nodes.len() > 1 {
+            let mut last_idx = unsafe { sorted_indices.pop().unwrap_unchecked() };
+            let mut last_node = unsafe { sorted_nodes.pop().unwrap_unchecked() };
+
+            if matches!(last_node.left_child, MerkleChild::None) {
+                let lc = if last_idx >= (capacity - 1) / 2 {
+                    EMPTY_SHA256
+                } else {
+                    self.read_node_hash_at((last_idx + 1) * 2 - 1)
+                };
+
+                last_node.left_child = MerkleChild::Pruned(lc);
+            }
+
+            if matches!(last_node.right_child, MerkleChild::None) {
+                let rc = if last_idx >= (capacity - 1) / 2 {
+                    EMPTY_SHA256
+                } else {
+                    self.read_node_hash_at((last_idx + 1) * 2)
+                };
+
+                last_node.right_child = MerkleChild::Pruned(rc);
+            }
+
+            let is_left = last_idx % 2 == 1;
+
+            last_idx /= 2;
+            match sorted_indices.binary_search(&last_idx) {
+                Ok(parent_idx) => {
+                    // parent already exists in the tree
+                    let mut parent = sorted_nodes[parent_idx];
+
+                    if is_left {
+                        debug_assert!(matches!(parent.left_child, MerkleChild::None));
+                        parent.left_child = MerkleChild::Hole(last_node);
+                    } else {
+                        debug_assert!(matches!(parent.right_child, MerkleChild::None));
+                        parent.right_child = MerkleChild::Hole(last_node);
+                    }
+                }
+                Err(parent_idx) => {
+                    let entry_hash = self.read_entry_hash_at_anyway(last_idx, capacity);
+
+                    let parent = if is_left {
+                        MerkleNode::new(entry_hash, MerkleChild::Hole(last_node), MerkleChild::None)
+                    } else {
+                        MerkleNode::new(entry_hash, MerkleChild::None, MerkleChild::Hole(last_node))
+                    };
+
+                    sorted_indices.insert(parent_idx, last_idx);
+                    sorted_nodes.insert(parent_idx, parent);
+                }
+            }
+        }
+
+        sorted_indices.pop();
+
+        let mut merkle_root = sorted_nodes[0];
+
+        if matches!(merkle_root.left_child, MerkleChild::None) {
+            let lc = if 0 >= (capacity - 1) / 2 {
+                EMPTY_SHA256
+            } else {
+                self.read_node_hash_at(1)
+            };
+
+            merkle_root.left_child = MerkleChild::Pruned(lc);
+        }
+
+        if matches!(merkle_root.right_child, MerkleChild::None) {
+            let rc = if 0 >= (capacity - 1) / 2 {
+                EMPTY_SHA256
+            } else {
+                self.read_node_hash_at(2)
+            };
+
+            merkle_root.right_child = MerkleChild::Pruned(rc);
+        }
+
+        merkle_root
     }
 
     fn recalculate_merkle_tree(
@@ -206,14 +364,14 @@ where
 
                 i /= 2;
 
-                let entry_sha256 = self.get_entry_sha256_at(i, capacity);
+                let entry_sha256 = self.read_entry_hash_at_anyway(i, capacity);
                 Self::sha256_node(entry_sha256, node_sha256, r, hasher)
             } else {
                 let l = self.read_node_hash_at(i - 1);
 
                 i = (i - 1) / 2;
 
-                let entry_sha256 = self.get_entry_sha256_at(i, capacity);
+                let entry_sha256 = self.read_entry_hash_at_anyway(i, capacity);
                 Self::sha256_node(entry_sha256, l, node_sha256, hasher)
             };
 
@@ -223,181 +381,6 @@ where
         }
 
         node_sha256
-    }
-
-    pub fn remove_by_idx(
-        &mut self,
-        mut i: usize,
-        capacity: usize,
-        hasher: &mut Sha256,
-    ) -> (V, Sha256Digest) {
-        let prev_value = self.read_val_at(i, capacity);
-        let mut j = i;
-
-        let mut is = Vec::new();
-        self.write_len(self.read_len() - 1);
-
-        loop {
-            j = (j + 1) % capacity;
-            if j == i {
-                break;
-            }
-            match self.read_key_at(j, true, capacity) {
-                HashMapKey::Empty => break,
-                HashMapKey::Occupied(next_key) => {
-                    let key_hash = Self::hash(&next_key);
-                    let k = key_hash % capacity;
-
-                    if (j < i) ^ (k <= i) ^ (k > j) {
-                        self.write_key_at(i, HashMapKey::Occupied(next_key), capacity);
-                        self.write_val_at(i, self.read_val_at(j, capacity), capacity);
-                        self.write_entry_hash_at(i, self.read_entry_hash_at(j, capacity), capacity);
-
-                        is.push(i);
-
-                        i = j;
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        self.write_key_at(i, HashMapKey::Empty, capacity);
-        let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(i, capacity);
-
-        let node_hash = Self::sha256_node(EMPTY_SHA256, lc_sha256, rc_sha256, hasher);
-        self.write_node_hash_at(i, node_hash);
-
-        let mut root_hash = if i > 0 {
-            self.recalculate_merkle_tree(node_hash, i, capacity, hasher)
-        } else {
-            node_hash
-        };
-
-        // FIXME: PROBABLY INVALID
-        // FIXME: we need a smarter function that will recalculate hashes of multiple keys at once
-        for idx in is.into_iter().rev() {
-            let (lc_sha256, rc_sha256) = self.read_children_node_hashes_of(idx, capacity);
-            let entry_sha256 = self.get_entry_sha256_at(idx, capacity);
-
-            let node_hash = Self::sha256_node(entry_sha256, lc_sha256, rc_sha256, hasher);
-            self.write_node_hash_at(idx, node_hash);
-
-            root_hash = self.recalculate_merkle_tree(node_hash, idx, capacity, hasher);
-        }
-
-        (prev_value, root_hash)
-    }
-
-    pub fn remove(
-        &mut self,
-        key: &K,
-        capacity: usize,
-        hasher: &mut Sha256,
-    ) -> Option<(V, Sha256Digest)> {
-        let (i, _) = self.find_inner_idx(key, capacity)?;
-
-        Some(self.remove_by_idx(i, capacity, hasher))
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.read_len()
-    }
-
-    #[inline]
-    pub const fn is_full(&self, len: usize, capacity: usize) -> bool {
-        if capacity < 12 {
-            len == capacity * 3 / 4
-        } else {
-            len == capacity / 4 * 3
-        }
-    }
-
-    pub fn find_inner_idx(&self, key: &K, capacity: usize) -> Option<(usize, K)> {
-        let key_hash = Self::hash(key);
-        let mut i = key_hash % capacity;
-
-        loop {
-            match self.read_key_at(i, true, capacity) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
-                        return Some((i, prev_key));
-                    } else {
-                        i = (i + 1) % capacity;
-                        continue;
-                    }
-                }
-                HashMapKey::Empty => {
-                    return None;
-                }
-                _ => unreachable!(),
-            };
-        }
-    }
-
-    pub fn witness_key(
-        &self,
-        key: &K,
-        capacity: usize,
-        hasher: &mut Sha256,
-    ) -> Option<Vec<MerkleNode<K, V>>> {
-        if let Some((mut idx, k)) = self.find_inner_idx(key, capacity) {
-            let v = self.read_val_at(idx, capacity);
-            let mut result = Vec::new();
-
-            let (lc_hash, rc_hash) = self.read_children_node_hashes_of(idx, capacity);
-
-            result.push(MerkleNode::new(
-                MerkleKV::Plain((k, v)),
-                MerkleChild::Pruned(lc_hash),
-                MerkleChild::Pruned(rc_hash),
-            ));
-
-            if idx == 0 {
-                return Some(result);
-            }
-
-            let mut is_left = idx % 2 == 1;
-
-            while idx > 0 {
-                if is_left {
-                    let r = if idx + 1 < capacity {
-                        self.read_node_hash_at(idx + 1)
-                    } else {
-                        EMPTY_SHA256
-                    };
-
-                    idx /= 2;
-
-                    let entry_sha256 = self.get_entry_sha256_at(idx, capacity);
-
-                    result.push(MerkleNode::new(
-                        MerkleKV::Pruned(entry_sha256),
-                        MerkleChild::Hole,
-                        MerkleChild::Pruned(r),
-                    ));
-                } else {
-                    let l = self.read_node_hash_at(idx - 1);
-
-                    idx = (idx - 1) / 2;
-
-                    let entry_sha256 = self.get_entry_sha256_at(idx, capacity);
-
-                    result.push(MerkleNode::new(
-                        MerkleKV::Pruned(entry_sha256),
-                        MerkleChild::Pruned(l),
-                        MerkleChild::Hole,
-                    ));
-                }
-
-                is_left = idx % 2 == 1
-            }
-
-            Some(result)
-        } else {
-            None
-        }
     }
 
     #[inline]
@@ -415,9 +398,14 @@ where
         SSlice::_as_bytes_read(self.table_ptr, NEXT_OFFSET)
     }
 
-    fn read_key_at(&self, idx: usize, read_value: bool, capacity: usize) -> HashMapKey<K> {
+    fn read_entry_hash_at(
+        &self,
+        idx: usize,
+        read_value: bool,
+        capacity: usize,
+    ) -> HashMapKey<Sha256Digest> {
         let mut key_flag = [0u8];
-        let offset = keys_offset(capacity) + (1 + K::SIZE) * idx;
+        let offset = entry_hash_idx_offset(idx, capacity);
 
         SSlice::_read_bytes(self.table_ptr, offset, &mut key_flag);
 
@@ -425,9 +413,9 @@ where
             EMPTY => HashMapKey::Empty,
             OCCUPIED => {
                 if read_value {
-                    let k = SSlice::_as_bytes_read(self.table_ptr, offset + 1);
+                    let hash = SSlice::_as_bytes_read(self.table_ptr, offset + 1);
 
-                    HashMapKey::Occupied(k)
+                    HashMapKey::Occupied(hash)
                 } else {
                     HashMapKey::OccupiedNull
                 }
@@ -436,31 +424,17 @@ where
         }
     }
 
-    fn get_entry_sha256_at(&self, idx: usize, capacity: usize) -> Sha256Digest {
-        match self.read_key_at(idx, false, capacity) {
+    fn read_entry_hash_at_anyway(&self, idx: usize, capacity: usize) -> Sha256Digest {
+        match self.read_entry_hash_at(idx, true, capacity) {
             HashMapKey::Empty => EMPTY_SHA256,
-            HashMapKey::OccupiedNull => self.read_entry_hash_at(idx, capacity),
+            HashMapKey::Occupied(hash) => hash,
             _ => unreachable!(),
         }
     }
 
     #[inline]
-    pub fn read_val_at(&self, idx: usize, capacity: usize) -> V {
-        let offset = values_offset::<K>(capacity) + V::SIZE * idx;
-
-        SSlice::_as_bytes_read(self.table_ptr, offset)
-    }
-
-    #[inline]
     pub fn read_node_hash_at(&self, idx: usize) -> Sha256Digest {
         let offset = NODE_HASHES_OFFSET + Sha256Digest::SIZE * idx;
-
-        SSlice::_as_bytes_read(self.table_ptr, offset)
-    }
-
-    #[inline]
-    pub fn read_entry_hash_at(&self, idx: usize, capacity: usize) -> Sha256Digest {
-        let offset = entry_hashes_offset(capacity) + Sha256Digest::SIZE * idx;
 
         SSlice::_as_bytes_read(self.table_ptr, offset)
     }
@@ -500,10 +474,10 @@ where
         SSlice::_as_bytes_write(self.table_ptr, NEXT_OFFSET, next)
     }
 
-    fn write_key_at(&mut self, idx: usize, key: HashMapKey<K>, capacity: usize) {
-        let offset = keys_offset(capacity) + (1 + K::SIZE) * idx;
+    fn write_entry_hash_at(&mut self, idx: usize, hash: HashMapKey<Sha256Digest>, capacity: usize) {
+        let offset = entry_hash_idx_offset(idx, capacity);
 
-        let key_flag = match key {
+        let key_flag = match hash {
             HashMapKey::Empty => [EMPTY],
             HashMapKey::Occupied(k) => {
                 SSlice::_as_bytes_write(self.table_ptr, offset + 1, k);
@@ -517,58 +491,40 @@ where
     }
 
     #[inline]
-    fn write_val_at(&mut self, idx: usize, val: V, capacity: usize) {
-        let offset = values_offset::<K>(capacity) + V::SIZE * idx;
-
-        SSlice::_as_bytes_write(self.table_ptr, offset, val);
-    }
-
-    #[inline]
     fn write_node_hash_at(&mut self, idx: usize, node_hash: Sha256Digest) {
         let offset = NODE_HASHES_OFFSET + Sha256Digest::SIZE * idx;
 
         SSlice::_as_bytes_write(self.table_ptr, offset, node_hash);
     }
 
-    #[inline]
-    fn write_entry_hash_at(&mut self, idx: usize, node_hash: Sha256Digest, capacity: usize) {
-        let offset = entry_hashes_offset(capacity) + Sha256Digest::SIZE * idx;
-
-        SSlice::_as_bytes_write(self.table_ptr, offset, node_hash);
-    }
-
     pub fn debug_print(&self, capacity: usize) {
+        let capacity = self.read_capacity();
         print!(
             "Node({}, {}, {})[",
             self.read_len(),
-            self.read_capacity(),
+            capacity,
             self.read_next(),
         );
+
         for i in 0..capacity {
             let mut k_flag = [0u8];
-            let mut k = [0u8; K::SIZE];
-            let mut v = [0u8; V::SIZE];
-            let mut hash = [0u8; Sha256Digest::SIZE];
+            let mut entry_hash = [0u8; Sha256Digest::SIZE];
+            let mut node_hash = [0u8; Sha256Digest::SIZE];
 
             SSlice::_read_bytes(
                 self.table_ptr,
-                keys_offset(capacity) + (1 + K::SIZE) * i,
+                entry_hash_idx_offset(i, capacity),
                 &mut k_flag,
             );
             SSlice::_read_bytes(
                 self.table_ptr,
-                keys_offset(capacity) + (1 + K::SIZE) * i + 1,
-                &mut k,
-            );
-            SSlice::_read_bytes(
-                self.table_ptr,
-                values_offset::<K>(capacity) + V::SIZE * i,
-                &mut v,
+                entry_hash_idx_offset(i, capacity) + 1,
+                &mut entry_hash,
             );
             SSlice::_read_bytes(
                 self.table_ptr,
                 NODE_HASHES_OFFSET + Sha256Digest::SIZE * i,
-                &mut hash,
+                &mut node_hash,
             );
 
             print!("(");
@@ -579,7 +535,7 @@ where
                 _ => unreachable!(),
             };
 
-            print!("k: {:?}, v: {:?}, h: /{:?}/)", k, v, hash);
+            print!("entry_hash: {:?}, node_hash: {:?})", entry_hash, node_hash);
 
             if i < capacity - 1 {
                 print!(", ");
@@ -588,22 +544,15 @@ where
         println!("]");
     }
 
-    pub fn hash(key: &K) -> KeyHash {
-        let mut hasher = ZwoHasher::default();
-        key.hash(&mut hasher);
+    pub fn hash_to_idx(hash: &Sha256Digest) -> KeyHash {
+        let mut buf = KeyHash::super_size_u8_arr();
 
-        hasher.finish() as KeyHash
+        buf.copy_from_slice(hash[..KeyHash::SIZE]);
+        KeyHash::from_bytes(buf)
     }
 }
 
-impl<K: ToHashableBytes, V: ToHashableBytes> SCertifiedHashMapNode<K, V> {
-    pub fn sha256_entry(k: &K, v: &V, hasher: &mut Sha256) -> Sha256Digest {
-        hasher.update(k.to_hashable_bytes());
-        hasher.update(v.to_hashable_bytes());
-
-        hasher.finalize_reset().into()
-    }
-
+impl SCertifiedHashMapNode {
     pub fn sha256_node(
         entry_sha256: Sha256Digest,
         lc_sha256: Sha256Digest,
@@ -618,35 +567,26 @@ impl<K: ToHashableBytes, V: ToHashableBytes> SCertifiedHashMapNode<K, V> {
     }
 }
 
-impl<K: StableAllocated + ToHashableBytes + Eq + Hash, V: StableAllocated + ToHashableBytes> Default
-    for SCertifiedHashMapNode<K, V>
-where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
-{
+impl Default for SCertifiedHashMapNode {
     #[inline]
     fn default() -> Self {
         unsafe { Self::new(DEFAULT_CAPACITY).unwrap_unchecked() }
     }
 }
 
-impl<'a, K, V> Readable<'a, LittleEndian> for SCertifiedHashMapNode<K, V> {
+impl<'a> Readable<'a, LittleEndian> for SCertifiedHashMapNode {
     fn read_from<R: Reader<'a, LittleEndian>>(
         reader: &mut R,
     ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
         let table_ptr = reader.read_u64()?;
 
-        let it = Self {
-            table_ptr,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
-        };
+        let it = Self { table_ptr };
 
         Ok(it)
     }
 }
 
-impl<K, V> Writable<LittleEndian> for SCertifiedHashMapNode<K, V> {
+impl Writable<LittleEndian> for SCertifiedHashMapNode {
     fn write_to<W: ?Sized + Writer<LittleEndian>>(
         &self,
         writer: &mut W,
@@ -670,11 +610,11 @@ impl<K> HashMapKey<K> {
     }
 }
 
-impl<K, V> SuperSized for SCertifiedHashMapNode<K, V> {
+impl SuperSized for SCertifiedHashMapNode {
     const SIZE: usize = u64::SIZE;
 }
 
-impl<K, V> AsBytes for SCertifiedHashMapNode<K, V> {
+impl AsBytes for SCertifiedHashMapNode {
     fn to_bytes(self) -> [u8; Self::SIZE] {
         self.table_ptr.to_bytes()
     }
@@ -682,11 +622,7 @@ impl<K, V> AsBytes for SCertifiedHashMapNode<K, V> {
     fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
         let table_ptr = u64::from_bytes(arr);
 
-        Self {
-            table_ptr,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
-        }
+        Self { table_ptr }
     }
 }
 

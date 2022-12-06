@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod btree_map_benchmark {
-    use crate::collections::certified_hash_map::map::SCertifiedHashMap;
+    use crate::collections::certified_hash_map::map::SCertifiedSet;
     use crate::{init_allocator, measure, stable};
     use std::collections::BTreeMap;
 
@@ -36,7 +36,7 @@ mod btree_map_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_hashtree_map = SCertifiedHashMap::new();
+            let mut stable_hashtree_map = SCertifiedSet::new();
 
             measure!("Stable certified hashmap insert", ITERATIONS, {
                 for i in 0..ITERATIONS {

@@ -1,5 +1,8 @@
 THIS IS A EARLY SOFTWARE. DON'T USE IN PRODUCTION!
 
+## CHECK FOR MEMORY LEAKS BEFORE RELEASING
+
+
 ![test coverage 94.60%](https://badgen.net/badge/coverage/94.60%25/green)
 
 

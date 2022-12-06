@@ -1,20 +1,23 @@
 use crate::collections::certified_hash_map::node::SCertifiedHashMapNode;
 use crate::primitive::StableAllocated;
-use crate::utils::certification::{MerkleWitness, Sha256Digest, ToHashableBytes, EMPTY_SHA256};
+use crate::utils::certification::{
+    MerkleChild, MerkleHash, MerkleNode, MerkleWitness, Sha256Digest, EMPTY_SHA256,
+};
 use sha2::{Digest, Sha256};
 use std::hash::Hash;
+use zwohash::HashSet;
 
 // non-reallocating big hash map based on rope data structure
 // linked list of hashmaps, from big ones to small ones
 // infinite; both: logarithmic and amortized const
-pub struct SCertifiedHashMap<K, V> {
-    root: Option<SCertifiedHashMapNode<K, V>>,
+pub struct SCertifiedSet<H = Sha256> {
+    root: Option<SCertifiedHashMapNode>,
     len: u64,
     root_hash: Sha256Digest,
     _hasher: Sha256,
 }
 
-impl<K, V> SCertifiedHashMap<K, V> {
+impl SCertifiedSet {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -34,23 +37,18 @@ impl<K, V> SCertifiedHashMap<K, V> {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-}
 
-impl<K: StableAllocated + ToHashableBytes + Eq + Hash, V: StableAllocated + ToHashableBytes>
-    SCertifiedHashMap<K, V>
-where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
-{
-    pub fn insert(&mut self, mut k: K, mut v: V) -> Option<V> {
+    pub fn insert(&mut self, hash: Sha256Digest) -> bool {
         let mut node = self.get_or_create_root();
         let mut capacity = node.read_capacity();
         let root_capacity = capacity;
 
         let mut root_hashes = Vec::new();
 
+        // TODO: here and in remove, after getting the root hash of a single bucket, put it as an additional_child to it's parent
+
         loop {
-            match node.insert(k, v, capacity, &mut self._hasher) {
+            match node.insert(hash, capacity, &mut self._hasher) {
                 Ok((res, should_update_len, _, root_hash)) => {
                     root_hashes.push(root_hash);
 
@@ -60,7 +58,7 @@ where
                             break;
                         }
 
-                        node = unsafe { SCertifiedHashMapNode::<K, V>::from_ptr(next) };
+                        node = unsafe { SCertifiedHashMapNode::from_ptr(next) };
                         root_hashes.push(node.read_root_hash());
                     }
 
@@ -76,9 +74,8 @@ where
 
                     return res;
                 }
-                Err((_k, _v)) => {
-                    k = _k;
-                    v = _v;
+                Err(_hash) => {
+                    hash = _hash;
 
                     root_hashes.push(node.read_root_hash());
 
@@ -101,7 +98,7 @@ where
                         capacity = new_root_capacity;
                         self.root = Some(unsafe { new_root.copy() });
 
-                        match new_root.insert(k, v, capacity, &mut self._hasher) {
+                        match new_root.insert(hash, capacity, &mut self._hasher) {
                             Ok((res, _, _, root_hash)) => {
                                 root_hashes.insert(0, root_hash);
 
@@ -127,7 +124,7 @@ where
         }
     }
 
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove(&mut self, hash: &Sha256Digest) -> bool {
         if self.is_empty() {
             return None;
         }
@@ -138,7 +135,7 @@ where
         let mut root_hashes = Vec::new();
 
         loop {
-            match node.remove(key, capacity, &mut self._hasher) {
+            match node.remove(hash, capacity, &mut self._hasher) {
                 Some((v, root_hash)) => {
                     root_hashes.push(root_hash);
 
@@ -179,56 +176,87 @@ where
         }
     }
 
-    pub fn get_copy(&self, key: &K) -> Option<V> {
-        let (node, idx, capacity) = self.find_key(key)?;
-        Some(node.read_val_at(idx, capacity))
+    pub fn contains(&self, hash: &Sha256Digest) -> bool {
+        self.find_hash(hash).is_some()
     }
 
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.find_key(key).is_some()
-    }
-
-    pub fn witness_key(&self, key: &K) -> Option<MerkleWitness<K, V>> {
+    pub fn witness_hashes(&self, mut hashes: Vec<Sha256Digest>) -> Option<MerkleNode> {
+        // TODO: fix this hasher to use the object-wide one
         let mut hasher = Sha256::default();
 
         if self.is_empty() {
             return None;
         }
 
-        let mut node = self.get_root_unchecked();
-        let mut capacity = node.read_capacity();
-        let mut additional_hashes = Vec::new();
+        let mut bucket = self.get_root_unchecked();
+        let mut capacity = bucket.read_capacity();
+        let mut merkle_roots = Vec::new();
+
+        let mut inner_indices = Vec::new();
+        let mut hashes_indices_to_remove = Vec::new();
 
         loop {
-            match node.witness_key(key, capacity, &mut hasher) {
-                Some(tree) => {
-                    additional_hashes.push(None);
+            let mut found = false;
 
-                    loop {
-                        let next = node.read_next();
-                        if next == 0 {
-                            break;
-                        }
+            for i in 0..hashes.len() {
+                if let Some((inner_idx, _)) = bucket.find_inner_idx(&hashes[i], capacity) {
+                    let j = inner_indices.binary_search(&inner_idx).unwrap_err();
+                    inner_indices.insert(j, inner_idx);
 
-                        node = unsafe { SCertifiedHashMapNode::<K, V>::from_ptr(next) };
-                        additional_hashes.push(Some(node.read_root_hash()));
-                    }
+                    found = true;
 
-                    return Some(MerkleWitness::new(tree, additional_hashes));
-                }
-                None => {
-                    additional_hashes.push(Some(node.read_root_hash()));
-                    let next = node.read_next();
-
-                    if next == 0 {
-                        return None;
-                    }
-
-                    node = unsafe { SCertifiedHashMapNode::<K, V>::from_ptr(next) };
-                    capacity = node.read_capacity();
+                    hashes_indices_to_remove.push(i);
                 }
             }
+
+            // TODO: pass tmp vec for sorted_nodes also
+            let merkle_root = bucket.witness_indices(inner_indices, capacity, &mut hasher);
+            merkle_roots.push((merkle_root, found));
+
+            for i in 0..hashes_indices_to_remove.len() {
+                hashes.remove(hashes_indices_to_remove.pop());
+            }
+
+            if hashes.is_empty() {
+                break;
+            }
+
+            let next = bucket.read_next();
+            if next == 0 {
+                break;
+            }
+
+            bucket = unsafe { SCertifiedHashMapNode::from_ptr(next) };
+            capacity = bucket.read_capacity();
         }
+
+        if !hashes.is_empty() {
+            return None;
+        }
+
+        let mut last_idx = merkle_roots.len() - 1;
+        while last_idx > 0 {
+            let (last_root, found) = unsafe { merkle_roots.pop().unwrap_unchecked() };
+
+            let is_left = last_idx % 2 == 1;
+            let parent_idx = last_idx / 2;
+
+            last_idx -= 1;
+
+            if !found {
+                continue;
+            }
+
+            merkle_roots[parent_idx].1 = true;
+
+            if is_left {
+                merkle_roots[parent_idx].0.additional_left_child = MerkleChild::Hole(last_root);
+            } else {
+                merkle_roots[parent_idx].0.additional_right_child = MerkleChild::Hole(last_root)
+            }
+        }
+
+        Some(merkle_roots[0].0)
     }
 
     #[inline]
@@ -236,7 +264,7 @@ where
         self.root_hash
     }
 
-    fn find_key(&self, key: &K) -> Option<(SCertifiedHashMapNode<K, V>, usize, usize)> {
+    fn find_hash(&self, hash: &Sha256Digest) -> Option<(SCertifiedHashMapNode, usize, usize)> {
         if self.is_empty() {
             return None;
         }
@@ -265,7 +293,7 @@ where
         }
     }
 
-    fn get_or_create_root(&mut self) -> SCertifiedHashMapNode<K, V> {
+    fn get_or_create_root(&mut self) -> SCertifiedHashMapNode {
         if let Some(root) = &self.root {
             unsafe { root.copy() }
         } else {
@@ -275,7 +303,7 @@ where
         }
     }
 
-    fn get_root_unchecked(&self) -> SCertifiedHashMapNode<K, V> {
+    fn get_root_unchecked(&self) -> SCertifiedHashMapNode {
         unsafe { self.root.as_ref().map(|it| it.copy()).unwrap_unchecked() }
     }
 
@@ -295,7 +323,7 @@ where
     }
 }
 
-impl<K, V> Default for SCertifiedHashMap<K, V> {
+impl<K, V> Default for SCertifiedSet {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -304,7 +332,7 @@ impl<K, V> Default for SCertifiedHashMap<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::certified_hash_map::map::SCertifiedHashMap;
+    use crate::collections::certified_hash_map::map::SCertifiedSet;
     use crate::init_allocator;
     use crate::primitive::StableAllocated;
     use crate::utils::certification::{MerkleKV, Sha256Digest, EMPTY_SHA256};
@@ -319,7 +347,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SCertifiedHashMap::new();
+        let mut map = SCertifiedSet::new();
 
         let k1 = 1u32;
         let k2 = 2u32;
@@ -377,7 +405,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SCertifiedHashMap::new();
+        let mut map = SCertifiedSet::new();
 
         assert!(map.remove(&10u32).is_none());
         assert!(map.get_copy(&10u32).is_none());
@@ -396,7 +424,7 @@ mod tests {
 
         // unsafe { map.stable_drop() };
 
-        let mut map = SCertifiedHashMap::default();
+        let mut map = SCertifiedSet::default();
         for i in 0..100u32 {
             assert!(map.insert(i, i).is_none());
         }
@@ -418,7 +446,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SCertifiedHashMap::new();
+        let mut map = SCertifiedSet::new();
 
         for i in 0..500u32 {
             map.insert((499 - i), i);
@@ -456,7 +484,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SCertifiedHashMap::new();
+        let mut map = SCertifiedSet::new();
 
         for i in 0..100u32 {
             map.insert(i, i);
@@ -506,7 +534,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SCertifiedHashMap::new();
+        let mut map = SCertifiedSet::new();
 
         for i in 0..100u32 {
             map.insert(i, i);
