@@ -4,8 +4,30 @@ use crate::utils::certification::{
     MerkleChild, MerkleHash, MerkleNode, MerkleWitness, Sha256Digest, EMPTY_SHA256,
 };
 use sha2::{Digest, Sha256};
-use std::hash::Hash;
-use zwohash::HashSet;
+
+struct Bucket {
+    pub ptr: u64,
+    modified_indices: Vec<usize>,
+}
+
+impl Bucket {
+    pub fn new(ptr: u64) -> Self {
+        Bucket {
+            ptr,
+            modified_indices: Vec::new(),
+        }
+    }
+
+    pub fn add_modified_index(&mut self, idx: usize) {
+        if let Err(i) = self.modified_indices.binary_search(&idx) {
+            self.modified_indices.insert(i, idx)
+        }
+    }
+
+    pub fn get_modified_indices(&mut self) -> &mut Vec<usize> {
+        &mut self.modified_indices
+    }
+}
 
 // non-reallocating big hash map based on rope data structure
 // linked list of hashmaps, from big ones to small ones
@@ -13,8 +35,10 @@ use zwohash::HashSet;
 pub struct SCertifiedSet<H = Sha256> {
     root: Option<SCertifiedHashMapNode>,
     len: u64,
-    root_hash: Sha256Digest,
-    _hasher: Sha256,
+    tip_of_the_tree: Vec<Sha256Digest>,
+    batch_started: bool,
+    buckets: Vec<Bucket>,
+    hasher: Sha256,
 }
 
 impl SCertifiedSet {
@@ -23,8 +47,10 @@ impl SCertifiedSet {
         Self {
             root: None,
             len: 0,
-            root_hash: EMPTY_SHA256,
-            _hasher: Sha256::default(),
+            tip_of_the_tree: Vec::new(),
+            buckets: Vec::new(),
+            batch_started: false,
+            hasher: Sha256::default(),
         }
     }
 
@@ -39,88 +65,67 @@ impl SCertifiedSet {
     }
 
     pub fn insert(&mut self, hash: Sha256Digest) -> bool {
-        let mut node = self.get_or_create_root();
-        let mut capacity = node.read_capacity();
+        let mut bucket = self.get_or_create_root();
+        let mut bucket_idx = 0usize;
+
+        let mut capacity = bucket.read_capacity();
         let root_capacity = capacity;
 
-        let mut root_hashes = Vec::new();
-
-        // TODO: here and in remove, after getting the root hash of a single bucket, put it as an additional_child to it's parent
-
         loop {
-            match node.insert(hash, capacity, &mut self._hasher) {
-                Ok((res, should_update_len, _, root_hash)) => {
-                    root_hashes.push(root_hash);
+            // if there was an empty space in this bucket - insert
+            if let Some((should_update_len, modified_idx)) = bucket.insert(hash, capacity) {
+                if should_update_len {
+                    self.buckets[bucket_idx].add_modified_index(modified_idx);
 
-                    loop {
-                        let next = node.read_next();
-                        if next == 0 {
-                            break;
-                        }
+                    self.len += 1;
 
-                        node = unsafe { SCertifiedHashMapNode::from_ptr(next) };
-                        root_hashes.push(node.read_root_hash());
+                    if !self.batch_started {
+                        self.recalculate_merkle_tree();
                     }
-
-                    // todo: refactor
-                    for h in root_hashes {
-                        self._hasher.update(h);
-                    }
-                    self.root_hash = self._hasher.finalize_reset().into();
-
-                    if should_update_len {
-                        self.len += 1;
-                    }
-
-                    return res;
                 }
-                Err(_hash) => {
-                    hash = _hash;
 
-                    root_hashes.push(node.read_root_hash());
-
-                    let next = node.read_next();
-
-                    node = if next == 0 {
-                        let mut new_root_capacity = root_capacity * 2 - 1;
-                        let mut new_root = if let Some(new_root) =
-                            SCertifiedHashMapNode::new(new_root_capacity)
-                        {
-                            new_root
-                        } else {
-                            new_root_capacity = root_capacity;
-                            unsafe { SCertifiedHashMapNode::new(root_capacity).unwrap_unchecked() }
-                        };
-
-                        let root = self.get_root_unchecked();
-                        new_root.write_next(root.table_ptr);
-
-                        capacity = new_root_capacity;
-                        self.root = Some(unsafe { new_root.copy() });
-
-                        match new_root.insert(hash, capacity, &mut self._hasher) {
-                            Ok((res, _, _, root_hash)) => {
-                                root_hashes.insert(0, root_hash);
-
-                                // todo: refactor
-                                for h in root_hashes {
-                                    self._hasher.update(h);
-                                }
-                                self.root_hash = self._hasher.finalize_reset().into();
-                                self.len += 1;
-
-                                return res;
-                            }
-                            _ => unreachable!(),
-                        }
-                    } else {
-                        let next = unsafe { SCertifiedHashMapNode::from_ptr(next) };
-                        capacity = next.read_capacity();
-
-                        next
-                    };
-                }
+                return should_update_len;
             }
+
+            let next = bucket.read_next();
+
+            // if there is no next - create new bucket and make it the new head
+            bucket = if next == 0 {
+                let mut new_root_capacity = root_capacity * 2 - 1;
+                let mut new_root =
+                    if let Some(new_root) = SCertifiedHashMapNode::new(new_root_capacity) {
+                        new_root
+                    } else {
+                        new_root_capacity = root_capacity;
+                        unsafe { SCertifiedHashMapNode::new(root_capacity).unwrap_unchecked() }
+                    };
+                self.buckets.insert(0, Bucket::new(new_root.table_ptr));
+
+                let root = self.get_root_unchecked();
+                new_root.write_next(root.table_ptr);
+
+                capacity = new_root_capacity;
+                self.root = Some(unsafe { new_root.copy() });
+
+                let (_, modified_idx) = new_root.insert(hash, capacity).unwrap();
+
+                self.buckets[0].add_modified_index(modified_idx);
+
+                if !self.batch_started {
+                    self.recalculate_merkle_tree();
+                }
+
+                self.len += 1;
+
+                return true;
+            } else {
+                // if there is next - try inserting again
+                let next = unsafe { SCertifiedHashMapNode::from_ptr(next) };
+                capacity = next.read_capacity();
+                bucket_idx += 1;
+
+                next
+            };
         }
     }
 
@@ -129,50 +134,31 @@ impl SCertifiedSet {
             return None;
         }
 
-        let mut node = self.get_or_create_root();
-        let mut capacity = node.read_capacity();
-
-        let mut root_hashes = Vec::new();
+        let mut bucket = self.get_or_create_root();
+        let mut bucket_idx = 0usize;
+        let mut modified_indices = self.buckets[bucket_idx].get_modified_indices();
+        let mut capacity = bucket.read_capacity();
 
         loop {
-            match node.remove(hash, capacity, &mut self._hasher) {
-                Some((v, root_hash)) => {
-                    root_hashes.push(root_hash);
+            if bucket.remove(hash, capacity, modified_indices) {
+                self.len -= 1;
 
-                    loop {
-                        let next = node.read_next();
-                        if next == 0 {
-                            break;
-                        }
-
-                        node = unsafe { SCertifiedHashMapNode::from_ptr(next) };
-
-                        let rh = node.read_root_hash();
-                        root_hashes.push(rh);
-                    }
-
-                    for rh in root_hashes {
-                        self._hasher.update(rh);
-                    }
-                    self.root_hash = self._hasher.finalize_reset().into();
-
-                    self.len -= 1;
-
-                    return Some(v);
+                if !self.batch_started {
+                    self.recalculate_merkle_tree();
                 }
-                None => {
-                    let rh = node.read_root_hash();
-                    root_hashes.push(rh);
-                    let next = node.read_next();
 
-                    if next == 0 {
-                        return None;
-                    }
+                return true;
+            }
 
-                    node = unsafe { SCertifiedHashMapNode::from_ptr(next) };
-                    capacity = node.read_capacity();
-                }
-            };
+            let next = bucket.read_next();
+            if next == 0 {
+                return false;
+            }
+
+            bucket = unsafe { SCertifiedHashMapNode::from_ptr(next) };
+            capacity = bucket.read_capacity();
+            bucket_idx += 1;
+            modified_indices = self.buckets[bucket_idx].get_modified_indices();
         }
     }
 
@@ -180,10 +166,68 @@ impl SCertifiedSet {
         self.find_hash(hash).is_some()
     }
 
-    pub fn witness_hashes(&self, mut hashes: Vec<Sha256Digest>) -> Option<MerkleNode> {
-        // TODO: fix this hasher to use the object-wide one
-        let mut hasher = Sha256::default();
+    pub fn start_batch(&mut self) {
+        assert!(!self.batch_started);
+        self.batch_started = true;
+    }
 
+    pub fn end_batch(&mut self) {
+        assert!(self.batch_started);
+
+        self.recalculate_merkle_tree();
+        self.batch_started = false;
+    }
+
+    fn recalculate_merkle_tree(&mut self) {
+        let buckets_len = self.buckets.len();
+        if buckets_len == 0 {
+            return;
+        }
+
+        self.tip_of_the_tree.clear();
+        for i in 0..buckets_len {
+            self.tip_of_the_tree.push(EMPTY_SHA256);
+        }
+
+        for bucket_info in &mut self.buckets {
+            let mut bucket = unsafe { SCertifiedHashMapNode::from_ptr(bucket_info.ptr) };
+            let capacity = bucket.read_capacity();
+
+            bucket.recalculate_merkle_tree(
+                bucket_info.get_modified_indices(),
+                capacity,
+                &mut self.hasher,
+            );
+            self.tip_of_the_tree.push(bucket.read_root_hash());
+        }
+
+        let mut i = buckets_len - 1;
+
+        loop {
+            self.hasher.update(EMPTY_SHA256);
+
+            let right_child_idx = (i + 1) * 2;
+            let left_child_idx = right_child_idx - 1;
+
+            self.hasher.update(self.tip_of_the_tree[left_child_idx]);
+
+            if right_child_idx < self.tip_of_the_tree.len() {
+                self.hasher.update(self.tip_of_the_tree[right_child_idx]);
+            } else {
+                self.hasher.update(EMPTY_SHA256);
+            }
+
+            self.tip_of_the_tree[i] = self.hasher.finalize_reset().into();
+
+            if i == 0 {
+                break;
+            }
+
+            i -= 1;
+        }
+    }
+
+    pub fn witness_hashes(&self, mut hashes: Vec<Sha256Digest>) -> Option<MerkleNode> {
         if self.is_empty() {
             return None;
         }
@@ -210,7 +254,7 @@ impl SCertifiedSet {
             }
 
             // TODO: pass tmp vec for sorted_nodes also
-            let merkle_root = bucket.witness_indices(inner_indices, capacity, &mut hasher);
+            let merkle_root = bucket.witness_indices(inner_indices, capacity);
             merkle_roots.push((merkle_root, found));
 
             for i in 0..hashes_indices_to_remove.len() {
@@ -261,7 +305,10 @@ impl SCertifiedSet {
 
     #[inline]
     pub fn get_root_hash(&self) -> Sha256Digest {
-        self.root_hash
+        self.tip_of_the_tree
+            .get(0)
+            .map(|it| *it)
+            .unwrap_or(EMPTY_SHA256)
     }
 
     fn find_hash(&self, hash: &Sha256Digest) -> Option<(SCertifiedHashMapNode, usize, usize)> {
@@ -297,7 +344,10 @@ impl SCertifiedSet {
         if let Some(root) = &self.root {
             unsafe { root.copy() }
         } else {
-            self.root = Some(SCertifiedHashMapNode::default());
+            let root_bucket = SCertifiedHashMapNode::default();
+            self.buckets.push(Bucket::new(root_bucket.table_ptr));
+
+            self.root = Some(root_bucket);
 
             unsafe { self.root.as_ref().unwrap_unchecked().copy() }
         }
