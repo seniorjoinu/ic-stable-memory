@@ -35,7 +35,7 @@ impl Bucket {
 pub struct SCertifiedSet<H = Sha256> {
     root: Option<SCertifiedHashMapNode>,
     len: u64,
-    tip_of_the_tree: Vec<Sha256Digest>,
+    tip_of_the_tree: Vec<MerkleNode>,
     batch_started: bool,
     buckets: Vec<Bucket>,
     hasher: Sha256,
@@ -186,10 +186,16 @@ impl SCertifiedSet {
 
         self.tip_of_the_tree.clear();
         for i in 0..buckets_len {
-            self.tip_of_the_tree.push(EMPTY_SHA256);
+            self.tip_of_the_tree.push(MerkleNode::new(
+                MerkleHash::None,
+                MerkleChild::None,
+                MerkleChild::None,
+            ));
         }
 
-        for bucket_info in &mut self.buckets {
+        let mut tip_idx = buckets_len - 1;
+
+        for (idx, bucket_info) in self.buckets.iter_mut().enumerate().rev() {
             let mut bucket = unsafe { SCertifiedHashMapNode::from_ptr(bucket_info.ptr) };
             let capacity = bucket.read_capacity();
 
@@ -198,32 +204,34 @@ impl SCertifiedSet {
                 capacity,
                 &mut self.hasher,
             );
-            self.tip_of_the_tree.push(bucket.read_root_hash());
+            let root_hash = bucket.read_root_hash();
+
+            let is_left = idx % 2 == 1;
+
+            if is_left {
+                self.tip_of_the_tree[tip_idx].left_child = MerkleChild::Pruned(root_hash);
+                tip_idx -= 1;
+            } else {
+                self.tip_of_the_tree[tip_idx].right_child = MerkleChild::Pruned(root_hash);
+            }
         }
 
-        let mut i = buckets_len - 1;
-
         loop {
-            self.hasher.update(EMPTY_SHA256);
-
-            let right_child_idx = (i + 1) * 2;
-            let left_child_idx = right_child_idx - 1;
-
-            self.hasher.update(self.tip_of_the_tree[left_child_idx]);
-
-            if right_child_idx < self.tip_of_the_tree.len() {
-                self.hasher.update(self.tip_of_the_tree[right_child_idx]);
+            let left_child = self.tip_of_the_tree[(tip_idx + 1) * 2 - 1];
+            let right_child = if (tip_idx + 1) * 2 < buckets_len {
+                self.tip_of_the_tree[(tip_idx + 1) * 2]
             } else {
-                self.hasher.update(EMPTY_SHA256);
-            }
+                MerkleNode::new(MerkleHash::None, MerkleChild::None, MerkleChild::None)
+            };
 
-            self.tip_of_the_tree[i] = self.hasher.finalize_reset().into();
+            self.tip_of_the_tree[tip_idx].left_child = MerkleChild::Hole(left_child);
+            self.tip_of_the_tree[tip_idx].right_child = MerkleChild::Hole(right_child);
 
-            if i == 0 {
+            if tip_idx == 0 {
                 break;
             }
 
-            i -= 1;
+            tip_idx -= 1;
         }
     }
 
@@ -238,6 +246,7 @@ impl SCertifiedSet {
 
         let mut inner_indices = Vec::new();
         let mut hashes_indices_to_remove = Vec::new();
+        let mut sorted_nodes = Vec::new();
 
         loop {
             let mut found = false;
@@ -253,8 +262,8 @@ impl SCertifiedSet {
                 }
             }
 
-            // TODO: pass tmp vec for sorted_nodes also
-            let merkle_root = bucket.witness_indices(inner_indices, capacity);
+            let merkle_root =
+                bucket.witness_indices(&mut inner_indices, &mut sorted_nodes, capacity);
             merkle_roots.push((merkle_root, found));
 
             for i in 0..hashes_indices_to_remove.len() {
@@ -289,14 +298,6 @@ impl SCertifiedSet {
 
             if !found {
                 continue;
-            }
-
-            merkle_roots[parent_idx].1 = true;
-
-            if is_left {
-                merkle_roots[parent_idx].0.additional_left_child = MerkleChild::Hole(last_root);
-            } else {
-                merkle_roots[parent_idx].0.additional_right_child = MerkleChild::Hole(last_root)
             }
         }
 

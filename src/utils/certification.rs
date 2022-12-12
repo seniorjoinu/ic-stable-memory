@@ -25,11 +25,7 @@ pub struct MerkleNode {
     pub entry_hash: MerkleHash,
     pub left_child: MerkleChild,
     pub right_child: MerkleChild,
-    pub additional_left_child: MerkleChild,
-    pub additional_right_child: MerkleChild,
 }
-
-// TODO: think about making a tip into a normal merkle tree
 
 impl MerkleNode {
     pub fn new(entry_hash: MerkleHash, left_child: MerkleChild, right_child: MerkleChild) -> Self {
@@ -37,8 +33,6 @@ impl MerkleNode {
             entry_hash,
             left_child,
             right_child,
-            additional_left_child: MerkleChild::None,
-            additional_right_child: MerkleChild::None,
         }
     }
 

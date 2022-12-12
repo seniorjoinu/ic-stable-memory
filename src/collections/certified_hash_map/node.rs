@@ -211,9 +211,12 @@ impl SCertifiedHashMapNode {
         }
     }
 
-    pub fn witness_indices(&self, sorted_indices: &mut Vec<usize>, capacity: usize) -> MerkleNode {
-        let mut sorted_nodes = Vec::new();
-
+    pub fn witness_indices(
+        &self,
+        sorted_indices: &mut Vec<usize>,
+        sorted_nodes_tmp: &mut Vec<MerkleNode>,
+        capacity: usize,
+    ) -> MerkleNode {
         // insert root anyway, even if it was not requested
         // this way even if no indices were passed to this function, it will return the valid root node
         if sorted_indices.is_empty() || sorted_indices[0] != 0 {
@@ -221,16 +224,16 @@ impl SCertifiedHashMapNode {
         }
 
         for i in &sorted_indices {
-            sorted_nodes.push(MerkleNode::new(
+            sorted_nodes_tmp.push(MerkleNode::new(
                 self.read_entry_hash_at_anyway(i, capacity),
                 MerkleChild::None,
                 MerkleChild::None,
             ));
         }
 
-        while sorted_nodes.len() > 1 {
+        while sorted_nodes_tmp.len() > 1 {
             let mut last_idx = unsafe { sorted_indices.pop().unwrap_unchecked() };
-            let mut last_node = unsafe { sorted_nodes.pop().unwrap_unchecked() };
+            let mut last_node = unsafe { sorted_nodes_tmp.pop().unwrap_unchecked() };
 
             if matches!(last_node.left_child, MerkleChild::None) {
                 let lc = if last_idx >= (capacity - 1) / 2 {
@@ -258,7 +261,7 @@ impl SCertifiedHashMapNode {
             match sorted_indices.binary_search(&last_idx) {
                 Ok(parent_idx) => {
                     // parent already exists in the tree
-                    let mut parent = sorted_nodes[parent_idx];
+                    let mut parent = sorted_nodes_tmp[parent_idx];
 
                     if is_left {
                         debug_assert!(matches!(parent.left_child, MerkleChild::None));
@@ -278,14 +281,14 @@ impl SCertifiedHashMapNode {
                     };
 
                     sorted_indices.insert(parent_idx, last_idx);
-                    sorted_nodes.insert(parent_idx, parent);
+                    sorted_nodes_tmp.insert(parent_idx, parent);
                 }
             }
         }
 
         sorted_indices.pop();
 
-        let mut merkle_root = sorted_nodes[0];
+        let mut merkle_root = sorted_nodes_tmp.pop().unwrap();
 
         if matches!(merkle_root.left_child, MerkleChild::None) {
             let lc = self.read_node_hash_at(1);
