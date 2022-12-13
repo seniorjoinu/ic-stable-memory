@@ -1,4 +1,4 @@
-#[cfg(test)]
+/*#[cfg(test)]
 mod btree_map_benchmark {
     use crate::collections::btree_set::SBTreeSet;
     use crate::{init_allocator, measure, stable};
@@ -58,3 +58,4 @@ mod btree_map_benchmark {
         }
     }
 }
+*/

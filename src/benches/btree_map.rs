@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod btree_map_benchmark {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::collections::hash_map::map::SHashTreeMap;
     use crate::primitive::s_box::SBox;
     use crate::{init_allocator, measure, stable};
     use std::collections::BTreeMap;
@@ -107,58 +106,6 @@ mod btree_map_benchmark {
             measure!("Stable btree map remove", ITERATIONS, {
                 for i in 0..ITERATIONS {
                     stable_btree_map.remove(&i).unwrap();
-                }
-            });
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn cmp_with_new_hashmap() {
-        {
-            let mut classic_btree_map = BTreeMap::new();
-
-            measure!("Classic btree map insert", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    classic_btree_map.insert(i, i);
-                }
-            });
-
-            measure!("Classic btree map search", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    classic_btree_map.get(&i).unwrap();
-                }
-            });
-
-            measure!("Classic btree map remove", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    classic_btree_map.remove(&i).unwrap();
-                }
-            });
-        }
-
-        {
-            stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
-
-            let mut stable_hashtree_map = SHashTreeMap::new();
-
-            measure!("Stable hashtree map insert", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    stable_hashtree_map.insert(i, i);
-                }
-            });
-
-            measure!("Stable hashtree map search", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    stable_hashtree_map.get_copy(&i).unwrap();
-                }
-            });
-
-            measure!("Stable hashtree map remove", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    stable_hashtree_map.remove(&i).unwrap();
                 }
             });
         }

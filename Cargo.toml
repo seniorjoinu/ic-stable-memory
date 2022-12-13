@@ -13,15 +13,11 @@ path = "./src/lib.rs"
 
 [dependencies]
 ic-cdk = "0.6.5"
-speedy = "0.8.3"
 candid = "0.8.3"
 serde = "1.0.147"
 num-bigint = "0.4.3"
 sha2 = "0.10.6"
 zwohash = "0.1.2"
-
-# copy_as_bytes = "0.1.1"
-copy_as_bytes = { path = "../copy_as_bytes" }
 
 [dev-dependencies]
 rand = "0.8.5"

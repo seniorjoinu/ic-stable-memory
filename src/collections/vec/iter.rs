@@ -1,6 +1,6 @@
 use crate::collections::vec::SVec;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::SSlice;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 pub struct SVecIter<'a, T> {
     svec: &'a SVec<T>,
@@ -8,7 +8,7 @@ pub struct SVecIter<'a, T> {
     max_offset: usize,
 }
 
-impl<'a, T: SuperSized> SVecIter<'a, T> {
+impl<'a, T: FixedSize> SVecIter<'a, T> {
     pub fn new(svec: &'a SVec<T>) -> Self {
         let offset = 0;
         let max_offset = svec.len() * T::SIZE;
@@ -21,7 +21,7 @@ impl<'a, T: SuperSized> SVecIter<'a, T> {
     }
 }
 
-impl<'a, T: AsBytes> Iterator for SVecIter<'a, T>
+impl<'a, T: AsFixedSizeBytes> Iterator for SVecIter<'a, T>
 where
     [(); T::SIZE]: Sized,
 {

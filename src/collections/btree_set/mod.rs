@@ -2,8 +2,7 @@ use crate::collections::btree_map::{BTreeNode, SBTreeMap};
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::collections::vec::SVec;
 use crate::primitive::StableAllocated;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 
 pub mod iter;
 
@@ -63,11 +62,11 @@ where
     }
 }
 
-impl<T> SuperSized for SBTreeSet<T> {
+impl<T> FixedSize for SBTreeSet<T> {
     const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
 }
 
-impl<T: StableAllocated> AsBytes for SBTreeSet<T>
+impl<T: StableAllocated> AsFixedSizeBytes for SBTreeSet<T>
 where
     [(); BTreeNode::<T, ()>::SIZE]: Sized,
     [(); T::SIZE]: Sized,
@@ -77,22 +76,22 @@ where
     [(); SBTreeMap::<T, ()>::SIZE]: Sized,
 {
     #[inline]
-    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
-        let mut buf = [0u8; SBTreeMap::<T, ()>::SIZE];
-        buf.copy_from_slice(&arr);
-
-        let map = SBTreeMap::<T, ()>::from_bytes(buf);
-        Self { map }
-    }
-
-    #[inline]
-    fn to_bytes(self) -> [u8; Self::SIZE] {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let map_buf = self.map.to_bytes();
 
         buf.copy_from_slice(&map_buf);
 
         buf
+    }
+
+    #[inline]
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+        let mut buf = [0u8; SBTreeMap::<T, ()>::SIZE];
+        buf.copy_from_slice(&arr);
+
+        let map = SBTreeMap::<T, ()>::from_bytes(buf);
+        Self { map }
     }
 }
 
@@ -121,32 +120,11 @@ where
     }
 }
 
-impl<'a, T> Readable<'a, LittleEndian> for SBTreeSet<T> {
-    fn read_from<R: Reader<'a, LittleEndian>>(
-        reader: &mut R,
-    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let map = SBTreeMap::read_from(reader)?;
-
-        Ok(Self { map })
-    }
-}
-
-impl<T> Writable<LittleEndian> for SBTreeSet<T> {
-    fn write_to<W: ?Sized + Writer<LittleEndian>>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        self.map.write_to(writer)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable};
-    use copy_as_bytes::traits::AsBytes;
-    use speedy::{Readable, Writable};
 
     #[test]
     fn it_works_fine() {

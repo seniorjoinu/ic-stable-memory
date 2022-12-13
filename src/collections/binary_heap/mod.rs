@@ -1,8 +1,7 @@
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
 use crate::collections::vec::SVec;
 use crate::primitive::StableAllocated;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
@@ -129,6 +128,7 @@ where
         }
     }
 
+    #[inline]
     pub fn iter(&self) -> SBinaryHeapIter<T> {
         SBinaryHeapIter::new(self)
     }
@@ -138,49 +138,32 @@ impl<T: StableAllocated + Debug> Debug for SBinaryHeap<T>
 where
     [(); T::SIZE]: Sized,
 {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.inner.fmt(f)
     }
 }
 
 impl<T> Default for SBinaryHeap<T> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, T> Readable<'a, LittleEndian> for SBinaryHeap<T> {
-    fn read_from<R: Reader<'a, LittleEndian>>(
-        reader: &mut R,
-    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let inner = SVec::read_from(reader)?;
-
-        Ok(Self { inner })
-    }
-}
-
-impl<T> Writable<LittleEndian> for SBinaryHeap<T> {
-    fn write_to<W: ?Sized + Writer<LittleEndian>>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        self.inner.write_to(writer)
-    }
-}
-
-impl<T> SuperSized for SBinaryHeap<T> {
+impl<T> FixedSize for SBinaryHeap<T> {
     const SIZE: usize = SVec::<T>::SIZE;
 }
 
-impl<T: StableAllocated> AsBytes for SBinaryHeap<T> {
+impl<T: StableAllocated> AsFixedSizeBytes<[u8; SVec::<T>::SIZE]> for SBinaryHeap<T> {
     #[inline]
-    fn to_bytes(self) -> [u8; Self::SIZE] {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         self.inner.to_bytes()
     }
 
     #[inline]
-    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
-        let inner = SVec::<T>::from_bytes(arr);
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+        let inner = SVec::<T>::from_fixed_size_bytes(arr);
         Self { inner }
     }
 }
@@ -210,8 +193,6 @@ mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::primitive::StableAllocated;
     use crate::{init_allocator, stable, stable_memory_init};
-    use copy_as_bytes::traits::AsBytes;
-    use speedy::{Readable, Writable};
 
     #[test]
     fn heap_sort_works_fine() {

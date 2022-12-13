@@ -3,12 +3,11 @@ use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
 use crate::primitive::StableAllocated;
-use crate::utils::phantom_data::SPhantomData;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, reallocate};
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
+use std::marker::PhantomData;
 
 pub mod iter;
 
@@ -18,16 +17,22 @@ pub struct SVec<T> {
     pub(crate) ptr: u64,
     pub(crate) len: usize,
     pub(crate) cap: usize,
-    pub(crate) _marker_t: SPhantomData<T>,
+    pub(crate) _marker_t: PhantomData<T>,
 }
 
 impl<T> SVec<T> {
+    #[inline]
     pub fn new() -> Self {
+        Self::new_with_capacity(DEFAULT_CAPACITY)
+    }
+
+    #[inline]
+    pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             len: 0,
-            cap: 0,
+            cap: capacity,
             ptr: EMPTY_PTR,
-            _marker_t: SPhantomData::new(),
+            _marker_t: PhantomData::default(),
         }
     }
 
@@ -51,26 +56,17 @@ impl<T: StableAllocated> SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
-    pub fn new_with_capacity(capacity: usize) -> Self {
-        Self {
-            len: 0,
-            cap: capacity,
-            ptr: allocate(capacity * T::SIZE).get_ptr(),
-            _marker_t: SPhantomData::new(),
-        }
-    }
-
     fn maybe_reallocate(&mut self) {
-        if self.len() == self.capacity() {
-            if self.cap == 0 {
-                self.cap = DEFAULT_CAPACITY;
-                self.ptr = allocate(self.cap * T::SIZE).get_ptr();
-            } else {
-                self.cap *= 2;
-                let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+        if self.ptr == EMPTY_PTR {
+            self.ptr = allocate(self.capacity() * T::SIZE).get_ptr();
+            return;
+        }
 
-                self.ptr = reallocate(slice, self.cap * T::SIZE).anyway().get_ptr();
-            };
+        if self.len() == self.capacity() {
+            self.cap *= 2;
+            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+
+            self.ptr = reallocate(slice, self.cap * T::SIZE).anyway().get_ptr();
         }
     }
 
@@ -257,6 +253,7 @@ where
         }
     }
 
+    #[inline]
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
@@ -273,6 +270,7 @@ where
 }
 
 impl<T> Default for SVec<T> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -327,40 +325,12 @@ where
     }
 }
 
-impl<'a, T> Readable<'a, LittleEndian> for SVec<T> {
-    fn read_from<R: Reader<'a, LittleEndian>>(
-        reader: &mut R,
-    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let ptr = reader.read_u64()?;
-        let len = reader.read_u32()? as usize;
-        let cap = reader.read_u32()? as usize;
-
-        Ok(Self {
-            ptr,
-            len,
-            cap,
-            _marker_t: SPhantomData::new(),
-        })
-    }
-}
-
-impl<T> Writable<LittleEndian> for SVec<T> {
-    fn write_to<W: ?Sized + Writer<LittleEndian>>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        writer.write_u64(self.ptr)?;
-        writer.write_u32(self.len as u32)?;
-        writer.write_u32(self.cap as u32)
-    }
-}
-
-impl<T> SuperSized for SVec<T> {
+impl<T> FixedSize for SVec<T> {
     const SIZE: usize = u64::SIZE + usize::SIZE + usize::SIZE;
 }
 
-impl<T: StableAllocated> AsBytes for SVec<T> {
-    fn to_bytes(self) -> [u8; Self::SIZE] {
+impl<T: StableAllocated> AsFixedSizeBytes for SVec<T> {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (ptr_buf, rest_buf) = buf.split_at_mut(u64::SIZE);
         let (len_buf, cap_buf) = rest_buf.split_at_mut(usize::SIZE);
@@ -372,7 +342,7 @@ impl<T: StableAllocated> AsBytes for SVec<T> {
         buf
     }
 
-    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
         let (ptr_buf, rest_buf) = arr.split_at(u64::SIZE);
         let (len_buf, cap_buf) = rest_buf.split_at(usize::SIZE);
 
@@ -388,7 +358,7 @@ impl<T: StableAllocated> AsBytes for SVec<T> {
             ptr: u64::from_bytes(ptr_arr),
             len: usize::from_bytes(len_arr),
             cap: usize::from_bytes(cap_arr),
-            _marker_t: SPhantomData::default(),
+            _marker_t: PhantomData::default(),
         }
     }
 }
@@ -400,6 +370,7 @@ where
     #[inline]
     fn move_to_stable(&mut self) {}
 
+    #[inline]
     fn remove_from_stable(&mut self) {}
 
     unsafe fn stable_drop(mut self) {
@@ -418,22 +389,21 @@ mod tests {
     use crate::primitive::s_box::SBox;
     use crate::primitive::s_box_mut::SBoxMut;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
     use crate::utils::mem_context::stable;
-    use copy_as_bytes::traits::{AsBytes, SuperSized};
-    use speedy::{Readable, Writable};
 
-    #[derive(Copy, Clone, Debug, Readable, Writable)]
+    #[derive(Copy, Clone, Debug)]
     struct Test {
         a: usize,
         b: bool,
     }
 
-    impl SuperSized for Test {
+    impl FixedSize for Test {
         const SIZE: usize = usize::SIZE + bool::SIZE;
     }
 
-    impl AsBytes for Test {
-        fn to_bytes(self) -> [u8; Self::SIZE] {
+    impl AsFixedSizeBytes for Test {
+        fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
             let mut whole = [0u8; Self::SIZE];
             let (part1, part2) = whole.split_at_mut(usize::SIZE);
 
@@ -443,7 +413,7 @@ mod tests {
             whole
         }
 
-        fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
+        fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
             let (part1, part2) = arr.split_at(usize::SIZE);
             let mut a_arr = [0u8; usize::SIZE];
             let mut b_arr = [0u8; bool::SIZE];

@@ -1,9 +1,9 @@
-use copy_as_bytes::traits::AsBytes;
+use crate::utils::encoding::AsFixedSizeBytes;
 
 pub mod s_box;
 pub mod s_box_mut;
 
-pub trait StableAllocated: AsBytes {
+pub trait StableAllocated: AsFixedSizeBytes {
     fn move_to_stable(&mut self);
     fn remove_from_stable(&mut self);
 
@@ -48,7 +48,7 @@ impl_for_primitive!([u8; 2]);
 impl_for_primitive!([u8; 4]);
 impl_for_primitive!([u8; 8]);
 impl_for_primitive!([u8; 16]);
-impl_for_primitive!([u8; 29]); // for principals
+impl_for_primitive!([u8; 30]); // for principals
 impl_for_primitive!([u8; 32]);
 impl_for_primitive!([u8; 64]);
 impl_for_primitive!([u8; 128]);

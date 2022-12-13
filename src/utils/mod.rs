@@ -1,12 +1,11 @@
 #[allow(unused_imports)]
 use ic_cdk::{print, trap};
 
-pub mod ic_types;
+pub mod certification;
+pub mod encoding;
 pub mod math;
 pub mod mem_context;
-pub mod phantom_data;
 pub mod vars;
-pub mod certification;
 
 pub struct MemMetrics {
     pub available: u64,

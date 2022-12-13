@@ -1,6 +1,5 @@
-use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, BLOCK_MIN_TOTAL_SIZE, FREE, PTR_SIZE};
+use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, FREE, PTR_SIZE};
 use crate::{stable, SSlice};
-use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct FreeBlock {

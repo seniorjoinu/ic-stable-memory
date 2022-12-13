@@ -1,6 +1,5 @@
 use crate::collections::btree_map::{BTreeNode, SBTreeMap};
 use crate::primitive::StableAllocated;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
 
 pub struct SBTreeMapIter<'a, K, V> {
     map: &'a SBTreeMap<K, V>,

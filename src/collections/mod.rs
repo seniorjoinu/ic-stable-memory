@@ -1,7 +1,6 @@
 pub mod binary_heap;
 pub mod btree_map;
-pub mod btree_set;
+//pub mod btree_set;
 pub mod hash_map;
 pub mod hash_set;
-pub mod certified_hash_map;
 pub mod vec;

@@ -1,4 +1,3 @@
-use crate::collections::certified_hash_map::node::SCertifiedHashMapNode;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -15,7 +14,7 @@ pub enum MerkleHash {
 
 #[derive(Debug)]
 pub enum MerkleChild {
-    Hole(MerkleNode),
+    Hole(Box<MerkleNode>),
     Pruned(Sha256Digest),
     None,
 }
@@ -53,23 +52,29 @@ impl MerkleNode {
             }
         };
 
-        let left_child_hash = match self.left_child {
+        let left_child_hash = match &self.left_child {
             MerkleChild::None => EMPTY_SHA256,
             MerkleChild::Pruned(h) => *h,
             MerkleChild::Hole(n) => n.reconstruct(inlined_hashes, hasher)?,
         };
 
-        let right_child_hash = match self.right_child {
+        let right_child_hash = match &self.right_child {
             MerkleChild::None => EMPTY_SHA256,
             MerkleChild::Pruned(h) => *h,
             MerkleChild::Hole(n) => n.reconstruct(inlined_hashes, hasher)?,
         };
 
-        hasher.update(self.entry_hash);
+        let eh = match self.entry_hash {
+            MerkleHash::None => EMPTY_SHA256,
+            MerkleHash::Pruned(h) => h,
+            MerkleHash::Inline(h) => h,
+        };
+
+        hasher.update(eh);
         hasher.update(left_child_hash);
         hasher.update(right_child_hash);
 
-        hasher.finalize_reset().into()
+        Some(hasher.finalize_reset().into())
     }
 }
 

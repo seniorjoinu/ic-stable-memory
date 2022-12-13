@@ -1,7 +1,6 @@
 use crate::mem::free_block::FreeBlock;
+use crate::utils::encoding::AsFixedSizeBytes;
 use crate::utils::mem_context::stable;
-use copy_as_bytes::traits::AsBytes;
-use speedy::{Readable, Writable};
 use std::mem::size_of;
 use std::usize;
 
@@ -18,7 +17,7 @@ pub(crate) enum Side {
 }
 
 /// A smart-pointer for stable memory.
-#[derive(Debug, Copy, Clone, Readable, Writable)]
+#[derive(Debug, Copy, Clone)]
 pub struct SSlice {
     // ptr is shifted by BLOCK_META_SIZE for faster computations
     ptr: u64,
@@ -139,7 +138,10 @@ impl SSlice {
 }
 
 impl SSlice {
-    pub fn _as_bytes_read<T: AsBytes>(ptr: u64, offset: usize) -> T
+    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
+        ptr: u64,
+        offset: usize,
+    ) -> T
     where
         [(); T::SIZE]: Sized,
     {
@@ -150,27 +152,33 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn _as_bytes_write<T: AsBytes>(ptr: u64, offset: usize, it: T)
-    where
+    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
+        ptr: u64,
+        offset: usize,
+        it: T,
+    ) where
         [(); T::SIZE]: Sized,
     {
         SSlice::_write_bytes(ptr, offset, &it.to_bytes())
     }
 
     #[inline]
-    pub fn as_bytes_read<T: AsBytes>(&self, offset: usize) -> T
+    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes<[u8; T::SIZE]>>(&self, offset: usize) -> T
     where
         [(); T::SIZE]: Sized,
     {
-        Self::_as_bytes_read(self.ptr, offset)
+        Self::_as_fixed_size_bytes_read(self.ptr, offset)
     }
 
     #[inline]
-    pub fn as_bytes_write<T: AsBytes>(&self, offset: usize, it: T)
-    where
+    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
+        &self,
+        offset: usize,
+        it: T,
+    ) where
         [(); T::SIZE]: Sized,
     {
-        Self::_as_bytes_write(self.ptr, offset, it)
+        Self::_as_fixed_size_bytes_write(self.ptr, offset, it)
     }
 }
 

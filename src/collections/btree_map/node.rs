@@ -1,10 +1,10 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
-use crate::utils::phantom_data::SPhantomData;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate};
-use copy_as_bytes::traits::{AsBytes, SuperSized};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter, Write};
+use std::marker::PhantomData;
 
 pub const B: usize = 6;
 pub const CAPACITY: usize = 2 * B - 1;
@@ -26,12 +26,12 @@ const IS_LEAF_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 const KEYS_OFFSET: usize = IS_LEAF_OFFSET + bool::SIZE;
 
 #[inline]
-pub(crate) const fn values_offset<K: SuperSized>() -> usize {
+pub(crate) const fn values_offset<K: FixedSize>() -> usize {
     KEYS_OFFSET + CAPACITY * K::SIZE
 }
 
 #[inline]
-pub(crate) const fn children_offset<K: SuperSized, V: SuperSized>() -> usize {
+pub(crate) const fn children_offset<K: FixedSize, V: FixedSize>() -> usize {
     values_offset::<K>() + CAPACITY * V::SIZE
 }
 
@@ -42,11 +42,11 @@ pub(crate) const fn node_meta_size() -> usize {
 
 pub(crate) struct BTreeNode<K, V> {
     ptr: u64,
-    _marker_k: SPhantomData<K>,
-    _marker_v: SPhantomData<V>,
+    _marker_k: PhantomData<K>,
+    _marker_v: PhantomData<V>,
 }
 
-impl<K: AsBytes, V: AsBytes> BTreeNode<K, V>
+impl<K: AsFixedSizeBytes, V: AsFixedSizeBytes> BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -62,8 +62,8 @@ where
 
         Self {
             ptr: slice.get_ptr(),
-            _marker_k: SPhantomData::new(),
-            _marker_v: SPhantomData::new(),
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
         }
     }
 
@@ -76,8 +76,8 @@ where
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         Self {
             ptr,
-            _marker_k: SPhantomData::new(),
-            _marker_v: SPhantomData::new(),
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
         }
     }
 
@@ -88,22 +88,22 @@ where
 
     #[inline]
     pub fn set_parent(&mut self, it: u64) {
-        SSlice::_as_bytes_write(self.ptr, PARENT_OFFSET, it)
+        SSlice::_as_fixed_size_bytes_write(self.ptr, PARENT_OFFSET, it)
     }
 
     #[inline]
     pub fn get_parent(&self) -> u64 {
-        SSlice::_as_bytes_read(self.ptr, PARENT_OFFSET)
+        SSlice::_as_fixed_size_bytes_read(self.ptr, PARENT_OFFSET)
     }
 
     #[inline]
     pub fn set_len(&mut self, it: usize) {
-        SSlice::_as_bytes_write(self.ptr, LEN_OFFSET, it);
+        SSlice::_as_fixed_size_bytes_write(self.ptr, LEN_OFFSET, it);
     }
 
     #[inline]
     pub fn len(&self) -> usize {
-        SSlice::_as_bytes_read(self.ptr, LEN_OFFSET)
+        SSlice::_as_fixed_size_bytes_read(self.ptr, LEN_OFFSET)
     }
 
     #[inline]
@@ -116,32 +116,36 @@ where
 
     #[inline]
     pub fn set_key(&mut self, idx: usize, k: K) {
-        SSlice::_as_bytes_write(self.ptr, KEYS_OFFSET + idx * K::SIZE, k);
+        SSlice::_as_fixed_size_bytes_write(self.ptr, KEYS_OFFSET + idx * K::SIZE, k);
     }
 
     #[inline]
     pub fn get_key(&self, idx: usize) -> K {
-        SSlice::_as_bytes_read(self.ptr, KEYS_OFFSET + idx * K::SIZE)
+        SSlice::_as_fixed_size_bytes_read(self.ptr, KEYS_OFFSET + idx * K::SIZE)
     }
 
     #[inline]
     pub fn set_value(&mut self, idx: usize, v: V) {
-        SSlice::_as_bytes_write(self.ptr, values_offset::<K>() + idx * V::SIZE, v);
+        SSlice::_as_fixed_size_bytes_write(self.ptr, values_offset::<K>() + idx * V::SIZE, v);
     }
 
     #[inline]
     pub fn get_value(&self, idx: usize) -> V {
-        SSlice::_as_bytes_read(self.ptr, values_offset::<K>() + idx * V::SIZE)
+        SSlice::_as_fixed_size_bytes_read(self.ptr, values_offset::<K>() + idx * V::SIZE)
     }
 
     #[inline]
     pub fn set_child_ptr(&mut self, idx: usize, c: u64) {
-        SSlice::_as_bytes_write(self.ptr, children_offset::<K, V>() + idx * u64::SIZE, c);
+        SSlice::_as_fixed_size_bytes_write(
+            self.ptr,
+            children_offset::<K, V>() + idx * u64::SIZE,
+            c,
+        );
     }
 
     #[inline]
     pub fn get_child_ptr(&self, idx: usize) -> u64 {
-        SSlice::_as_bytes_read(self.ptr, children_offset::<K, V>() + idx * u64::SIZE)
+        SSlice::_as_fixed_size_bytes_read(self.ptr, children_offset::<K, V>() + idx * u64::SIZE)
     }
 
     #[inline]
@@ -221,7 +225,7 @@ where
     }
 }
 
-impl<K: AsBytes + Ord, V: AsBytes> BTreeNode<K, V>
+impl<K: AsFixedSizeBytes + Ord, V: AsFixedSizeBytes> BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -947,17 +951,19 @@ where
     }
 }
 
-impl<K: AsBytes, V: AsBytes> Default for BTreeNode<K, V>
+impl<K: AsFixedSizeBytes, V: AsFixedSizeBytes> Default for BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
+    #[inline]
     fn default() -> Self {
         Self::new(false)
     }
 }
 
 impl<K, V> PartialEq for BTreeNode<K, V> {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.ptr.eq(&other.ptr)
     }
@@ -965,7 +971,7 @@ impl<K, V> PartialEq for BTreeNode<K, V> {
 
 impl<K, V> Eq for BTreeNode<K, V> {}
 
-impl<K: AsBytes + Debug, V: AsBytes + Debug> Debug for BTreeNode<K, V>
+impl<K: AsFixedSizeBytes + Debug, V: AsFixedSizeBytes + Debug> Debug for BTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
