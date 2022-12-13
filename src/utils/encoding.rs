@@ -139,14 +139,12 @@ impl FixedSize for Int {
     const SIZE: usize = 32;
 }
 
-pub trait AsFixedSizeBytes<T: AsRef<[u8; Self::SIZE]> + AsMut<[u8; Self::SIZE]> = [u8; Self::SIZE]>:
-    FixedSize
-{
-    fn as_fixed_size_bytes(&self) -> T;
-    fn from_fixed_size_bytes(buf: &T) -> Self;
+pub trait AsFixedSizeBytes: FixedSize {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE];
+    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self;
 }
 
-impl AsFixedSizeBytes<[u8; u8::SIZE]> for u8 {
+impl AsFixedSizeBytes for u8 {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; u8::SIZE] {
         [*self]
@@ -154,11 +152,11 @@ impl AsFixedSizeBytes<[u8; u8::SIZE]> for u8 {
 
     #[inline]
     fn from_fixed_size_bytes(arr: &[u8; u8::SIZE]) -> Self {
-        *arr[0]
+        arr[0]
     }
 }
 
-impl AsFixedSizeBytes<[u8; i8::SIZE]> for i8 {
+impl AsFixedSizeBytes for i8 {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; i8::SIZE] {
         [*self as u8]
@@ -166,11 +164,11 @@ impl AsFixedSizeBytes<[u8; i8::SIZE]> for i8 {
 
     #[inline]
     fn from_fixed_size_bytes(arr: &[u8; i8::SIZE]) -> Self {
-        *arr[0] as i8
+        arr[0] as i8
     }
 }
 
-impl AsFixedSizeBytes<[u8; bool::SIZE]> for bool {
+impl AsFixedSizeBytes for bool {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; bool::SIZE] {
         [u8::from(*self)]
@@ -186,7 +184,7 @@ impl AsFixedSizeBytes<[u8; bool::SIZE]> for bool {
 
 macro_rules! impl_for_numbers {
     ($ty:ty) => {
-        impl AsFixedSizeBytes<[u8; <$ty>::SIZE]> for $ty {
+        impl AsFixedSizeBytes for $ty {
             #[inline]
             fn as_fixed_size_bytes(&self) -> [u8; <$ty>::SIZE] {
                 self.to_le_bytes()
@@ -311,7 +309,7 @@ impl_for_u8_arr!(1024);
 impl_for_u8_arr!(2048);
 impl_for_u8_arr!(4096);
 
-impl<T: AsFixedSizeBytes> AsFixedSizeBytes<[u8; T::SIZE]> for Option<T>
+impl<T: AsFixedSizeBytes> AsFixedSizeBytes for Option<T>
 where
     [(); T::SIZE]: Sized,
 {
@@ -319,7 +317,7 @@ where
         let mut buf = [0u8; Self::SIZE];
         if let Some(it) = self {
             buf[0] = 1;
-            buf[1..].copy_from_slice(it.as_fixed_size_bytes());
+            buf[1..].copy_from_slice(&it.as_fixed_size_bytes());
         }
 
         buf
@@ -330,14 +328,14 @@ where
             None
         } else {
             let mut buf = [0u8; T::SIZE];
-            buf.copy_from_slice(arr[1..]);
+            buf.copy_from_slice(&arr[1..]);
 
-            Some(T::from_fixed_size_bytes(buf))
+            Some(T::from_fixed_size_bytes(&buf))
         }
     }
 }
 
-impl AsFixedSizeBytes<[u8; Principal::SIZE]> for Principal {
+impl AsFixedSizeBytes for Principal {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let slice = self.as_slice();
@@ -357,7 +355,7 @@ impl AsFixedSizeBytes<[u8; Principal::SIZE]> for Principal {
     }
 }
 
-impl AsFixedSizeBytes<[u8; Nat::SIZE]> for Nat {
+impl AsFixedSizeBytes for Nat {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let vec = self.0.to_bytes_le();
@@ -367,13 +365,13 @@ impl AsFixedSizeBytes<[u8; Nat::SIZE]> for Nat {
     }
 
     fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
-        let it = BigUint::from_bytes_le(&arr);
+        let it = BigUint::from_bytes_le(arr);
 
         Nat(it)
     }
 }
 
-impl AsFixedSizeBytes<[u8; Int::SIZE]> for Int {
+impl AsFixedSizeBytes for Int {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (sign, bytes) = self.0.to_bytes_le();
@@ -403,17 +401,34 @@ impl AsFixedSizeBytes<[u8; Int::SIZE]> for Int {
     }
 }
 
-pub trait AsDynSizeBytes<T: AsRef<[u8]> + AsMut<[u8]>> {
-    fn as_dyn_size_bytes(&self) -> T;
-    fn from_dyn_size_bytes(buf: &T) -> Self;
+pub trait AsDynSizeBytes {
+    fn as_dyn_size_bytes(&self, result: &mut [u8]);
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self;
+
+    fn as_new_dyn_size_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.as_dyn_size_bytes(&mut buf);
+
+        buf
+    }
 }
 
-impl AsDynSizeBytes<Vec<u8>> for Vec<u8> {
-    fn as_dyn_size_bytes(&self) -> Vec<u8> {
-        self.clone()
+impl AsDynSizeBytes for Vec<u8> {
+    fn as_dyn_size_bytes(&self, result: &mut [u8]) {
+        result.copy_from_slice(self)
     }
 
-    fn from_dyn_size_bytes(buf: &Vec<u8>) -> Self {
-        buf.clone()
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+        buf.to_vec()
+    }
+}
+
+impl AsDynSizeBytes for String {
+    fn as_dyn_size_bytes(&self, result: &mut [u8]) {
+        result.copy_from_slice(self.as_bytes())
+    }
+
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+        Self::from_utf8(buf.to_vec()).unwrap()
     }
 }

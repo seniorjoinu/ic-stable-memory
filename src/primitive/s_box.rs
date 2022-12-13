@@ -32,14 +32,14 @@ impl<T> SBox<T> {
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> SBox<T> {
+impl<'a, T: AsDynSizeBytes> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; slice.get_size_bytes()];
         slice.read_bytes(0, &mut buf);
 
-        let inner = T::from_dyn_size_bytes(&buf).unwrap();
+        let inner = T::from_dyn_size_bytes(&buf);
 
         Self {
             slice: Some(slice),
@@ -52,15 +52,16 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> SBox<T> {
             let mut buf = vec![0u8; slice.get_size_bytes()];
             slice.read_bytes(0, &mut buf);
 
-            T::from_dyn_size_bytes(&buf).unwrap()
+            T::from_dyn_size_bytes(&buf)
         } else {
             unreachable!()
         }
     }
-    
+
     #[inline]
-    pub fn into_inner(self) -> T {
-        unsafe { self.stable_drop() };
+    pub fn into_inner(mut self) -> T {
+        self.remove_from_stable();
+
         self.inner
     }
 }
@@ -69,7 +70,7 @@ impl<T> FixedSize for SBox<T> {
     const SIZE: usize = u64::SIZE;
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> AsFixedSizeBytes<[u8; u64::SIZE]> for SBox<T> {
+impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBox<T> {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         self.as_ptr().as_fixed_size_bytes()
@@ -83,10 +84,10 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> AsFixedSizeBytes<[u8; u64::SIZE]> for SBox<
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> StableAllocated for SBox<T> {
+impl<T: AsDynSizeBytes> StableAllocated for SBox<T> {
     fn move_to_stable(&mut self) {
         if self.slice.is_none() {
-            let buf = self.inner.write_to_vec().unwrap();
+            let buf = self.inner.as_new_dyn_size_bytes();
             let slice = allocate(buf.len());
 
             slice.write_bytes(0, &buf);
@@ -109,7 +110,7 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> StableAllocated for SBox<T> {
     }
 }
 
-impl<'a, T> Deref for SBox<T> {
+impl<T> Deref for SBox<T> {
     type Target = T;
 
     #[inline]
@@ -118,30 +119,30 @@ impl<'a, T> Deref for SBox<T> {
     }
 }
 
-impl<'a, T: PartialEq> PartialEq for SBox<T> {
+impl<T: PartialEq> PartialEq for SBox<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.inner.eq(&other.inner)
     }
 }
 
-impl<'a, T: PartialOrd> PartialOrd for SBox<T> {
+impl<T: PartialOrd> PartialOrd for SBox<T> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.inner.partial_cmp(&other.inner)
     }
 }
 
-impl<'a, T: Eq + PartialEq> Eq for SBox<T> {}
+impl<T: Eq + PartialEq> Eq for SBox<T> {}
 
-impl<'a, T: Ord + PartialOrd> Ord for SBox<T> {
+impl<T: Ord + PartialOrd> Ord for SBox<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.inner.cmp(&other.inner)
     }
 }
 
-impl<'a, T: Default> Default for SBox<T> {
+impl<T: Default> Default for SBox<T> {
     #[inline]
     fn default() -> Self {
         Self::new(Default::default())

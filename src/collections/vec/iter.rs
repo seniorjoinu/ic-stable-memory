@@ -32,11 +32,11 @@ where
             return None;
         }
 
-        let mut item_bytes = T::super_size_u8_arr();
+        let mut item_bytes = T::_u8_arr_of_size();
         SSlice::_read_bytes(self.svec.ptr, self.offset, &mut item_bytes);
 
         self.offset += T::SIZE;
 
-        Some(T::from_bytes(item_bytes))
+        Some(T::from_fixed_size_bytes(&item_bytes))
     }
 }

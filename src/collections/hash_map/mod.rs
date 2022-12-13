@@ -73,7 +73,7 @@ where
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, mut key: K, mut value: V) -> Option<V> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
             let table = allocate(size as usize);
@@ -136,8 +136,8 @@ where
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        let (i, k) = self.find_inner_idx(key)?;
-        let v = self.remove_by_idx(i);
+        let (i, mut k) = self.find_inner_idx(key)?;
+        let mut v = self.remove_by_idx(i);
 
         k.remove_from_stable();
         v.remove_from_stable();
@@ -188,12 +188,12 @@ where
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
     #[inline]
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.cap
     }
 
@@ -352,26 +352,27 @@ impl<K, V> AsFixedSizeBytes for SHashMap<K, V> {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut result = [0u8; Self::SIZE];
 
-        result[0..u64::SIZE].copy_from_slice(&self.table_ptr.to_bytes());
-        result[u64::SIZE..(usize::SIZE + u64::SIZE)].copy_from_slice(&self.len.to_bytes());
-        result[(usize::SIZE + u64::SIZE)..].copy_from_slice(&self.cap.to_bytes());
+        result[0..u64::SIZE].copy_from_slice(&self.table_ptr.as_fixed_size_bytes());
+        result[u64::SIZE..(usize::SIZE + u64::SIZE)]
+            .copy_from_slice(&self.len.as_fixed_size_bytes());
+        result[(usize::SIZE + u64::SIZE)..].copy_from_slice(&self.cap.as_fixed_size_bytes());
 
         result
     }
 
     fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
-        let mut table_ptr_arr = u64::super_size_u8_arr();
-        let mut len_arr = usize::super_size_u8_arr();
-        let mut cap_arr = usize::super_size_u8_arr();
+        let mut table_ptr_arr = u64::_u8_arr_of_size();
+        let mut len_arr = usize::_u8_arr_of_size();
+        let mut cap_arr = usize::_u8_arr_of_size();
 
         table_ptr_arr.copy_from_slice(&arr[0..u64::SIZE]);
         len_arr.copy_from_slice(&arr[u64::SIZE..(usize::SIZE + u64::SIZE)]);
         cap_arr.copy_from_slice(&arr[(usize::SIZE + u64::SIZE)..]);
 
         Self {
-            table_ptr: u64::from_bytes(table_ptr_arr),
-            len: usize::from_bytes(len_arr),
-            cap: usize::from_bytes(cap_arr),
+            table_ptr: u64::from_fixed_size_bytes(&table_ptr_arr),
+            len: usize::from_fixed_size_bytes(&len_arr),
+            cap: usize::from_fixed_size_bytes(&cap_arr),
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
@@ -405,6 +406,7 @@ mod tests {
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::utils::mem_context::stable;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -587,8 +589,8 @@ mod tests {
         let cap = map.capacity();
         let ptr = map.table_ptr;
 
-        let buf = map.to_bytes();
-        let map1 = SHashMap::<i32, i32>::from_bytes(buf);
+        let buf = map.as_fixed_size_bytes();
+        let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(len, map1.len());
         assert_eq!(cap, map1.capacity());

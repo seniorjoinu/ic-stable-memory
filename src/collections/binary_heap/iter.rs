@@ -1,6 +1,6 @@
 use crate::collections::binary_heap::SBinaryHeap;
 use crate::collections::vec::iter::SVecIter;
-use crate::utils::encoding::FixedSize;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 
 pub struct SBinaryHeapIter<'a, T> {
     iter: SVecIter<'a, T>,
@@ -14,7 +14,7 @@ impl<'a, T: FixedSize> SBinaryHeapIter<'a, T> {
     }
 }
 
-impl<'a, T: FixedSize> Iterator for SBinaryHeapIter<'a, T>
+impl<'a, T: AsFixedSizeBytes> Iterator for SBinaryHeapIter<'a, T>
 where
     [(); T::SIZE]: Sized,
 {

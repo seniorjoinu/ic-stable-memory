@@ -155,10 +155,10 @@ impl<T> FixedSize for SBinaryHeap<T> {
     const SIZE: usize = SVec::<T>::SIZE;
 }
 
-impl<T: StableAllocated> AsFixedSizeBytes<[u8; SVec::<T>::SIZE]> for SBinaryHeap<T> {
+impl<T: StableAllocated> AsFixedSizeBytes for SBinaryHeap<T> {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        self.inner.to_bytes()
+        self.inner.as_fixed_size_bytes()
     }
 
     #[inline]
@@ -192,6 +192,7 @@ where
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
@@ -269,8 +270,8 @@ mod tests {
         init_allocator(0);
 
         let heap = SBinaryHeap::<u32>::default();
-        let buf = heap.write_to_vec().unwrap();
-        let heap1 = SBinaryHeap::<u32>::read_from_buffer_copying_data(&buf).unwrap();
+        let buf = heap.as_fixed_size_bytes();
+        let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(heap.inner.ptr, heap1.inner.ptr);
         assert_eq!(heap.inner.len, heap1.inner.len);
@@ -280,8 +281,8 @@ mod tests {
         let len = heap.inner.len;
         let cap = heap.inner.cap;
 
-        let buf = heap.to_bytes();
-        let heap1 = SBinaryHeap::<u32>::from_bytes(buf);
+        let buf = heap.as_fixed_size_bytes();
+        let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(ptr, heap1.inner.ptr);
         assert_eq!(len, heap1.inner.len);

@@ -138,32 +138,26 @@ impl SSlice {
 }
 
 impl SSlice {
-    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
-        ptr: u64,
-        offset: usize,
-    ) -> T
+    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T
     where
         [(); T::SIZE]: Sized,
     {
-        let mut buf = T::super_size_u8_arr();
+        let mut buf = T::_u8_arr_of_size();
         SSlice::_read_bytes(ptr, offset, &mut buf);
 
-        T::from_bytes(buf)
+        T::from_fixed_size_bytes(&buf)
     }
 
     #[inline]
-    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
-        ptr: u64,
-        offset: usize,
-        it: T,
-    ) where
+    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes>(ptr: u64, offset: usize, it: T)
+    where
         [(); T::SIZE]: Sized,
     {
-        SSlice::_write_bytes(ptr, offset, &it.to_bytes())
+        SSlice::_write_bytes(ptr, offset, &it.as_fixed_size_bytes())
     }
 
     #[inline]
-    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes<[u8; T::SIZE]>>(&self, offset: usize) -> T
+    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes>(&self, offset: usize) -> T
     where
         [(); T::SIZE]: Sized,
     {
@@ -171,11 +165,8 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes<[u8; T::SIZE]>>(
-        &self,
-        offset: usize,
-        it: T,
-    ) where
+    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes>(&self, offset: usize, it: T)
+    where
         [(); T::SIZE]: Sized,
     {
         Self::_as_fixed_size_bytes_write(self.ptr, offset, it)

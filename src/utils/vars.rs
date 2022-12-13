@@ -1,8 +1,9 @@
 use crate::collections::hash_map::SHashMap;
+use crate::mem::s_slice::Side;
 use crate::primitive::s_box::SBox;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::AsDynSizeBytes;
-use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
+use crate::{_get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate, SSlice};
 use ic_cdk::trap;
 use std::cell::RefCell;
 
@@ -21,11 +22,13 @@ pub fn init_vars() {
 
 pub fn deinit_vars() {
     if VARS.borrow().is_some() {
-        let vars = VARS.take();
-        let mut vars_box = SBox::new(vars.expect("Stable vars are not initialized yet"));
-        vars_box.move_to_stable();
+        let vars = VARS.take().unwrap();
+        let vars_buf = vars.as_fixed_size_bytes();
+        let slice = allocate(vars_buf.len());
 
-        _set_custom_data_ptr(0, vars_box.as_ptr());
+        slice.write_bytes(0, &vars_buf);
+
+        _set_custom_data_ptr(0, slice.get_ptr());
     } else {
         unreachable!("Stable variables are not initialized");
     }
@@ -33,11 +36,14 @@ pub fn deinit_vars() {
 
 pub fn reinit_vars() {
     if VARS.borrow().is_none() {
-        let vars_box_ptr = _get_custom_data_ptr(0);
-        let vars_box: SBox<Variables> = unsafe { SBox::from_ptr(vars_box_ptr) };
-        let vars = vars_box.get_cloned();
+        let slice_ptr = _get_custom_data_ptr(0);
+        let slice = SSlice::from_ptr(slice_ptr, Side::Start).unwrap();
 
-        unsafe { vars_box.stable_drop() };
+        let mut vars_buf = Variables::_u8_arr_of_size();
+        slice.read_bytes(0, &mut vars_buf);
+
+        let vars = Variables::from_fixed_size_bytes(&vars_buf);
+        deallocate(slice);
 
         *VARS.borrow_mut() = Some(vars);
     } else {
@@ -45,24 +51,24 @@ pub fn reinit_vars() {
     }
 }
 
-pub fn set_var<'a, T: AsDynSizeBytes<Vec<u8>>>(name: &str, value: T) {
-    let mut name_box = SBox::new(String::from(name));
+pub fn set_var<'a, T: AsDynSizeBytes>(name: &str, value: T) {
+    let name_box = SBox::new(String::from(name));
     let mut val_box = SBox::new(value);
 
     val_box.move_to_stable();
-    let mut val_box_ptr = val_box.as_ptr();
+    let val_box_ptr = val_box.as_ptr();
 
     if let Some(m) = &mut *VARS.borrow_mut() {
-        val_box_ptr = m.insert(name_box, val_box_ptr);
-
-        let mut prev_val_box = unsafe { SBox::from_ptr(val_box_ptr) };
-        prev_val_box.remove_from_stable();
+        if let Some(prev_val_box_ptr) = m.insert(name_box, val_box_ptr) {
+            let mut prev_val_box = unsafe { SBox::<T>::from_ptr(prev_val_box_ptr) };
+            prev_val_box.remove_from_stable();
+        }
     } else {
         unreachable!("Stable variables are not initialized");
     }
 }
 
-pub fn get_var<'a, T: AsDynSizeBytes<Vec<u8>>>(name: &str) -> T {
+pub fn get_var<'a, T: AsDynSizeBytes>(name: &str) -> T {
     let ptr = if let Some(m) = &*VARS.borrow() {
         let name_box = SBox::new(String::from(name));
 
@@ -75,7 +81,7 @@ pub fn get_var<'a, T: AsDynSizeBytes<Vec<u8>>>(name: &str) -> T {
     unsafe { SBox::<T>::from_ptr(ptr).get_cloned() }
 }
 
-pub fn remove_var<'a, T: AsDynSizeBytes<Vec<u8>>>(name: &str) -> T {
+pub fn remove_var<'a, T: AsDynSizeBytes>(name: &str) -> T {
     if let Some(vars) = &mut *VARS.borrow_mut() {
         let name_box = SBox::new(String::from(name));
 

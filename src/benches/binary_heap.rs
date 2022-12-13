@@ -2,6 +2,7 @@
 mod binary_heap_benchmark {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::primitive::s_box::SBox;
+    use crate::utils::encoding::AsDynSizeBytes;
     use crate::{init_allocator, measure, stable};
     use std::collections::BinaryHeap;
 

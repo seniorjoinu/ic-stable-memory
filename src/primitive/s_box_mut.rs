@@ -32,7 +32,7 @@ impl<T> SBoxMut<T> {
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> SBoxMut<T> {
+impl<'a, T: AsDynSizeBytes> SBoxMut<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let outer_slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
@@ -68,7 +68,7 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> SBoxMut<T> {
             let inner_slice_ptr = outer_slice.as_fixed_size_bytes_read(0);
             let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-            let buf = self.inner.as_dyn_size_bytes();
+            let buf = self.inner.as_new_dyn_size_bytes();
 
             let (inner_slice, should_rewrite_outer) = if buf.len() > inner_slice.get_size_bytes() {
                 match reallocate(inner_slice, buf.len()) {
@@ -88,18 +88,18 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> SBoxMut<T> {
     }
 }
 
-pub struct SMutRef<'a, T> {
+pub struct SMutRef<'a, T: AsDynSizeBytes> {
     sbox: &'a mut SBoxMut<T>,
 }
 
-impl<'a, T> SMutRef<'a, T> {
+impl<'a, T: AsDynSizeBytes> SMutRef<'a, T> {
     #[inline]
     pub fn new(sbox: &'a mut SBoxMut<T>) -> Self {
         Self { sbox }
     }
 }
 
-impl<'a, T> Deref for SMutRef<'a, T> {
+impl<'a, T: AsDynSizeBytes> Deref for SMutRef<'a, T> {
     type Target = T;
 
     #[inline]
@@ -108,14 +108,14 @@ impl<'a, T> Deref for SMutRef<'a, T> {
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> DerefMut for SMutRef<'a, T> {
+impl<'a, T: AsDynSizeBytes> DerefMut for SMutRef<'a, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.sbox.inner
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> Drop for SMutRef<'a, T> {
+impl<'a, T: AsDynSizeBytes> Drop for SMutRef<'a, T> {
     #[inline]
     fn drop(&mut self) {
         self.sbox.repersist();
@@ -126,7 +126,7 @@ impl<T> FixedSize for SBoxMut<T> {
     const SIZE: usize = u64::SIZE;
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> AsFixedSizeBytes<[u8; u64::SIZE]> for SBoxMut<T> {
+impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBoxMut<T> {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         self.as_ptr().as_fixed_size_bytes()
     }
@@ -138,10 +138,10 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> AsFixedSizeBytes<[u8; u64::SIZE]> for SBoxM
     }
 }
 
-impl<'a, T: AsDynSizeBytes<Vec<u8>>> StableAllocated for SBoxMut<T> {
+impl<T: AsDynSizeBytes> StableAllocated for SBoxMut<T> {
     fn move_to_stable(&mut self) {
         if self.outer_slice.is_none() {
-            let buf = self.inner.as_dyn_size_bytes();
+            let buf = self.inner.as_new_dyn_size_bytes();
             let inner_slice = allocate(buf.len());
 
             inner_slice.write_bytes(0, &buf);
@@ -171,44 +171,44 @@ impl<'a, T: AsDynSizeBytes<Vec<u8>>> StableAllocated for SBoxMut<T> {
     }
 }
 
-impl<'a, T: PartialEq> PartialEq for SBoxMut<T> {
+impl<T: PartialEq> PartialEq for SBoxMut<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.inner.eq(&other.inner)
     }
 }
 
-impl<'a, T: PartialOrd> PartialOrd for SBoxMut<T> {
+impl<T: PartialOrd> PartialOrd for SBoxMut<T> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.inner.partial_cmp(&other.inner)
     }
 }
 
-impl<'a, T: Eq + PartialEq> Eq for SBoxMut<T> {}
+impl<T: Eq + PartialEq> Eq for SBoxMut<T> {}
 
-impl<'a, T: Ord + PartialOrd> Ord for SBoxMut<T> {
+impl<T: Ord + PartialOrd> Ord for SBoxMut<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.inner.cmp(&other.inner)
     }
 }
 
-impl<'a, T: Default> Default for SBoxMut<T> {
+impl<T: Default> Default for SBoxMut<T> {
     #[inline]
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
 
-impl<'a, T: Hash> Hash for SBoxMut<T> {
+impl<T: Hash> Hash for SBoxMut<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.inner.hash(state);
     }
 }
 
-impl<'a, T: Debug> Debug for SBoxMut<T> {
+impl<T: Debug> Debug for SBoxMut<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("SBoxMut(")?;
 
@@ -231,8 +231,23 @@ impl<T> Deref for SBoxMut<T> {
 mod tests {
     use crate::primitive::s_box_mut::SBoxMut;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
     use crate::{init_allocator, stable};
     use std::cmp::Ordering;
+    use std::mem::size_of;
+
+    impl AsDynSizeBytes for i32 {
+        fn as_dyn_size_bytes(&self, result: &mut [u8]) {
+            result.copy_from_slice(&self.to_le_bytes())
+        }
+
+        fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+            let mut b = [0u8; size_of::<i32>()];
+            b.copy_from_slice(&buf[..size_of::<i32>()]);
+
+            Self::from_le_bytes(b)
+        }
+    }
 
     #[test]
     fn sboxes_work_fine() {
@@ -269,8 +284,8 @@ mod tests {
         sbox.get_mut().extend(vec![0u8; 100]);
         assert_eq!(sbox.get_cloned(), vec![0u8; 100]);
 
-        let buf = sbox.write_to_vec().unwrap();
-        let mut sbox = SBoxMut::<Vec<u8>>::read_from_buffer_copying_data(&buf).unwrap();
+        let buf = sbox.as_fixed_size_bytes();
+        let mut sbox = SBoxMut::<Vec<u8>>::from_fixed_size_bytes(&buf);
         assert_eq!(sbox.get_cloned(), vec![0u8; 100]);
 
         sbox.remove_from_stable();

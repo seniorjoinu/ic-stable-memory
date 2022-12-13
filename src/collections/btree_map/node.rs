@@ -407,11 +407,11 @@ where
         let mut max = len;
         let mut mid = (max - min) / 2;
 
-        let mut buf = K::super_size_u8_arr();
+        let mut buf = K::_u8_arr_of_size();
 
         loop {
             SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, &mut buf);
-            let key = K::from_bytes(buf);
+            let key = K::from_fixed_size_bytes(&buf);
 
             match key.cmp(k) {
                 Ordering::Equal => return Ok(mid),

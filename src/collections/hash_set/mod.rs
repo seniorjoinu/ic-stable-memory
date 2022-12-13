@@ -122,6 +122,7 @@ where
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -183,8 +184,8 @@ mod tests {
         let len = set.len();
         let cap = set.capacity();
 
-        let buf = set.to_bytes();
-        let set1 = SHashSet::<u32>::from_bytes(buf);
+        let buf = set.as_fixed_size_bytes();
+        let set1 = SHashSet::<u32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(len, set1.len());
         assert_eq!(cap, set1.capacity());
