@@ -1,5 +1,6 @@
 use candid::{Int, Nat, Principal};
 use num_bigint::{BigInt, BigUint, Sign};
+use std::io::Write;
 use std::mem::size_of;
 
 pub trait FixedSize {
@@ -402,7 +403,7 @@ impl AsFixedSizeBytes for Int {
 }
 
 pub trait AsDynSizeBytes {
-    fn as_dyn_size_bytes(&self, result: &mut [u8]);
+    fn as_dyn_size_bytes(&self, result: &mut Vec<u8>);
     fn from_dyn_size_bytes(buf: &[u8]) -> Self;
 
     fn as_new_dyn_size_bytes(&self) -> Vec<u8> {
@@ -414,8 +415,8 @@ pub trait AsDynSizeBytes {
 }
 
 impl AsDynSizeBytes for Vec<u8> {
-    fn as_dyn_size_bytes(&self, result: &mut [u8]) {
-        result.copy_from_slice(self)
+    fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
+        result.extend_from_slice(self);
     }
 
     fn from_dyn_size_bytes(buf: &[u8]) -> Self {
@@ -424,8 +425,8 @@ impl AsDynSizeBytes for Vec<u8> {
 }
 
 impl AsDynSizeBytes for String {
-    fn as_dyn_size_bytes(&self, result: &mut [u8]) {
-        result.copy_from_slice(self.as_bytes())
+    fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
+        result.extend_from_slice(self.as_bytes());
     }
 
     fn from_dyn_size_bytes(buf: &[u8]) -> Self {

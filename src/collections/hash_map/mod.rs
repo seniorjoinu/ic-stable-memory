@@ -213,6 +213,10 @@ where
     }
 
     fn find_inner_idx(&self, key: &K) -> Option<(usize, K)> {
+        if self.is_empty() {
+            return None;
+        }
+
         let key_hash = Self::hash(key);
         let mut i = key_hash % self.capacity();
 

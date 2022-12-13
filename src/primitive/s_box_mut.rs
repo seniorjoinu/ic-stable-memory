@@ -234,11 +234,12 @@ mod tests {
     use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
     use crate::{init_allocator, stable};
     use std::cmp::Ordering;
+    use std::io::Write;
     use std::mem::size_of;
 
     impl AsDynSizeBytes for i32 {
-        fn as_dyn_size_bytes(&self, result: &mut [u8]) {
-            result.copy_from_slice(&self.to_le_bytes())
+        fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
+            result.extend_from_slice(&self.to_le_bytes())
         }
 
         fn from_dyn_size_bytes(buf: &[u8]) -> Self {

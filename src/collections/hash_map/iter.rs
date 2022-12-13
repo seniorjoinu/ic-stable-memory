@@ -33,6 +33,7 @@ where
                 }
                 HashMapKey::Occupied(key) => {
                     let val = self.map.read_val_at(self.i);
+                    self.i += 1;
 
                     break Some((key, val));
                 }
