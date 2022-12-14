@@ -77,11 +77,11 @@ mod btree_map_benchmark {
                 }
             });
 
-            measure!("Classic btree map remove", ITERATIONS, {
+            /*            measure!("Classic btree map remove", ITERATIONS, {
                 for i in 0..ITERATIONS {
                     classic_btree_map.remove(&i).unwrap();
                 }
-            });
+            });*/
         }
 
         {
@@ -103,11 +103,11 @@ mod btree_map_benchmark {
                 }
             });
 
-            measure!("Stable btree map remove", ITERATIONS, {
+            /*            measure!("Stable btree map remove", ITERATIONS, {
                 for i in 0..ITERATIONS {
                     stable_btree_map.remove(&i).unwrap();
                 }
-            });
+            });*/
         }
     }
 

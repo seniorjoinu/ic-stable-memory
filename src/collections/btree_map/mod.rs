@@ -137,7 +137,6 @@ where
     }
 
     fn delete_non_leaf(&mut self, mut node: BTreeNode<K, V>, len: usize, idx: usize) -> V {
-        print!("delete non leaf ");
         // go to left subtree's max child or to right subtree's min child
         let to_left = idx >= len / 2;
 
@@ -145,8 +144,6 @@ where
         let mut parent_len = len;
         let mut node_idx_in_parent = if to_left { idx } else { idx + 1 };
         let mut parent_value_idx_to_rotate = if to_left { idx } else { idx + 1 };
-
-        print!("NODE: to_left {}; parent_len {}; node_idx_in_parent {}; parent_value_idx_to_rotate {}; ", to_left, parent_len, node_idx_in_parent, parent_value_idx_to_rotate);
 
         let mut child =
             unsafe { BTreeNode::<K, V>::from_ptr(node.get_child_ptr(node_idx_in_parent)) };
@@ -171,11 +168,6 @@ where
             }
         }
 
-        print!(
-            "LEAF: child_len {}; idx_to_delete {} ",
-            child_len, idx_to_delete
-        );
-
         let mut k = node.get_key(idx);
         let mut v = node.get_value(idx);
 
@@ -190,8 +182,6 @@ where
 
         // if we can simply remove from the leaf - then do it
         if child_len > MIN_LEN_AFTER_SPLIT {
-            println!("has more than enough - quick exit");
-
             child.remove_key(idx_to_delete, child_len);
             child.remove_value(idx_to_delete, child_len);
             child.set_len(child_len - 1);
@@ -199,8 +189,6 @@ where
             self.len -= 1;
             return v;
         }
-
-        println!("IS ABOUT TO VIOLATE - DELETE BY ROTATING/MERGING");
 
         // FIXME: this should be unnecessary
         child.set_key(idx_to_delete, k);
