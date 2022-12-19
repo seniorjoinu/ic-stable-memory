@@ -1,7 +1,7 @@
 use crate::mem::free_block::FreeBlock;
-use crate::utils::encoding::AsFixedSizeBytes;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::utils::mem_context::stable;
-use std::mem::size_of;
+use std::mem::{size_of, MaybeUninit};
 use std::usize;
 
 pub(crate) const FREE: u64 = 2usize.pow(u32::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
@@ -138,13 +138,18 @@ impl SSlice {
 }
 
 impl SSlice {
+    pub fn _read_const_u8_array_of_size<T: FixedSize>(ptr: u64, offset: usize) -> [u8; T::SIZE] {
+        let mut buf = T::_u8_arr_of_size();
+        SSlice::_read_bytes(ptr, offset, &mut buf);
+
+        buf
+    }
+
     pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T
     where
         [(); T::SIZE]: Sized,
     {
-        let mut buf = T::_u8_arr_of_size();
-        SSlice::_read_bytes(ptr, offset, &mut buf);
-
+        let buf = Self::_read_const_u8_array_of_size::<T>(ptr, offset);
         T::from_fixed_size_bytes(&buf)
     }
 

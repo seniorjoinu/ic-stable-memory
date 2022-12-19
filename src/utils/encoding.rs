@@ -1,7 +1,7 @@
 use candid::{Int, Nat, Principal};
 use num_bigint::{BigInt, BigUint, Sign};
 use std::io::Write;
-use std::mem::size_of;
+use std::mem::{size_of, MaybeUninit};
 
 pub trait FixedSize {
     const SIZE: usize;
@@ -431,5 +431,55 @@ impl AsDynSizeBytes for String {
 
     fn from_dyn_size_bytes(buf: &[u8]) -> Self {
         Self::from_utf8(buf.to_vec()).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod benches {
+    use crate::measure;
+    use std::hint::black_box;
+    use std::mem::MaybeUninit;
+
+    const count: u64 = 1_000_000_000;
+
+    #[test]
+    fn init_vs_uninit() {
+        measure!("* initialized arr", count, {
+            for _ in 0..count {
+                let arr = black_box([0u8; 100]);
+            }
+        });
+
+        measure!("uninitialized arr", count, {
+            for _ in 0..count {
+                let arr = black_box(unsafe { MaybeUninit::<[u8; 100]>::uninit().assume_init() });
+            }
+        });
+    }
+
+    #[test]
+    fn reuse_or_create_new() {
+        measure!("reuse", count / 1000, {
+            let mut buf = [0u8; 1000];
+
+            for i in 0..(count / 1000) {
+                let e = (i % 256) as u8;
+
+                for j in 0..1000 {
+                    buf[j] = e;
+                }
+            }
+        });
+
+        measure!("* create new", count, {
+            for i in 0..(count / 1000) {
+                let mut buf = [0u8; 1000];
+                let e = (i % 256) as u8;
+
+                for j in 0..1000 {
+                    buf[j] = e;
+                }
+            }
+        });
     }
 }

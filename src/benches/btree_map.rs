@@ -1,4 +1,4 @@
-#[cfg(test)]
+/*#[cfg(test)]
 mod btree_map_benchmark {
     use crate::collections::btree_map::SBTreeMap;
     use crate::primitive::s_box::SBox;
@@ -169,3 +169,4 @@ mod btree_map_benchmark {
         }
     }
 }
+*/
