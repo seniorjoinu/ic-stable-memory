@@ -85,6 +85,7 @@ where
         deallocate(slice);
     }
 
+    // TODO: also return found key
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
         if len == 0 {
             return Err(0);

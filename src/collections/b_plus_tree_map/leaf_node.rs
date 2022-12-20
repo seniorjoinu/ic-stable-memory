@@ -81,6 +81,7 @@ where
         deallocate(slice);
     }
 
+    // TODO: also return found key
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
         if len == 0 {
             return Err(0);
@@ -181,6 +182,16 @@ where
         right.destroy();
     }
 
+    pub fn remove_by_idx(&mut self, idx: usize, len: usize) -> V {
+        let mut k = K::from_fixed_size_bytes(&self.remove_key(idx, len));
+        let mut v = V::from_fixed_size_bytes(&self.remove_value(idx, len));
+
+        k.remove_from_stable();
+        v.remove_from_stable();
+
+        v
+    }
+    
     #[inline]
     pub fn push_key(&mut self, key: &[u8; K::SIZE], len: usize) {
         self.write_key(len, key);

@@ -1,4 +1,5 @@
 use crate::collections::b_plus_tree_map::internal_node::InternalBTreeNode;
+use crate::collections::b_plus_tree_map::iter::SBTreeMapIter;
 use crate::collections::b_plus_tree_map::leaf_node::LeafBTreeNode;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::AsFixedSizeBytes;
@@ -23,7 +24,7 @@ mod leaf_node;
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
 pub struct SBTreeMap<K, V> {
-    pub(crate) root: Option<BTreeNode<K, V>>,
+    root: Option<BTreeNode<K, V>>,
     len: u64,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
 }
@@ -33,6 +34,7 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
+    #[inline]
     pub fn new() -> Self {
         Self {
             root: None,
@@ -41,13 +43,111 @@ where
         }
     }
 
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let mut node = self.get_or_create_root();
+        let mut found_internal_node = None;
+
+        let mut leaf = loop {
+            match node {
+                BTreeNode::Internal(internal_node) => {
+                    let node_len = internal_node.read_len();
+                    let child_idx = match internal_node.binary_search(&key, node_len) {
+                        Ok(idx) => {
+                            found_internal_node = Some((unsafe { internal_node.copy() }, idx));
+
+                            idx + 1
+                        }
+                        Err(idx) => idx,
+                    };
+
+                    let child_ptr = internal_node.read_child_ptr(child_idx);
+                    self._stack.push((internal_node, node_len, child_idx));
+
+                    node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
+                }
+                BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
+            }
+        };
+
+        let leaf_len = leaf.read_len();
+        match leaf.binary_search(key, leaf_len) {
+            Ok(idx) => {
+                if leaf_len > MIN_LEN_AFTER_SPLIT {
+                    self._stack.clear();
+
+                    let v = leaf.remove_by_idx(idx, leaf_len);
+                    leaf.write_len(leaf_len - 1);
+
+                    self.len -= 1;
+
+                    if let Some((mut fin, i)) = found_internal_node {
+                        fin.write_key(i, &leaf.read_key(0));
+                    }
+
+                    Some(v)
+                } else {
+                    let merged = self.handle_min_len_leaf(&mut leaf);
+                    let v = leaf.remove_by_idx(idx, B);
+
+                    self.len -= 1;
+
+                    if !merged {
+                        self._stack.clear();
+                        return Some(v);
+                    }
+
+                    // TODO: handle found_internal_node
+                    // TODO: handle min_len_parent
+
+                    Some(v)
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn handle_min_len_leaf(&mut self, leaf: &mut LeafBTreeNode<K, V>) -> bool {
+        if let Some((parent, parent_len, parent_idx)) = self._stack.last_mut() {
+            true
+        } else {
+            true
+        }
+    }
+
+    // TODO: move to leaf
+    fn leaf_rotate_right(
+        left_sibling: &mut LeafBTreeNode<K, V>,
+        left_sibling_len: usize,
+        leaf: &mut LeafBTreeNode<K, V>,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        let r_k = left_sibling.pop_key(left_sibling_len);
+        let r_v = left_sibling.pop_value(left_sibling_len);
+        left_sibling.write_len(left_sibling_len - 1);
+
+        parent.write_key(parent_idx - 1, &r_k);
+
+        leaf.insert_key(0, &r_k, MIN_LEN_AFTER_SPLIT);
+        leaf.insert_value(0, &r_v, MIN_LEN_AFTER_SPLIT);
+    }
+
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut node = self.get_or_create_root();
 
         let mut leaf = loop {
-            match &node {
+            match node {
                 BTreeNode::Internal(internal_node) => {
-                    node = self.stacked_lookup_internal(unsafe { internal_node.copy() }, &key);
+                    let node_len = internal_node.read_len();
+                    let child_idx = match internal_node.binary_search(&key, node_len) {
+                        Ok(idx) => idx + 1,
+                        Err(idx) => idx,
+                    };
+
+                    let child_ptr = internal_node.read_child_ptr(child_idx);
+                    self._stack.push((internal_node, node_len, child_idx));
+
+                    node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
                 }
                 BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
             }
@@ -98,35 +198,78 @@ where
         None
     }
 
-    fn stacked_lookup_internal(&mut self, node: InternalBTreeNode<K>, key: &K) -> BTreeNode<K, V> {
-        let node_len = node.read_len();
-        let child_idx = match node.binary_search(key, node_len) {
-            Ok(idx) => idx + 1,
-            Err(idx) => idx,
-        };
+    #[inline]
+    pub fn get_copy(&self, key: &K) -> Option<V> {
+        let (leaf_node, idx) = self.lookup(key, false)?;
+        let v = V::from_fixed_size_bytes(&leaf_node.read_value(idx));
 
-        let child_ptr = node.read_child_ptr(child_idx);
-        self._stack.push((node, node_len, child_idx));
+        Some(v)
+    }
 
-        BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr))
+    #[inline]
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.lookup(key, true).is_some()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> SBTreeMapIter<K, V> {
+        SBTreeMapIter::<K, V>::new(self)
+    }
+
+    // WARNING: return_early == true will return nonsense leaf node and idx
+    fn lookup(&self, key: &K, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)> {
+        let mut node = unsafe { self.root.as_ref()?.copy() };
+        loop {
+            match node {
+                BTreeNode::Internal(internal_node) => {
+                    let child_idx = match internal_node.binary_search(key, internal_node.read_len())
+                    {
+                        Ok(idx) => {
+                            if return_early {
+                                return unsafe { Some((LeafBTreeNode::from_ptr(0), 0)) };
+                            } else {
+                                idx + 1
+                            }
+                        }
+                        Err(idx) => idx,
+                    };
+
+                    let child_ptr =
+                        u64::from_fixed_size_bytes(&internal_node.read_child_ptr(child_idx));
+                    node = BTreeNode::from_ptr(child_ptr);
+                }
+                BTreeNode::Leaf(leaf_node) => {
+                    return match leaf_node.binary_search(key, leaf_node.read_len()) {
+                        Ok(idx) => Some((leaf_node, idx)),
+                        _ => None,
+                    }
+                }
+            }
+        }
     }
 
     fn insert_leaf(
         leaf_node: &mut LeafBTreeNode<K, V>,
-        key: K,
-        value: V,
+        mut key: K,
+        mut value: V,
     ) -> Result<V, Option<LeafBTreeNode<K, V>>> {
         let leaf_node_len = leaf_node.read_len();
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
             Ok(existing_idx) => {
                 // if there is already a key like that, return early
-                let prev_value = V::from_fixed_size_bytes(&leaf_node.read_value(existing_idx));
+                let mut prev_value = V::from_fixed_size_bytes(&leaf_node.read_value(existing_idx));
+                prev_value.remove_from_stable();
+                value.move_to_stable();
+
                 leaf_node.write_value(existing_idx, &value.as_fixed_size_bytes());
 
                 return Ok(prev_value);
             }
             Err(idx) => idx,
         };
+
+        key.move_to_stable();
+        value.move_to_stable();
 
         // if there is enough space - simply insert and return early
         if leaf_node_len < CAPACITY {
@@ -187,8 +330,6 @@ where
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
         let (mut right, mid) = internal_node.split_max_len();
-
-        println!("{}", idx);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT);
@@ -322,10 +463,12 @@ mod tests {
     use rand::thread_rng;
 
     #[test]
-    fn insert_works_fine() {
+    fn random_insertion_works_fine() {
         stable::clear();
         stable::grow(1).unwrap();
         init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::default();
 
         let mut example = Vec::new();
         for i in 0..300 {
@@ -333,17 +476,54 @@ mod tests {
         }
         example.shuffle(&mut thread_rng());
 
-        let mut map = SBTreeMap::<u64, u64>::default();
-
-        for i in example {
-            println!("inserting {}", i);
-            map.insert(i, i);
+        for i in 0..300 {
+            println!("inserting {}", example[i]);
+            map.insert(example[i], example[i]);
 
             map.debug_print();
             println!();
             println!();
+
+            for j in 0..i {
+                assert!(map.contains_key(&example[j]));
+                assert_eq!(map.get_copy(&example[j]).unwrap(), example[j]);
+            }
         }
 
         map.debug_print();
+    }
+
+    #[test]
+    fn iters_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::default();
+
+        for i in 0..200 {
+            map.insert(i, i);
+        }
+
+        let mut i = 0u64;
+
+        for (k, v) in map.iter() {
+            assert_eq!(i, k);
+            assert_eq!(i, v);
+
+            i += 1;
+        }
+
+        assert_eq!(i, 199);
+
+        for (k, v) in map.iter().rev() {
+            println!("{}", i);
+            assert_eq!(i, k);
+            assert_eq!(i, v);
+
+            i -= 1;
+        }
+
+        assert_eq!(i, 0);
     }
 }
