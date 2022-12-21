@@ -1,3 +1,4 @@
+use crate::collections::b_plus_tree_map::internal_node::InternalBTreeNode;
 use crate::collections::b_plus_tree_map::{
     B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
@@ -127,6 +128,40 @@ where
         }
     }
 
+    pub fn steal_from_left(
+        &mut self,
+        left_sibling: &mut Self,
+        left_sibling_len: usize,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        let replace_key = left_sibling.pop_key(left_sibling_len);
+        let replace_value = left_sibling.pop_value(left_sibling_len);
+        left_sibling.write_len(left_sibling_len - 1);
+
+        parent.write_key(parent_idx, &replace_key);
+
+        self.insert_key(0, &replace_key, MIN_LEN_AFTER_SPLIT);
+        self.insert_value(0, &replace_value, MIN_LEN_AFTER_SPLIT);
+    }
+
+    pub fn steal_from_right(
+        &mut self,
+        right_sibling: &mut Self,
+        right_sibling_len: usize,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        let replace_key = right_sibling.remove_key(0, right_sibling_len);
+        let replace_value = right_sibling.remove_value(0, right_sibling_len);
+        right_sibling.write_len(right_sibling_len - 1);
+        
+        parent.write_key(parent_idx, &replace_key);
+        
+        self.push_key(&replace_key, MIN_LEN_AFTER_SPLIT);
+        self.push_value(&replace_value, MIN_LEN_AFTER_SPLIT);
+    }
+
     // TODO: optimize
     #[allow(clippy::explicit_counter_loop)]
     pub fn split_max_len(&mut self, right_biased: bool) -> Self {
@@ -191,7 +226,7 @@ where
 
         v
     }
-    
+
     #[inline]
     pub fn push_key(&mut self, key: &[u8; K::SIZE], len: usize) {
         self.write_key(len, key);

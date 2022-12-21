@@ -131,6 +131,42 @@ where
         }
     }
 
+    pub fn steal_from_left(
+        &mut self,
+        left_sibling: &mut Self,
+        left_sibling_len: usize,
+        parent: &mut Self,
+        parent_idx: usize,
+    ) {
+        let lsk = left_sibling.pop_key(left_sibling_len);
+        let lsc = left_sibling.pop_child_ptr(left_sibling_len + 1);
+        left_sibling.write_len(left_sibling_len - 1);
+
+        let pk = parent.read_key(parent_idx);
+        parent.write_key(parent_idx, &lsk);
+
+        self.insert_key(0, &pk, MIN_LEN_AFTER_SPLIT);
+        self.insert_child_ptr(0, &lsc, B);
+    }
+
+    pub fn steal_from_right(
+        &mut self,
+        right_sibling: &mut Self,
+        right_sibling_len: usize,
+        parent: &mut Self,
+        parent_idx: usize,
+    ) {
+        let rsk = right_sibling.remove_key(0, right_sibling_len);
+        let rsc = right_sibling.remove_child_ptr(0, right_sibling_len + 1);
+        right_sibling.write_len(right_sibling_len - 1);
+
+        let pk = parent.read_key(parent_idx);
+        parent.write_key(parent_idx, &rsk);
+
+        self.push_key(&pk, MIN_LEN_AFTER_SPLIT);
+        self.push_child_ptr(&rsc, B);
+    }
+
     // TODO: optimize
     pub fn split_max_len(&mut self) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
         let mut right = InternalBTreeNode::<K>::create_empty();
