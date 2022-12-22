@@ -171,27 +171,17 @@ where
     pub fn split_max_len(&mut self) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
         let mut right = InternalBTreeNode::<K>::create_empty();
 
-        let mut self_len = CAPACITY;
-        let mut right_len = 0;
-
-        for _ in B..CAPACITY {
-            right.push_key(&self.remove_key(B, self_len), right_len);
-
-            self_len -= 1;
-            right_len += 1;
+        for i in B..CAPACITY {
+            let k = self.read_key(i);
+            right.push_key(&k, i - B);
         }
 
-        let mut self_c_len = CHILDREN_CAPACITY;
-        let mut right_c_len = 0;
-
-        for _ in B..CHILDREN_CAPACITY {
-            right.push_child_ptr(&self.remove_child_ptr(B, self_c_len), right_c_len);
-
-            self_c_len -= 1;
-            right_c_len += 1;
+        for i in B..CHILDREN_CAPACITY {
+            let c = self.read_child_ptr(i);
+            right.push_child_ptr(&c, i - B);
         }
 
-        (right, self.pop_key(self_len))
+        (right, self.read_key(MIN_LEN_AFTER_SPLIT))
     }
 
     // TODO: optimize
@@ -203,7 +193,7 @@ where
         }
 
         for i in 0..CHILDREN_MIN_LEN_AFTER_SPLIT {
-            self.push_child_ptr(&right.read_child_ptr(i), B + 1);
+            self.push_child_ptr(&right.read_child_ptr(i), B + i);
         }
 
         right.destroy();

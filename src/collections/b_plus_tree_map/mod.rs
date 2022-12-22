@@ -6,7 +6,33 @@ use crate::utils::encoding::AsFixedSizeBytes;
 use crate::SSlice;
 use std::fmt::Debug;
 
-pub const B: usize = 6;
+// InternalBTreeNode(7)[*(1334), 83, *(5731), 144, *(3758), 235, *(6488), 292, *(2550), 340, *(9838), 383, *(4974), 451, *(8316)]
+// InternalBTreeNode(7)[*(1181), 158, *(5425), 164, *(7551), 181, *(3146), 193, *(8461), 204, *(4515), 218, *(6335), 224, *(9073)]
+
+// InternalBTreeNode(1)[*(2695), 235, *(11650)]
+// InternalBTreeNode(3)[*(1334), 83, *(5731), 144, *(3758), 193, *(11360)]InternalBTreeNode(4)[*(6488), 340, *(9838), 383, *(4974), 451, *(8316), 292, *(11505)]
+// InternalBTreeNode(4)[*(1181), 158, *(5425), 164, *(7551), 168, *(11207), 181, *(3146)]InternalBTreeNode(3)[*(8461), 204, *(4515), 218, *(6335), 224, *(9073)]
+
+//         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
+//         let (mut right, mid) = internal_node.split_max_len();
+//
+//         if idx <= MIN_LEN_AFTER_SPLIT {
+//             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT);
+//             internal_node.insert_child_ptr(idx + 1, &child_ptr.as_fixed_size_bytes(), B);
+//
+//             internal_node.write_len(B);
+//             right.write_len(MIN_LEN_AFTER_SPLIT);
+//         } else {
+//             right.insert_key(idx - B, &key, MIN_LEN_AFTER_SPLIT);
+//             right.insert_child_ptr(idx - B + 1, &child_ptr.as_fixed_size_bytes(), B);
+//
+//             internal_node.write_len(MIN_LEN_AFTER_SPLIT);
+//             right.write_len(B);
+//         }
+//
+//         Some((right, mid))
+
+pub const B: usize = 4;
 pub const CAPACITY: usize = 2 * B - 1;
 pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
 
@@ -44,6 +70,14 @@ where
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
+        println!(
+            "stack content: {:?}",
+            self._stack
+                .iter()
+                .map(|(n, l, i)| (n.as_ptr(), *l, *i))
+                .collect::<Vec<_>>()
+        );
+
         let mut node = self.get_or_create_root();
         let mut found_internal_node = None;
 
@@ -52,7 +86,7 @@ where
             match node {
                 BTreeNode::Internal(internal_node) => {
                     let node_len = internal_node.read_len();
-                    let child_idx = match internal_node.binary_search(&key, node_len) {
+                    let child_idx = match internal_node.binary_search(key, node_len) {
                         Ok(idx) => {
                             found_internal_node = Some((unsafe { internal_node.copy() }, idx));
 
@@ -75,14 +109,25 @@ where
 
         self.len -= 1;
 
+        println!(
+            "key found in leaf {} of len {} at idx {}",
+            leaf.as_ptr(),
+            leaf_len,
+            idx
+        );
+
         // if possible to simply remove the key without violating - return early
         if leaf_len > MIN_LEN_AFTER_SPLIT {
+            println!("len > {} - remove and return", MIN_LEN_AFTER_SPLIT);
+
             self._stack.clear();
 
             let v = leaf.remove_by_idx(idx, leaf_len);
             leaf.write_len(leaf_len - 1);
 
             if let Some((mut fin, i)) = found_internal_node {
+                println!("updating key {} of internal node {}", i, fin.as_ptr());
+
                 fin.write_key(i, &leaf.read_key(0));
             }
 
@@ -93,6 +138,8 @@ where
 
         // if the only node in the tree is the root - return early
         if stack_top_frame.is_none() {
+            println!("leaf is also root - simply remove the key and return");
+
             let v = leaf.remove_by_idx(idx, leaf_len);
             leaf.write_len(leaf_len - 1);
 
@@ -109,8 +156,18 @@ where
             let mut left_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(left_sibling_ptr) };
             let left_sibling_len = left_sibling.read_len();
 
+            println!(
+                "leaf has left sibling at {} with len {}",
+                left_sibling_ptr, left_sibling_len
+            );
+
             // if possible to steal - return early
             if left_sibling_len > MIN_LEN_AFTER_SPLIT {
+                println!(
+                    "left sibling len > {} - steal the last element and return",
+                    MIN_LEN_AFTER_SPLIT
+                );
+
                 leaf.steal_from_left(
                     &mut left_sibling,
                     left_sibling_len,
@@ -121,6 +178,8 @@ where
                 let v = leaf.remove_by_idx(idx + 1, B);
 
                 if let Some((mut fin, i)) = found_internal_node {
+                    println!("updating key {} of internal node {}", i, fin.as_ptr());
+
                     fin.write_key(i, &leaf.read_key(0));
                 }
 
@@ -130,8 +189,7 @@ where
             }
 
             // also try to do the same thing for right sibling if possible
-            let has_right_sibling = parent_idx < parent_len - 1;
-
+            let has_right_sibling = parent_idx < parent_len;
             if has_right_sibling {
                 let right_sibling_ptr =
                     u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
@@ -139,8 +197,18 @@ where
                     unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
                 let right_sibling_len = right_sibling.read_len();
 
+                println!(
+                    "leaf also has right sibling at {} with len {}",
+                    right_sibling_ptr, right_sibling_len
+                );
+
                 // if possible to steal - return early
                 if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    println!(
+                        "right sibling len > {} - steal the first key and return",
+                        MIN_LEN_AFTER_SPLIT
+                    );
+
                     leaf.steal_from_right(
                         &mut right_sibling,
                         right_sibling_len,
@@ -151,6 +219,8 @@ where
                     let v = leaf.remove_by_idx(idx, B);
 
                     if let Some((mut fin, i)) = found_internal_node {
+                        println!("updating key {} of internal node {}", i, fin.as_ptr());
+
                         fin.write_key(i, &leaf.read_key(0));
                     }
 
@@ -159,6 +229,11 @@ where
                     return Some(v);
                 }
 
+                println!(
+                    "right sibling len == {}, merge leaf with it and handle the stack",
+                    MIN_LEN_AFTER_SPLIT
+                );
+
                 // otherwise merge with right
                 leaf.merge_min_len(right_sibling);
                 // just idx, because leaf keys stay unchanged
@@ -166,6 +241,8 @@ where
                 leaf.write_len(CAPACITY - 2);
 
                 if let Some((mut fin, i)) = found_internal_node {
+                    println!("updating key {} of internal node {}", i, fin.as_ptr());
+
                     fin.write_key(i, &leaf.read_key(0));
                 }
 
@@ -173,6 +250,11 @@ where
 
                 return Some(v);
             }
+
+            println!(
+                "left sibling len == {}, merge it with the leaf and handle the stack",
+                MIN_LEN_AFTER_SPLIT
+            );
 
             // if there is no right sibling - merge with left
             left_sibling.merge_min_len(leaf);
@@ -196,13 +278,25 @@ where
         let mut right_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
         let right_sibling_len = right_sibling.read_len();
 
+        println!(
+            "leaf has right sibling at {} with len {}",
+            right_sibling_ptr, right_sibling_len
+        );
+
         // if possible to steal - return early
         if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+            println!(
+                "right sibling len > {} - steal the first key and return",
+                MIN_LEN_AFTER_SPLIT
+            );
+
             leaf.steal_from_right(&mut right_sibling, right_sibling_len, &mut parent, 0);
             // just idx, because after rotation leaf has one more key added to the end
             let v = leaf.remove_by_idx(idx, B);
 
             if let Some((mut fin, i)) = found_internal_node {
+                println!("updating key {} of internal node {}", i, fin.as_ptr());
+
                 fin.write_key(i, &leaf.read_key(0));
             }
 
@@ -210,6 +304,11 @@ where
 
             return Some(v);
         }
+
+        println!(
+            "right sibling len == {}, leaf with it and handle the stack",
+            MIN_LEN_AFTER_SPLIT
+        );
 
         // otherwise merge with right
         leaf.merge_min_len(right_sibling);
@@ -219,12 +318,14 @@ where
         leaf.write_len(CAPACITY - 2);
 
         if let Some((mut fin, i)) = found_internal_node {
+            println!("updating key {} of internal node {}", i, fin.as_ptr());
+
             fin.write_key(i, &leaf.read_key(0));
         }
 
         self.handle_stack_after_merge(true, leaf);
 
-        return Some(v);
+        Some(v)
     }
 
     fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
@@ -237,11 +338,27 @@ where
                 (remove_idx - 1, remove_idx)
             };
 
+            println!("handling the stack, node_ptr {}, node_len {}, idx_to_remove {}, child_idx_to_remove {}, merged_right {}", node.as_ptr(), node_len, idx_to_remove, child_idx_to_remove, merged_right);
+            println!(
+                "stack content: {:?}",
+                self._stack
+                    .iter()
+                    .map(|(n, l, i)| (n.as_ptr(), *l, *i))
+                    .collect::<Vec<_>>()
+            );
+
             // if the node has enough keys, return early
             if node_len > MIN_LEN_AFTER_SPLIT {
+                println!(
+                    "node len > {}, remove key and child and return",
+                    MIN_LEN_AFTER_SPLIT
+                );
+
                 node.remove_key(idx_to_remove, node_len);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1);
                 node.write_len(node_len - 1);
+
+                self._stack.clear();
 
                 return;
             }
@@ -252,11 +369,14 @@ where
             if stack_top_frame.is_none() {
                 // if the root has only one key, make child the new root
                 if node_len == 1 {
+                    println!("node is root and has one element - promote new root and return");
                     node.destroy();
                     self.root = Some(prev_node);
 
                     return;
                 }
+
+                println!("node is root - simply remove the key");
 
                 // otherwise simply remove and return
                 node.remove_key(idx_to_remove, node_len);
@@ -277,8 +397,18 @@ where
                     unsafe { InternalBTreeNode::<K>::from_ptr(left_sibling_ptr) };
                 let left_sibling_len = left_sibling.read_len();
 
+                println!(
+                    "node has left sibling at {} with len {}",
+                    left_sibling_ptr, left_sibling_len
+                );
+
                 // steal from left if it is possible
                 if left_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    println!(
+                        "left sibling len > {} - steal the last element and return",
+                        MIN_LEN_AFTER_SPLIT
+                    );
+
                     node.steal_from_left(
                         &mut left_sibling,
                         left_sibling_len,
@@ -288,10 +418,12 @@ where
                     node.remove_key(idx_to_remove + 1, B);
                     node.remove_child_ptr(child_idx_to_remove + 1, B + 1);
 
+                    self._stack.clear();
+
                     return;
                 }
 
-                let has_right_sibling = parent_idx < parent_len - 1;
+                let has_right_sibling = parent_idx < parent_len;
                 if has_right_sibling {
                     let right_sibling_ptr =
                         u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
@@ -299,8 +431,18 @@ where
                         unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
                     let right_sibling_len = right_sibling.read_len();
 
+                    println!(
+                        "node also has right sibling at {} with len {}",
+                        right_sibling_ptr, right_sibling_len
+                    );
+
                     // steal from right if it's possible
                     if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                        println!(
+                            "right sibling len > {} - steal the first element and return",
+                            MIN_LEN_AFTER_SPLIT
+                        );
+
                         node.steal_from_right(
                             &mut right_sibling,
                             right_sibling_len,
@@ -310,8 +452,15 @@ where
                         node.remove_key(idx_to_remove, B);
                         node.remove_child_ptr(child_idx_to_remove, B + 1);
 
+                        self._stack.clear();
+
                         return;
                     }
+
+                    println!(
+                        "right sibling len == {}, merge and continue",
+                        MIN_LEN_AFTER_SPLIT
+                    );
 
                     // otherwise merge with right
                     let mid_element = parent.read_key(parent_idx);
@@ -325,6 +474,11 @@ where
 
                     continue;
                 }
+
+                println!(
+                    "left sibling len == {}, merge and continue",
+                    MIN_LEN_AFTER_SPLIT
+                );
 
                 // otherwise merge with left
                 let mid_element = parent.read_key(parent_idx - 1);
@@ -345,14 +499,31 @@ where
             let mut right_sibling = unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
             let right_sibling_len = right_sibling.read_len();
 
+            println!(
+                "node has right sibling at {} with len {}",
+                right_sibling_ptr, right_sibling_len
+            );
+
             // steal from right if it's possible
             if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                println!(
+                    "right sibling len > {}, steal the first element and return",
+                    MIN_LEN_AFTER_SPLIT
+                );
+
                 node.steal_from_right(&mut right_sibling, right_sibling_len, &mut parent, 0);
                 node.remove_key(idx_to_remove, B);
                 node.remove_child_ptr(child_idx_to_remove, B + 1);
 
+                self._stack.clear();
+
                 return;
             }
+
+            println!(
+                "right sibling len == {}, merge node with it and continue",
+                MIN_LEN_AFTER_SPLIT
+            );
 
             // otherwise merge with right
             let mid_element = parent.read_key(parent_idx);
@@ -422,6 +593,7 @@ where
                 node = BTreeNode::Internal(parent);
             } else {
                 self.len += 1;
+                self._stack.clear();
 
                 return None;
             }
@@ -708,15 +880,16 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
+        let iterations = 2000;
         let mut map = SBTreeMap::<u64, u64>::default();
 
         let mut example = Vec::new();
-        for i in 0..300 {
-            example.push(i);
+        for i in 0..iterations {
+            example.push(i as u64);
         }
         example.shuffle(&mut thread_rng());
 
-        for i in 0..300 {
+        for i in 0..iterations {
             println!("inserting {}", example[i]);
             assert!(map.insert(example[i], example[i]).is_none());
 
@@ -725,24 +898,42 @@ mod tests {
             println!();
 
             for j in 0..i {
-                assert!(map.contains_key(&example[j]));
-                assert_eq!(map.get_copy(&example[j]).unwrap(), example[j]);
+                assert!(
+                    map.contains_key(&example[j]),
+                    "don't contain {}",
+                    example[j]
+                );
+                assert_eq!(
+                    map.get_copy(&example[j]),
+                    Some(example[j]),
+                    "unable to get {}",
+                    example[j]
+                );
             }
         }
 
         example.shuffle(&mut thread_rng());
-        for i in 0..300 {
+        for i in 0..iterations {
             println!("removing {}", example[i]);
 
-            assert_eq!(map.remove(&example[i]).unwrap(), example[i]);
+            assert_eq!(map.remove(&example[i]), Some(example[i]));
 
             map.debug_print();
             println!();
             println!();
 
-            for j in (i + 1)..300 {
-                assert!(map.contains_key(&example[j]));
-                assert_eq!(map.get_copy(&example[j]).unwrap(), example[j]);
+            for j in (i + 1)..iterations {
+                assert!(
+                    map.contains_key(&example[j]),
+                    "don't contain {}",
+                    example[j]
+                );
+                assert_eq!(
+                    map.get_copy(&example[j]),
+                    Some(example[j]),
+                    "unable to get {}",
+                    example[j]
+                );
             }
         }
 

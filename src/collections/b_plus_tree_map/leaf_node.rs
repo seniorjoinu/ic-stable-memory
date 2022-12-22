@@ -155,9 +155,9 @@ where
         let replace_key = right_sibling.remove_key(0, right_sibling_len);
         let replace_value = right_sibling.remove_value(0, right_sibling_len);
         right_sibling.write_len(right_sibling_len - 1);
-        
-        parent.write_key(parent_idx, &replace_key);
-        
+
+        parent.write_key(parent_idx, &right_sibling.read_key(0));
+
         self.push_key(&replace_key, MIN_LEN_AFTER_SPLIT);
         self.push_value(&replace_value, MIN_LEN_AFTER_SPLIT);
     }
@@ -167,22 +167,14 @@ where
     pub fn split_max_len(&mut self, right_biased: bool) -> Self {
         let mut right = Self::create();
 
-        let mut len_self = CAPACITY;
-        let mut len_right = 0usize;
-
         let min_idx = if right_biased { MIN_LEN_AFTER_SPLIT } else { B };
 
-        // TODO: optimize - just copy and set len
-        for _ in min_idx..CAPACITY {
-            let k = self.pop_key(len_self);
-            let v = self.pop_value(len_self);
+        for i in min_idx..CAPACITY {
+            let k = self.read_key(i);
+            let v = self.read_value(i);
 
-            len_self -= 1;
-
-            right.insert_key(0, &k, len_right);
-            right.insert_value(0, &v, len_right);
-
-            len_right += 1;
+            right.push_key(&k, i - min_idx);
+            right.push_value(&v, i - min_idx);
         }
 
         let self_next = self.read_next();
