@@ -169,11 +169,16 @@ where
                 );
 
                 leaf.steal_from_left(
+                    MIN_LEN_AFTER_SPLIT,
                     &mut left_sibling,
                     left_sibling_len,
                     &mut parent,
                     parent_idx - 1,
+                    None,
                 );
+
+                left_sibling.write_len(left_sibling_len - 1);
+
                 // idx + 1, because after rotation leaf has one more key added before
                 let v = leaf.remove_by_idx(idx + 1, B);
 
@@ -210,11 +215,16 @@ where
                     );
 
                     leaf.steal_from_right(
+                        MIN_LEN_AFTER_SPLIT,
                         &mut right_sibling,
                         right_sibling_len,
                         &mut parent,
                         parent_idx,
+                        None,
                     );
+
+                    right_sibling.write_len(right_sibling_len - 1);
+
                     // just idx, because after rotation leaf has one more key added to the end
                     let v = leaf.remove_by_idx(idx, B);
 
@@ -290,7 +300,17 @@ where
                 MIN_LEN_AFTER_SPLIT
             );
 
-            leaf.steal_from_right(&mut right_sibling, right_sibling_len, &mut parent, 0);
+            leaf.steal_from_right(
+                MIN_LEN_AFTER_SPLIT,
+                &mut right_sibling,
+                right_sibling_len,
+                &mut parent,
+                0,
+                None,
+            );
+
+            right_sibling.write_len(right_sibling_len - 1);
+
             // just idx, because after rotation leaf has one more key added to the end
             let v = leaf.remove_by_idx(idx, B);
 
@@ -564,9 +584,10 @@ where
             }
         };
 
-        let right_leaf = match Self::insert_leaf(&mut leaf, key, value) {
+        let right_leaf = match self.insert_leaf(&mut leaf, key, value) {
             Ok(v) => {
                 self._stack.clear();
+
                 return Some(v);
             }
             Err(right_leaf_opt) => {
@@ -661,6 +682,7 @@ where
     }
 
     fn insert_leaf(
+        &self,
         leaf_node: &mut LeafBTreeNode<K, V>,
         mut key: K,
         mut value: V,
@@ -690,6 +712,149 @@ where
 
             leaf_node.write_len(leaf_node_len + 1);
             return Err(None);
+        }
+
+        // try to pass an element to a neighbor
+        if let Some((mut parent, parent_len, parent_idx)) = self.peek_stack() {
+            let has_left_sibling = parent_idx > 0;
+            if has_left_sibling {
+                let left_sibling_ptr =
+                    u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
+                let mut left_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(left_sibling_ptr) };
+                let left_sibling_len = left_sibling.read_len();
+
+                // TODO: DONT FORGET TO CHANGE B to 6
+
+                // if it is possible to pass to the left sibling - do that
+                if left_sibling_len < CAPACITY {
+                    if insert_idx == 1 {
+                        left_sibling.steal_from_right(
+                            left_sibling_len,
+                            leaf_node,
+                            CAPACITY,
+                            &mut parent,
+                            parent_idx - 1,
+                            Some((key.as_fixed_size_bytes(), value.as_fixed_size_bytes())),
+                        );
+                    } else {
+                        left_sibling.steal_from_right(
+                            left_sibling_len,
+                            leaf_node,
+                            CAPACITY,
+                            &mut parent,
+                            parent_idx - 1,
+                            None,
+                        );
+
+                        leaf_node.insert_key(
+                            insert_idx - 1,
+                            &key.as_fixed_size_bytes(),
+                            CAPACITY - 1,
+                        );
+                        leaf_node.insert_value(
+                            insert_idx - 1,
+                            &value.as_fixed_size_bytes(),
+                            CAPACITY - 1,
+                        );
+                    }
+
+                    left_sibling.write_len(left_sibling_len + 1);
+
+                    return Err(None);
+                }
+
+                let has_right_sibling = parent_idx < parent_len - 1;
+                if has_right_sibling {
+                    let right_sibling_ptr =
+                        u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
+                    let mut right_sibling =
+                        unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
+                    let right_sibling_len = right_sibling.read_len();
+
+                    if right_sibling_len < CAPACITY {
+                        if insert_idx == leaf_node_len {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                leaf_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                Some((key.as_fixed_size_bytes(), value.as_fixed_size_bytes())),
+                            );
+                        } else {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                leaf_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                None,
+                            );
+
+                            leaf_node.insert_key(
+                                insert_idx,
+                                &key.as_fixed_size_bytes(),
+                                CAPACITY - 1,
+                            );
+                            leaf_node.insert_value(
+                                insert_idx,
+                                &value.as_fixed_size_bytes(),
+                                CAPACITY - 1,
+                            );
+                        }
+
+                        right_sibling.write_len(right_sibling_len + 1);
+
+                        return Err(None);
+                    }
+                }
+            } else {
+                let has_right_sibling = parent_idx < parent_len - 1;
+                if has_right_sibling {
+                    let right_sibling_ptr =
+                        u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
+                    let mut right_sibling =
+                        unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
+                    let right_sibling_len = right_sibling.read_len();
+
+                    if right_sibling_len < CAPACITY {
+                        if insert_idx == leaf_node_len {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                leaf_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                Some((key.as_fixed_size_bytes(), value.as_fixed_size_bytes())),
+                            );
+                        } else {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                leaf_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                None,
+                            );
+
+                            leaf_node.insert_key(
+                                insert_idx,
+                                &key.as_fixed_size_bytes(),
+                                CAPACITY - 1,
+                            );
+                            leaf_node.insert_value(
+                                insert_idx,
+                                &value.as_fixed_size_bytes(),
+                                CAPACITY - 1,
+                            );
+                        }
+
+                        right_sibling.write_len(right_sibling_len + 1);
+
+                        return Err(None);
+                    }
+                }
+            }
         }
 
         // split the leaf and insert so both leaves now have length of B
@@ -880,7 +1045,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let iterations = 2000;
+        let iterations = 1000;
         let mut map = SBTreeMap::<u64, u64>::default();
 
         let mut example = Vec::new();

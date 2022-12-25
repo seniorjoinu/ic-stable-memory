@@ -130,36 +130,62 @@ where
 
     pub fn steal_from_left(
         &mut self,
+        self_len: usize,
         left_sibling: &mut Self,
         left_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
+        left_insert_last_element: Option<([u8; K::SIZE], [u8; V::SIZE])>,
     ) {
-        let replace_key = left_sibling.pop_key(left_sibling_len);
-        let replace_value = left_sibling.pop_value(left_sibling_len);
-        left_sibling.write_len(left_sibling_len - 1);
+        let (replace_key, replace_value) = if let Some((k, v)) = left_insert_last_element {
+            parent.write_key(parent_idx, &k);
 
-        parent.write_key(parent_idx, &replace_key);
+            (k, v)
+        } else {
+            let replace_key = left_sibling.pop_key(left_sibling_len);
+            let replace_value = left_sibling.pop_value(left_sibling_len);
 
-        self.insert_key(0, &replace_key, MIN_LEN_AFTER_SPLIT);
-        self.insert_value(0, &replace_value, MIN_LEN_AFTER_SPLIT);
+            parent.write_key(parent_idx, &replace_key);
+
+            (replace_key, replace_value)
+        };
+
+        self.insert_key(0, &replace_key, self_len);
+        self.insert_value(0, &replace_value, self_len);
     }
+
+    // TODO: DONT FORGET TO ALSO UPDATE
 
     pub fn steal_from_right(
         &mut self,
+        self_len: usize,
         right_sibling: &mut Self,
         right_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
+        right_insert_first_element: Option<([u8; K::SIZE], [u8; V::SIZE])>,
     ) {
-        let replace_key = right_sibling.remove_key(0, right_sibling_len);
-        let replace_value = right_sibling.remove_value(0, right_sibling_len);
-        right_sibling.write_len(right_sibling_len - 1);
+        let (replace_key, replace_value) = if let Some((k, v)) = right_insert_first_element {
+            let replace_key = right_sibling.read_key(0);
+            let replace_value = right_sibling.read_value(0);
 
-        parent.write_key(parent_idx, &right_sibling.read_key(0));
+            right_sibling.write_key(0, &k);
+            right_sibling.write_value(0, &v);
+            parent.write_key(parent_idx, &k);
 
-        self.push_key(&replace_key, MIN_LEN_AFTER_SPLIT);
-        self.push_value(&replace_value, MIN_LEN_AFTER_SPLIT);
+            (replace_key, replace_value)
+        } else {
+            let replace_key = right_sibling.remove_key(0, right_sibling_len);
+            let replace_value = right_sibling.remove_value(0, right_sibling_len);
+
+            println!("{} {:?}", parent_idx, right_sibling.read_key(0));
+            parent.write_key(parent_idx, &right_sibling.read_key(0));
+
+            (replace_key, replace_value)
+        };
+
+        self.push_key(&replace_key, self_len);
+        self.push_value(&replace_value, self_len);
     }
 
     // TODO: optimize
