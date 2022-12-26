@@ -133,38 +133,57 @@ where
 
     pub fn steal_from_left(
         &mut self,
+        self_len: usize,
         left_sibling: &mut Self,
         left_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
+        left_insert_last_element: Option<([u8; K::SIZE], u64)>,
     ) {
-        let lsk = left_sibling.pop_key(left_sibling_len);
-        let lsc = left_sibling.pop_child_ptr(left_sibling_len + 1);
-        left_sibling.write_len(left_sibling_len - 1);
+        let (lsk, lsc) = if let Some((k, c)) = left_insert_last_element {
+            let lsc = c.as_fixed_size_bytes();
+
+            (k, lsc)
+        } else {
+            let lsk = left_sibling.pop_key(left_sibling_len);
+            let lsc = left_sibling.pop_child_ptr(left_sibling_len + 1);
+
+            (lsk, lsc)
+        };
 
         let pk = parent.read_key(parent_idx);
         parent.write_key(parent_idx, &lsk);
 
-        self.insert_key(0, &pk, MIN_LEN_AFTER_SPLIT);
-        self.insert_child_ptr(0, &lsc, B);
+        self.insert_key(0, &pk, self_len);
+        self.insert_child_ptr(0, &lsc, self_len + 1);
     }
 
     pub fn steal_from_right(
         &mut self,
+        self_len: usize,
         right_sibling: &mut Self,
         right_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
+        right_insert_first_element: Option<([u8; K::SIZE], u64)>,
     ) {
-        let rsk = right_sibling.remove_key(0, right_sibling_len);
-        let rsc = right_sibling.remove_child_ptr(0, right_sibling_len + 1);
-        right_sibling.write_len(right_sibling_len - 1);
+        let (rsk, rsc) = if let Some((k, c)) = right_insert_first_element {
+            let rsc = right_sibling.read_child_ptr(0);
+            right_sibling.write_child_ptr(0, &c.as_fixed_size_bytes());
+
+            (k, rsc)
+        } else {
+            let rsk = right_sibling.remove_key(0, right_sibling_len);
+            let rsc = right_sibling.remove_child_ptr(0, right_sibling_len + 1);
+
+            (rsk, rsc)
+        };
 
         let pk = parent.read_key(parent_idx);
         parent.write_key(parent_idx, &rsk);
 
-        self.push_key(&pk, MIN_LEN_AFTER_SPLIT);
-        self.push_child_ptr(&rsc, B);
+        self.push_key(&pk, self_len);
+        self.push_child_ptr(&rsc, self_len + 1);
     }
 
     // TODO: optimize
@@ -323,7 +342,11 @@ where
     [(); K::SIZE]: Sized,
 {
     pub fn debug_print(&self) {
-        print!("InternalBTreeNode({})[", self.read_len());
+        print!(
+            "InternalBTreeNode(&{}, {})[",
+            self.as_ptr(),
+            self.read_len()
+        );
         for i in 0..self.read_len() {
             print!(
                 "*({}), ",

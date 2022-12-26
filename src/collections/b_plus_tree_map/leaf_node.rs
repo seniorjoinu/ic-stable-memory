@@ -154,8 +154,6 @@ where
         self.insert_value(0, &replace_value, self_len);
     }
 
-    // TODO: DONT FORGET TO ALSO UPDATE
-
     pub fn steal_from_right(
         &mut self,
         self_len: usize,
@@ -390,7 +388,7 @@ where
     [(); V::SIZE]: Sized,
 {
     pub fn debug_print(&self) {
-        print!("LeafBTreeNode({})[", self.read_len());
+        print!("LeafBTreeNode(&{}, {})[", self.as_ptr(), self.read_len());
         for i in 0..self.read_len() {
             print!("({:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
             print!("{:?})", V::from_fixed_size_bytes(&self.read_value(i)));

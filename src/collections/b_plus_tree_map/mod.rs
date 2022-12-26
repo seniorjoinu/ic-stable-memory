@@ -430,11 +430,14 @@ where
                     );
 
                     node.steal_from_left(
+                        node_len,
                         &mut left_sibling,
                         left_sibling_len,
                         &mut parent,
                         parent_idx - 1,
+                        None,
                     );
+                    left_sibling.write_len(left_sibling_len - 1);
                     node.remove_key(idx_to_remove + 1, B);
                     node.remove_child_ptr(child_idx_to_remove + 1, B + 1);
 
@@ -464,11 +467,14 @@ where
                         );
 
                         node.steal_from_right(
+                            node_len,
                             &mut right_sibling,
                             right_sibling_len,
                             &mut parent,
                             parent_idx,
+                            None,
                         );
+                        right_sibling.write_len(right_sibling_len - 1);
                         node.remove_key(idx_to_remove, B);
                         node.remove_child_ptr(child_idx_to_remove, B + 1);
 
@@ -531,7 +537,15 @@ where
                     MIN_LEN_AFTER_SPLIT
                 );
 
-                node.steal_from_right(&mut right_sibling, right_sibling_len, &mut parent, 0);
+                node.steal_from_right(
+                    node_len,
+                    &mut right_sibling,
+                    right_sibling_len,
+                    &mut parent,
+                    0,
+                    None,
+                );
+                right_sibling.write_len(right_sibling_len - 1);
                 node.remove_key(idx_to_remove, B);
                 node.remove_child_ptr(child_idx_to_remove, B + 1);
 
@@ -607,7 +621,7 @@ where
 
         while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
             if let Some((right, _k)) =
-                Self::insert_internal(&mut parent, parent_len, idx, key_to_index, ptr)
+                self.insert_internal(&mut parent, parent_len, idx, key_to_index, ptr)
             {
                 key_to_index = _k;
                 ptr = right.as_ptr();
@@ -682,7 +696,7 @@ where
     }
 
     fn insert_leaf(
-        &self,
+        &mut self,
         leaf_node: &mut LeafBTreeNode<K, V>,
         mut key: K,
         mut value: V,
@@ -756,14 +770,14 @@ where
                             &value.as_fixed_size_bytes(),
                             CAPACITY - 1,
                         );
-                    }
+                    };
 
                     left_sibling.write_len(left_sibling_len + 1);
 
                     return Err(None);
                 }
 
-                let has_right_sibling = parent_idx < parent_len - 1;
+                let has_right_sibling = parent_idx < parent_len;
                 if has_right_sibling {
                     let right_sibling_ptr =
                         u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
@@ -772,7 +786,7 @@ where
                     let right_sibling_len = right_sibling.read_len();
 
                     if right_sibling_len < CAPACITY {
-                        if insert_idx == leaf_node_len {
+                        if insert_idx == CAPACITY {
                             right_sibling.steal_from_left(
                                 right_sibling_len,
                                 leaf_node,
@@ -809,7 +823,7 @@ where
                     }
                 }
             } else {
-                let has_right_sibling = parent_idx < parent_len - 1;
+                let has_right_sibling = parent_idx < parent_len;
                 if has_right_sibling {
                     let right_sibling_ptr =
                         u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
@@ -818,7 +832,7 @@ where
                     let right_sibling_len = right_sibling.read_len();
 
                     if right_sibling_len < CAPACITY {
-                        if insert_idx == leaf_node_len {
+                        if insert_idx == CAPACITY {
                             right_sibling.steal_from_left(
                                 right_sibling_len,
                                 leaf_node,
@@ -891,6 +905,7 @@ where
     }
 
     fn insert_internal(
+        &mut self,
         internal_node: &mut InternalBTreeNode<K>,
         len: usize,
         idx: usize,
@@ -903,6 +918,131 @@ where
 
             internal_node.write_len(len + 1);
             return None;
+        }
+
+        if let Some((mut parent, parent_len, parent_idx)) = self.peek_stack() {
+            let has_left_sibling = parent_idx > 0;
+            if has_left_sibling {
+                let left_sibling_ptr =
+                    u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
+                let mut left_sibling =
+                    unsafe { InternalBTreeNode::<K>::from_ptr(left_sibling_ptr) };
+                let left_sibling_len = left_sibling.read_len();
+
+                // TODO: here we have to somehow re-adjust the parent that holds the first key that was replaced
+                if left_sibling_len < CAPACITY {
+                    if idx == 0 {
+                        left_sibling.steal_from_right(
+                            left_sibling_len,
+                            internal_node,
+                            CAPACITY,
+                            &mut parent,
+                            parent_idx - 1,
+                            Some((key, child_ptr)),
+                        );
+                    } else {
+                        left_sibling.steal_from_right(
+                            left_sibling_len,
+                            internal_node,
+                            CAPACITY,
+                            &mut parent,
+                            parent_idx - 1,
+                            None,
+                        );
+
+                        internal_node.insert_key(idx - 1, &key, len - 1);
+                        internal_node.insert_child_ptr(idx, &child_ptr.as_fixed_size_bytes(), len);
+                    }
+
+                    left_sibling.write_len(left_sibling_len + 1);
+
+                    return None;
+                }
+
+                let has_right_sibling = parent_idx < parent_len;
+                if has_right_sibling {
+                    let right_sibling_ptr =
+                        u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
+                    let mut right_sibling =
+                        unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
+                    let right_sibling_len = right_sibling.read_len();
+
+                    if right_sibling_len < CAPACITY {
+                        if idx == CAPACITY {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                internal_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                Some((key, child_ptr)),
+                            );
+                        } else {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                internal_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                None,
+                            );
+
+                            internal_node.insert_key(idx, &key, len - 1);
+                            internal_node.insert_child_ptr(
+                                idx + 1,
+                                &child_ptr.as_fixed_size_bytes(),
+                                len,
+                            );
+                        }
+
+                        right_sibling.write_len(right_sibling_len + 1);
+
+                        return None;
+                    }
+                }
+            } else {
+                let has_right_sibling = parent_idx < parent_len;
+                if has_right_sibling {
+                    let right_sibling_ptr =
+                        u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
+                    let mut right_sibling =
+                        unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
+                    let right_sibling_len = right_sibling.read_len();
+
+                    if right_sibling_len < CAPACITY {
+                        if idx == CAPACITY {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                internal_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                Some((key, child_ptr)),
+                            );
+                        } else {
+                            right_sibling.steal_from_left(
+                                right_sibling_len,
+                                internal_node,
+                                CAPACITY,
+                                &mut parent,
+                                parent_idx,
+                                None,
+                            );
+
+                            internal_node.insert_key(idx, &key, len - 1);
+                            internal_node.insert_child_ptr(
+                                idx + 1,
+                                &child_ptr.as_fixed_size_bytes(),
+                                len,
+                            );
+                        }
+
+                        right_sibling.write_len(right_sibling_len + 1);
+
+                        return None;
+                    }
+                }
+            }
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
@@ -941,9 +1081,19 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
+    pub fn debug_print_stack(&self) {
+        println!(
+            "STACK: {:?}",
+            self._stack
+                .iter()
+                .map(|(p, l, i)| (p.as_ptr(), *l, *i))
+                .collect::<Vec<_>>()
+        );
+    }
+
     pub fn debug_print(&self) {
         if self.len == 0 {
-            print!("EMPTY");
+            println!("EMPTY");
             return;
         }
 
@@ -1056,6 +1206,8 @@ mod tests {
 
         for i in 0..iterations {
             println!("inserting {}", example[i]);
+            map.debug_print_stack();
+            assert!(map._stack.is_empty());
             assert!(map.insert(example[i], example[i]).is_none());
 
             map.debug_print();
@@ -1080,6 +1232,8 @@ mod tests {
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {
             println!("removing {}", example[i]);
+            map.debug_print_stack();
+            assert!(map._stack.is_empty());
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));
 
