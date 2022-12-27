@@ -1,5 +1,5 @@
-use crate::collections::b_plus_tree_map::internal_node::InternalBTreeNode;
-use crate::collections::b_plus_tree_map::{
+use crate::collections::btree_map::internal_node::InternalBTreeNode;
+use crate::collections::btree_map::{
     B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
@@ -42,6 +42,7 @@ where
         values_offset::<K>() + V::SIZE * CAPACITY
     }
 
+    #[inline]
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         Self {
             ptr,
@@ -50,6 +51,7 @@ where
         }
     }
 
+    #[inline]
     pub unsafe fn copy(&self) -> Self {
         Self {
             ptr: self.ptr,
@@ -60,11 +62,7 @@ where
 
     pub fn create() -> Self {
         let slice = allocate(Self::calc_size());
-        let mut it = Self {
-            ptr: slice.get_ptr(),
-            _marker_k: PhantomData::default(),
-            _marker_v: PhantomData::default(),
-        };
+        let mut it = unsafe { Self::from_ptr(slice.get_ptr()) };
 
         it.init_node_type();
         it.write_len(0);
@@ -82,7 +80,6 @@ where
         deallocate(slice);
     }
 
-    // TODO: also return found key
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
         if len == 0 {
             return Err(0);
@@ -135,23 +132,23 @@ where
         left_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
-        left_insert_last_element: Option<([u8; K::SIZE], [u8; V::SIZE])>,
+        left_insert_last_element: Option<(&[u8; K::SIZE], &[u8; V::SIZE])>,
+        buf: &mut Vec<u8>,
     ) {
-        let (replace_key, replace_value) = if let Some((k, v)) = left_insert_last_element {
+        if let Some((k, v)) = left_insert_last_element {
             parent.write_key(parent_idx, &k);
 
-            (k, v)
+            self.insert_key(0, k, self_len, buf);
+            self.insert_value(0, v, self_len, buf);
         } else {
-            let replace_key = left_sibling.pop_key(left_sibling_len);
-            let replace_value = left_sibling.pop_value(left_sibling_len);
+            let replace_key = left_sibling.read_key(left_sibling_len - 1);
+            let replace_value = left_sibling.read_value(left_sibling_len - 1);
 
             parent.write_key(parent_idx, &replace_key);
 
-            (replace_key, replace_value)
-        };
-
-        self.insert_key(0, &replace_key, self_len);
-        self.insert_value(0, &replace_value, self_len);
+            self.insert_key(0, &replace_key, self_len, buf);
+            self.insert_value(0, &replace_value, self_len, buf);
+        }
     }
 
     pub fn steal_from_right(
@@ -161,45 +158,39 @@ where
         right_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
-        right_insert_first_element: Option<([u8; K::SIZE], [u8; V::SIZE])>,
+        right_insert_first_element: Option<(&[u8; K::SIZE], &[u8; V::SIZE])>,
+        buf: &mut Vec<u8>,
     ) {
-        let (replace_key, replace_value) = if let Some((k, v)) = right_insert_first_element {
-            let replace_key = right_sibling.read_key(0);
-            let replace_value = right_sibling.read_value(0);
+        let replace_key = right_sibling.read_key(0);
+        let replace_value = right_sibling.read_value(0);
 
-            right_sibling.write_key(0, &k);
-            right_sibling.write_value(0, &v);
-            parent.write_key(parent_idx, &k);
+        if let Some((k, v)) = right_insert_first_element {
+            right_sibling.write_key(0, k);
+            right_sibling.write_value(0, v);
 
-            (replace_key, replace_value)
+            parent.write_key(parent_idx, k);
         } else {
-            let replace_key = right_sibling.remove_key(0, right_sibling_len);
-            let replace_value = right_sibling.remove_value(0, right_sibling_len);
+            right_sibling.remove_key(0, right_sibling_len, buf);
+            right_sibling.remove_value(0, right_sibling_len, buf);
 
-            println!("{} {:?}", parent_idx, right_sibling.read_key(0));
             parent.write_key(parent_idx, &right_sibling.read_key(0));
-
-            (replace_key, replace_value)
         };
 
         self.push_key(&replace_key, self_len);
         self.push_value(&replace_value, self_len);
     }
 
-    // TODO: optimize
     #[allow(clippy::explicit_counter_loop)]
-    pub fn split_max_len(&mut self, right_biased: bool) -> Self {
+    pub fn split_max_len(&mut self, right_biased: bool, buf: &mut Vec<u8>) -> Self {
         let mut right = Self::create();
 
         let min_idx = if right_biased { MIN_LEN_AFTER_SPLIT } else { B };
 
-        for i in min_idx..CAPACITY {
-            let k = self.read_key(i);
-            let v = self.read_value(i);
+        self.read_keys_to_buf(min_idx, CAPACITY - min_idx, buf);
+        right.write_keys_from_buf(0, buf);
 
-            right.push_key(&k, i - min_idx);
-            right.push_value(&v, i - min_idx);
-        }
+        self.read_values_to_buf(min_idx, CAPACITY - min_idx, buf);
+        right.write_values_from_buf(0, buf);
 
         let self_next = self.read_next();
         self.write_next(&right.ptr.as_fixed_size_bytes());
@@ -210,15 +201,12 @@ where
         right
     }
 
-    // TODO: optimize
-    pub fn merge_min_len(&mut self, right: Self) {
-        for i in 0..MIN_LEN_AFTER_SPLIT {
-            let k = right.read_key(i);
-            let v = right.read_value(i);
+    pub fn merge_min_len(&mut self, right: Self, buf: &mut Vec<u8>) {
+        right.read_keys_to_buf(0, MIN_LEN_AFTER_SPLIT, buf);
+        self.write_keys_from_buf(MIN_LEN_AFTER_SPLIT, buf);
 
-            self.push_key(&k, MIN_LEN_AFTER_SPLIT + i);
-            self.push_value(&v, MIN_LEN_AFTER_SPLIT + i);
-        }
+        right.read_values_to_buf(0, MIN_LEN_AFTER_SPLIT, buf);
+        self.write_values_from_buf(MIN_LEN_AFTER_SPLIT, buf);
 
         let right_next_buf = right.read_next();
         self.write_next(&right_next_buf);
@@ -233,9 +221,13 @@ where
         right.destroy();
     }
 
-    pub fn remove_by_idx(&mut self, idx: usize, len: usize) -> V {
-        let mut k = K::from_fixed_size_bytes(&self.remove_key(idx, len));
-        let mut v = V::from_fixed_size_bytes(&self.remove_value(idx, len));
+    #[inline]
+    pub fn remove_by_idx(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) -> V {
+        let mut k = K::from_fixed_size_bytes(&self.read_key(idx));
+        let mut v = V::from_fixed_size_bytes(&self.read_value(idx));
+
+        self.remove_key(idx, len, buf);
+        self.remove_value(idx, len, buf);
 
         k.remove_from_stable();
         v.remove_from_stable();
@@ -248,38 +240,25 @@ where
         self.write_key(len, key);
     }
 
-    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize) {
+    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize, buf: &mut Vec<u8>) {
         if idx == len {
             self.push_key(key, len);
             return;
         }
 
-        for i in (idx..len).rev() {
-            let k = self.read_key(i);
-            self.write_key(i + 1, &k);
-        }
+        self.read_keys_to_buf(idx, len - idx, buf);
+        self.write_keys_from_buf(idx + 1, buf);
 
         self.write_key(idx, key);
     }
 
-    #[inline]
-    pub fn pop_key(&mut self, len: usize) -> [u8; K::SIZE] {
-        self.read_key(len - 1)
-    }
-
-    pub fn remove_key(&mut self, idx: usize, len: usize) -> [u8; K::SIZE] {
+    pub fn remove_key(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
         if idx == len - 1 {
-            return self.pop_key(len);
+            return;
         }
 
-        let key = self.read_key(idx);
-
-        for i in idx..(len - 1) {
-            let k = self.read_key(i + 1);
-            self.write_key(i, &k);
-        }
-
-        key
+        self.read_keys_to_buf(idx + 1, len - idx - 1, buf);
+        self.write_keys_from_buf(idx, buf);
     }
 
     #[inline]
@@ -287,38 +266,31 @@ where
         self.write_value(len, value);
     }
 
-    pub fn insert_value(&mut self, idx: usize, value: &[u8; V::SIZE], len: usize) {
+    pub fn insert_value(
+        &mut self,
+        idx: usize,
+        value: &[u8; V::SIZE],
+        len: usize,
+        buf: &mut Vec<u8>,
+    ) {
         if idx == len {
             self.push_value(value, len);
             return;
         }
 
-        for i in (idx..len).rev() {
-            let v = self.read_value(i);
-            self.write_value(i + 1, &v);
-        }
+        self.read_values_to_buf(idx, len - idx, buf);
+        self.write_values_from_buf(idx + 1, buf);
 
         self.write_value(idx, value);
     }
 
-    #[inline]
-    pub fn pop_value(&mut self, len: usize) -> [u8; V::SIZE] {
-        self.read_value(len - 1)
-    }
-
-    pub fn remove_value(&mut self, idx: usize, len: usize) -> [u8; V::SIZE] {
+    pub fn remove_value(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
         if idx == len - 1 {
-            return self.pop_value(len);
+            return;
         }
 
-        let value = self.read_value(idx);
-
-        for i in idx..(len - 1) {
-            let v = self.read_value(i + 1);
-            self.write_value(i, &v);
-        }
-
-        value
+        self.read_values_to_buf(idx + 1, len - idx - 1, buf);
+        self.write_values_from_buf(idx, buf);
     }
 
     #[inline]
@@ -332,8 +304,19 @@ where
     }
 
     #[inline]
+    fn write_keys_from_buf(&self, from_idx: usize, buf: &Vec<u8>) {
+        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + from_idx * K::SIZE, buf);
+    }
+
+    #[inline]
     pub fn read_key(&self, idx: usize) -> [u8; K::SIZE] {
         SSlice::_read_const_u8_array_of_size::<K>(self.ptr, KEYS_OFFSET + idx * K::SIZE)
+    }
+
+    #[inline]
+    fn read_keys_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
+        buf.resize(len * K::SIZE, 0);
+        SSlice::_read_bytes(self.ptr, KEYS_OFFSET + from_idx * K::SIZE, buf);
     }
 
     #[inline]
@@ -342,8 +325,19 @@ where
     }
 
     #[inline]
+    fn write_values_from_buf(&self, from_idx: usize, buf: &Vec<u8>) {
+        SSlice::_write_bytes(self.ptr, values_offset::<K>() + from_idx * V::SIZE, buf);
+    }
+
+    #[inline]
     pub fn read_value(&self, idx: usize) -> [u8; V::SIZE] {
         SSlice::_read_const_u8_array_of_size::<V>(self.ptr, values_offset::<K>() + idx * V::SIZE)
+    }
+
+    #[inline]
+    fn read_values_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
+        buf.resize(len * V::SIZE, 0);
+        SSlice::_read_bytes(self.ptr, values_offset::<K>() + from_idx * V::SIZE, buf);
     }
 
     #[inline]
@@ -404,8 +398,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::b_plus_tree_map::leaf_node::LeafBTreeNode;
-    use crate::collections::b_plus_tree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
+    use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+    use crate::collections::btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
     use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
@@ -416,6 +410,7 @@ mod tests {
         init_allocator(0);
 
         let mut node = LeafBTreeNode::<u64, u64>::create();
+        let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
             node.push_key(&(i as u64).as_fixed_size_bytes(), i);
@@ -423,33 +418,46 @@ mod tests {
         }
 
         for i in 0..CAPACITY {
-            let k = node.pop_key(CAPACITY - i);
-            let v = node.pop_value(CAPACITY - i);
+            let k = node.read_key(CAPACITY - i - 1);
+            let v = node.read_value(CAPACITY - i - 1);
 
             assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
             assert_eq!(v, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
         }
 
         for i in (0..CAPACITY).rev() {
-            node.insert_key(0, &(i as u64).as_fixed_size_bytes(), (CAPACITY - i - 1));
-            node.insert_value(0, &(i as u64).as_fixed_size_bytes(), (CAPACITY - i - 1));
+            node.insert_key(
+                0,
+                &(i as u64).as_fixed_size_bytes(),
+                CAPACITY - i - 1,
+                &mut buf,
+            );
+            node.insert_value(
+                0,
+                &(i as u64).as_fixed_size_bytes(),
+                CAPACITY - i - 1,
+                &mut buf,
+            );
         }
 
         node.write_len(CAPACITY);
         node.debug_print();
 
         for i in 0..CAPACITY {
-            let k = node.remove_key(i, CAPACITY);
-            let v = node.remove_value(i, CAPACITY);
+            let k = node.read_key(i);
+            let v = node.read_value(i);
+
+            node.remove_key(i, CAPACITY, &mut buf);
+            node.remove_value(i, CAPACITY, &mut buf);
 
             assert_eq!(k, (i as u64).as_fixed_size_bytes());
             assert_eq!(v, (i as u64).as_fixed_size_bytes());
 
-            node.insert_key(i, &k, CAPACITY - 1);
-            node.insert_value(i, &v, CAPACITY - 1);
+            node.insert_key(i, &k, CAPACITY - 1, &mut buf);
+            node.insert_value(i, &v, CAPACITY - 1, &mut buf);
         }
 
-        let right = node.split_max_len(true);
+        let right = node.split_max_len(true, &mut buf);
 
         for i in 0..MIN_LEN_AFTER_SPLIT {
             let k = node.read_key(i);
@@ -467,7 +475,7 @@ mod tests {
             assert_eq!(v, ((i + MIN_LEN_AFTER_SPLIT) as u64).as_fixed_size_bytes());
         }
 
-        node.merge_min_len(right);
+        node.merge_min_len(right, &mut buf);
 
         for i in 0..CAPACITY {
             let k = node.read_key(i);

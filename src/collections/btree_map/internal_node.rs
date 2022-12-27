@@ -1,4 +1,4 @@
-use crate::collections::b_plus_tree_map::{
+use crate::collections::btree_map::{
     B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
@@ -34,6 +34,7 @@ where
         KEYS_OFFSET + K::SIZE * CAPACITY
     }
 
+    #[inline]
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         Self {
             ptr,
@@ -41,6 +42,7 @@ where
         }
     }
 
+    #[inline]
     pub unsafe fn copy(&self) -> Self {
         Self {
             ptr: self.ptr,
@@ -55,7 +57,6 @@ where
             _marker_k: PhantomData::default(),
         };
 
-        // TODO: batch
         it.write_len(0);
         it.init_node_type();
 
@@ -69,7 +70,6 @@ where
             _marker_k: PhantomData::default(),
         };
 
-        // TODO: batch
         it.write_len(1);
         it.init_node_type();
 
@@ -80,12 +80,12 @@ where
         it
     }
 
+    #[inline]
     pub fn destroy(self) {
         let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
         deallocate(slice);
     }
 
-    // TODO: also return found key
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
         if len == 0 {
             return Err(0);
@@ -138,24 +138,23 @@ where
         left_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        left_insert_last_element: Option<([u8; K::SIZE], u64)>,
+        left_insert_last_element: Option<(&[u8; K::SIZE], &[u8; u64::SIZE])>,
+        buf: &mut Vec<u8>,
     ) {
-        let (lsk, lsc) = if let Some((k, c)) = left_insert_last_element {
-            let lsc = c.as_fixed_size_bytes();
+        let pk = parent.read_key(parent_idx);
 
-            (k, lsc)
+        if let Some((k, c)) = left_insert_last_element {
+            parent.write_key(parent_idx, k);
+            self.insert_child_ptr(0, c, self_len + 1, buf);
         } else {
-            let lsk = left_sibling.pop_key(left_sibling_len);
-            let lsc = left_sibling.pop_child_ptr(left_sibling_len + 1);
+            let lsk = left_sibling.read_key(left_sibling_len - 1);
+            let lsc = left_sibling.read_child_ptr(left_sibling_len);
 
-            (lsk, lsc)
+            parent.write_key(parent_idx, &lsk);
+            self.insert_child_ptr(0, &lsc, self_len + 1, buf);
         };
 
-        let pk = parent.read_key(parent_idx);
-        parent.write_key(parent_idx, &lsk);
-
-        self.insert_key(0, &pk, self_len);
-        self.insert_child_ptr(0, &lsc, self_len + 1);
+        self.insert_key(0, &pk, self_len, buf);
     }
 
     pub fn steal_from_right(
@@ -165,55 +164,59 @@ where
         right_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        right_insert_first_element: Option<([u8; K::SIZE], u64)>,
+        right_insert_first_element: Option<(&[u8; K::SIZE], &[u8; u64::SIZE])>,
+        buf: &mut Vec<u8>,
     ) {
-        let (rsk, rsc) = if let Some((k, c)) = right_insert_first_element {
-            let rsc = right_sibling.read_child_ptr(0);
-            right_sibling.write_child_ptr(0, &c.as_fixed_size_bytes());
-
-            (k, rsc)
-        } else {
-            let rsk = right_sibling.remove_key(0, right_sibling_len);
-            let rsc = right_sibling.remove_child_ptr(0, right_sibling_len + 1);
-
-            (rsk, rsc)
-        };
-
         let pk = parent.read_key(parent_idx);
-        parent.write_key(parent_idx, &rsk);
+
+        let rsc = if let Some((k, c)) = right_insert_first_element {
+            let rsc = right_sibling.read_child_ptr(0);
+            right_sibling.write_child_ptr(0, c);
+
+            parent.write_key(parent_idx, k);
+
+            rsc
+        } else {
+            let rsk = right_sibling.read_key(0);
+            let rsc = right_sibling.read_child_ptr(0);
+
+            right_sibling.remove_key(0, right_sibling_len, buf);
+            right_sibling.remove_child_ptr(0, right_sibling_len + 1, buf);
+
+            parent.write_key(parent_idx, &rsk);
+
+            rsc
+        };
 
         self.push_key(&pk, self_len);
         self.push_child_ptr(&rsc, self_len + 1);
     }
 
-    // TODO: optimize
-    pub fn split_max_len(&mut self) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
+    pub fn split_max_len(&mut self, buf: &mut Vec<u8>) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
         let mut right = InternalBTreeNode::<K>::create_empty();
 
-        for i in B..CAPACITY {
-            let k = self.read_key(i);
-            right.push_key(&k, i - B);
-        }
+        self.read_keys_to_buf(B, MIN_LEN_AFTER_SPLIT, buf);
+        right.write_keys_from_buf(0, buf);
 
-        for i in B..CHILDREN_CAPACITY {
-            let c = self.read_child_ptr(i);
-            right.push_child_ptr(&c, i - B);
-        }
+        self.read_child_ptrs_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+        right.write_child_ptrs_from_buf(0, buf);
 
         (right, self.read_key(MIN_LEN_AFTER_SPLIT))
     }
 
-    // TODO: optimize
-    pub fn merge_min_len(&mut self, mid: &[u8; K::SIZE], right: InternalBTreeNode<K>) {
+    pub fn merge_min_len(
+        &mut self,
+        mid: &[u8; K::SIZE],
+        right: InternalBTreeNode<K>,
+        buf: &mut Vec<u8>,
+    ) {
         self.push_key(mid, MIN_LEN_AFTER_SPLIT);
 
-        for i in 0..MIN_LEN_AFTER_SPLIT {
-            self.push_key(&right.read_key(i), B + i);
-        }
+        right.read_keys_to_buf(0, MIN_LEN_AFTER_SPLIT, buf);
+        self.write_keys_from_buf(B, buf);
 
-        for i in 0..CHILDREN_MIN_LEN_AFTER_SPLIT {
-            self.push_child_ptr(&right.read_child_ptr(i), B + i);
-        }
+        right.read_child_ptrs_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+        self.write_child_ptrs_from_buf(B, buf);
 
         right.destroy();
     }
@@ -223,38 +226,25 @@ where
         self.write_key(len, key);
     }
 
-    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize) {
+    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize, buf: &mut Vec<u8>) {
         if idx == len {
             self.push_key(key, len);
             return;
         }
 
-        for i in (idx..len).rev() {
-            let k = self.read_key(i);
-            self.write_key(i + 1, &k);
-        }
+        self.read_keys_to_buf(idx, len - idx, buf);
+        self.write_keys_from_buf(idx + 1, buf);
 
         self.write_key(idx, key);
     }
 
-    #[inline]
-    pub fn pop_key(&mut self, len: usize) -> [u8; K::SIZE] {
-        self.read_key(len - 1)
-    }
-
-    pub fn remove_key(&mut self, idx: usize, len: usize) -> [u8; K::SIZE] {
+    pub fn remove_key(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
         if idx == len - 1 {
-            return self.pop_key(len);
+            return;
         }
 
-        let key = self.read_key(idx);
-
-        for i in (idx + 1)..len {
-            let k = self.read_key(i);
-            self.write_key(i - 1, &k)
-        }
-
-        key
+        self.read_keys_to_buf(idx + 1, len - idx - 1, buf);
+        self.write_keys_from_buf(idx, buf);
     }
 
     #[inline]
@@ -262,38 +252,31 @@ where
         self.write_child_ptr(children_len, ptr);
     }
 
-    pub fn insert_child_ptr(&mut self, idx: usize, ptr: &[u8; u64::SIZE], children_len: usize) {
+    pub fn insert_child_ptr(
+        &mut self,
+        idx: usize,
+        ptr: &[u8; u64::SIZE],
+        children_len: usize,
+        buf: &mut Vec<u8>,
+    ) {
         if idx == children_len {
             self.push_child_ptr(ptr, children_len);
             return;
         }
 
-        for i in (idx..children_len).rev() {
-            let p = self.read_child_ptr(i);
-            self.write_child_ptr(i + 1, &p);
-        }
+        self.read_child_ptrs_to_buf(idx, children_len - idx, buf);
+        self.write_child_ptrs_from_buf(idx + 1, buf);
 
         self.write_child_ptr(idx, ptr);
     }
 
-    #[inline]
-    pub fn pop_child_ptr(&mut self, children_len: usize) -> [u8; u64::SIZE] {
-        self.read_child_ptr(children_len - 1)
-    }
-
-    pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize) -> [u8; u64::SIZE] {
+    pub fn remove_child_ptr(&mut self, idx: usize, children_len: usize, buf: &mut Vec<u8>) {
         if idx == children_len - 1 {
-            return self.pop_child_ptr(children_len);
+            return;
         }
 
-        let ptr = self.read_child_ptr(idx);
-
-        for i in (idx + 1)..children_len {
-            let p = self.read_child_ptr(i);
-            self.write_child_ptr(i - 1, &p)
-        }
-
-        ptr
+        self.read_child_ptrs_to_buf(idx + 1, children_len - idx - 1, buf);
+        self.write_child_ptrs_from_buf(idx, buf);
     }
 
     #[inline]
@@ -307,8 +290,20 @@ where
     }
 
     #[inline]
+    fn read_keys_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
+        buf.resize(len * K::SIZE, 0);
+        SSlice::_read_bytes(self.ptr, KEYS_OFFSET + from_idx * K::SIZE, buf);
+    }
+
+    #[inline]
     pub fn read_child_ptr(&self, idx: usize) -> [u8; u64::SIZE] {
         SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE)
+    }
+
+    #[inline]
+    fn read_child_ptrs_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
+        buf.resize(len * u64::SIZE, 0);
+        SSlice::_read_bytes(self.ptr, CHILDREN_OFFSET + from_idx * u64::SIZE, buf);
     }
 
     #[inline]
@@ -317,8 +312,18 @@ where
     }
 
     #[inline]
+    fn write_keys_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
+        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + from_idx * K::SIZE, buf);
+    }
+
+    #[inline]
     pub fn write_child_ptr(&mut self, idx: usize, ptr: &[u8; u64::SIZE]) {
         SSlice::_write_bytes(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE, ptr);
+    }
+
+    #[inline]
+    fn write_child_ptrs_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
+        SSlice::_write_bytes(self.ptr, CHILDREN_OFFSET + from_idx * u64::SIZE, buf);
     }
 
     #[inline]
@@ -364,8 +369,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::b_plus_tree_map::internal_node::InternalBTreeNode;
-    use crate::collections::b_plus_tree_map::{
+    use crate::collections::btree_map::internal_node::InternalBTreeNode;
+    use crate::collections::btree_map::{
         B, CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     };
     use crate::utils::encoding::AsFixedSizeBytes;
@@ -378,6 +383,7 @@ mod tests {
         init_allocator(0);
 
         let mut node = InternalBTreeNode::<u64>::create_empty();
+        let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
             node.push_key(&(i as u64).as_fixed_size_bytes(), i);
@@ -388,19 +394,20 @@ mod tests {
         println!();
 
         for i in 0..CAPACITY {
-            let k = node.pop_key(CAPACITY - i);
+            let k = node.read_key(CAPACITY - i - 1);
             assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
         }
 
         for i in 0..CAPACITY {
-            node.insert_key(0, &(i as u64).as_fixed_size_bytes(), i);
+            node.insert_key(0, &(i as u64).as_fixed_size_bytes(), i, &mut buf);
         }
 
         for i in 0..CAPACITY {
-            let k = node.remove_key(i, CAPACITY);
+            let k = node.read_key(i);
+            node.remove_key(i, CAPACITY, &mut buf);
             assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
 
-            node.insert_key(i, &k, CAPACITY - 1);
+            node.insert_key(i, &k, CAPACITY - 1, &mut buf);
             node.push_child_ptr(&1u64.as_fixed_size_bytes(), i);
         }
 
@@ -410,7 +417,7 @@ mod tests {
         node.debug_print();
         println!();
 
-        let (mut right, mid) = node.split_max_len();
+        let (mut right, mid) = node.split_max_len(&mut buf);
 
         node.write_len(MIN_LEN_AFTER_SPLIT);
         right.write_len(MIN_LEN_AFTER_SPLIT);
@@ -444,7 +451,7 @@ mod tests {
         let c = right.read_child_ptr(CHILDREN_MIN_LEN_AFTER_SPLIT - 1);
         assert_eq!(c, 1u64.as_fixed_size_bytes());
 
-        node.merge_min_len(&mid, right);
+        node.merge_min_len(&mid, right, &mut buf);
 
         node.write_len(CAPACITY);
         assert_eq!(node.read_len(), CAPACITY);
