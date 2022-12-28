@@ -1,6 +1,5 @@
-use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
-use crate::collections::vec::SVec;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 
@@ -10,41 +9,43 @@ pub struct SBTreeSet<T> {
     map: SBTreeMap<T, ()>,
 }
 
-impl<T> SBTreeSet<T> {
-    pub fn len(&self) -> u64 {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-}
-
 impl<T: Ord + StableAllocated> SBTreeSet<T>
 where
-    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
     [(); T::SIZE]: Sized,
-    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
-    BTreeNode<T, ()>: StableAllocated,
 {
+    #[inline]
     pub fn new() -> Self {
         Self {
             map: SBTreeMap::new(),
         }
     }
 
+    #[inline]
+    pub fn len(&self) -> u64 {
+        self.map.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    #[inline]
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
     }
 
+    #[inline]
     pub fn remove(&mut self, value: &T) -> bool {
         self.map.remove(value).is_some()
     }
 
+    #[inline]
     pub fn contains(&self, value: &T) -> bool {
         self.map.contains_key(value)
     }
 
+    #[inline]
     pub fn iter(&self) -> SBTreeSetIter<T> {
         SBTreeSetIter::new(self)
     }
@@ -52,13 +53,10 @@ where
 
 impl<T: Ord + StableAllocated> Default for SBTreeSet<T>
 where
-    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
     [(); T::SIZE]: Sized,
-    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
-    BTreeNode<T, ()>: StableAllocated,
 {
     fn default() -> Self {
-        SBTreeSet::new()
+        Self::new()
     }
 }
 
@@ -66,19 +64,11 @@ impl<T> FixedSize for SBTreeSet<T> {
     const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
 }
 
-impl<T: StableAllocated> AsFixedSizeBytes for SBTreeSet<T>
-where
-    [(); BTreeNode::<T, ()>::SIZE]: Sized,
-    [(); T::SIZE]: Sized,
-    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
-    BTreeNode<T, ()>: StableAllocated,
-    [(); Self::SIZE]: Sized,
-    [(); SBTreeMap::<T, ()>::SIZE]: Sized,
-{
+impl<T: AsFixedSizeBytes> AsFixedSizeBytes for SBTreeSet<T> {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
-        let map_buf = self.map.to_bytes();
+        let map_buf = self.map.as_fixed_size_bytes();
 
         buf.copy_from_slice(&map_buf);
 
@@ -88,22 +78,14 @@ where
     #[inline]
     fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
         let mut buf = [0u8; SBTreeMap::<T, ()>::SIZE];
-        buf.copy_from_slice(&arr);
+        buf.copy_from_slice(arr);
 
-        let map = SBTreeMap::<T, ()>::from_bytes(buf);
+        let map = SBTreeMap::<T, ()>::from_fixed_size_bytes(&buf);
         Self { map }
     }
 }
 
-impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T>
-where
-    [(); BTreeNode::<T, ()>::SIZE]: Sized, // ???? why only putting K is enough
-    [(); T::SIZE]: Sized,
-    [(); SVec::<BTreeNode<T, ()>>::SIZE]: Sized,
-    BTreeNode<T, ()>: StableAllocated,
-    [(); Self::SIZE]: Sized,
-    [(); SBTreeMap::<T, ()>::SIZE]: Sized,
-{
+impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T> {
     #[inline]
     fn move_to_stable(&mut self) {
         self.map.move_to_stable();
@@ -113,6 +95,8 @@ where
     fn remove_from_stable(&mut self) {
         self.map.remove_from_stable()
     }
+
+    // TODO: also implement stable_drop_collection
 
     #[inline]
     unsafe fn stable_drop(self) {
@@ -124,6 +108,7 @@ where
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -156,11 +141,9 @@ mod tests {
         init_allocator(0);
 
         let set = SBTreeSet::<u32>::new();
-        let buf = set.write_to_vec().unwrap();
-        SBTreeSet::<u32>::read_from_buffer_copying_data(&buf).unwrap();
 
-        let buf = set.to_bytes();
-        SBTreeSet::<u32>::from_bytes(buf);
+        let buf = set.as_fixed_size_bytes();
+        SBTreeSet::<u32>::from_fixed_size_bytes(&buf);
     }
 
     #[test]

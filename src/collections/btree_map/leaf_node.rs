@@ -32,7 +32,7 @@ pub struct LeafBTreeNode<K, V> {
     _marker_v: PhantomData<V>,
 }
 
-impl<K: StableAllocated + Ord + Eq, V: StableAllocated> LeafBTreeNode<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> LeafBTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -374,7 +374,7 @@ impl<K, V> IBTreeNode for LeafBTreeNode<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord + Eq + Debug, V: StableAllocated + Debug> LeafBTreeNode<K, V>
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> LeafBTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,

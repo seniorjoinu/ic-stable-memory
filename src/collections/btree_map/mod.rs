@@ -19,7 +19,7 @@ pub const NODE_TYPE_LEAF: u8 = 255;
 pub const NODE_TYPE_OFFSET: usize = 0;
 
 mod internal_node;
-mod iter;
+pub mod iter;
 mod leaf_node;
 
 // LEFT CHILD - LESS THAN
@@ -31,7 +31,7 @@ pub struct SBTreeMap<K, V> {
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord + Eq, V: StableAllocated> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -44,65 +44,6 @@ where
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
-    }
-
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        let mut node = self.get_or_create_root();
-        let mut found_internal_node = None;
-
-        // lookup for the leaf that may contain the key
-        let mut leaf = loop {
-            match node {
-                BTreeNode::Internal(internal_node) => {
-                    let node_len = internal_node.read_len();
-                    let child_idx = match internal_node.binary_search(key, node_len) {
-                        Ok(idx) => {
-                            found_internal_node = Some((unsafe { internal_node.copy() }, idx));
-
-                            idx + 1
-                        }
-                        Err(idx) => idx,
-                    };
-
-                    let child_ptr = internal_node.read_child_ptr(child_idx);
-                    self._stack.push((internal_node, node_len, child_idx));
-
-                    node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
-                }
-                BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
-            }
-        };
-
-        let leaf_len = leaf.read_len();
-        let idx = leaf.binary_search(key, leaf_len).ok()?;
-
-        self.len -= 1;
-
-        // if possible to simply remove the key without violating - return early
-        if leaf_len > MIN_LEN_AFTER_SPLIT {
-            self._stack.clear();
-
-            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
-            leaf.write_len(leaf_len - 1);
-
-            if let Some((mut fin, i)) = found_internal_node {
-                fin.write_key(i, &leaf.read_key(0));
-            }
-
-            return Some(v);
-        };
-
-        let stack_top_frame = self.peek_stack();
-
-        // if the only node in the tree is the root - return early
-        if stack_top_frame.is_none() {
-            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
-            leaf.write_len(leaf_len - 1);
-
-            return Some(v);
-        }
-
-        self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node)
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -177,6 +118,65 @@ where
         None
     }
 
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let mut node = self.get_or_create_root();
+        let mut found_internal_node = None;
+
+        // lookup for the leaf that may contain the key
+        let mut leaf = loop {
+            match node {
+                BTreeNode::Internal(internal_node) => {
+                    let node_len = internal_node.read_len();
+                    let child_idx = match internal_node.binary_search(key, node_len) {
+                        Ok(idx) => {
+                            found_internal_node = Some((unsafe { internal_node.copy() }, idx));
+
+                            idx + 1
+                        }
+                        Err(idx) => idx,
+                    };
+
+                    let child_ptr = internal_node.read_child_ptr(child_idx);
+                    self._stack.push((internal_node, node_len, child_idx));
+
+                    node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
+                }
+                BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
+            }
+        };
+
+        let leaf_len = leaf.read_len();
+        let idx = leaf.binary_search(key, leaf_len).ok()?;
+
+        self.len -= 1;
+
+        // if possible to simply remove the key without violating - return early
+        if leaf_len > MIN_LEN_AFTER_SPLIT {
+            self._stack.clear();
+
+            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
+            leaf.write_len(leaf_len - 1);
+
+            if let Some((mut fin, i)) = found_internal_node {
+                fin.write_key(i, &leaf.read_key(0));
+            }
+
+            return Some(v);
+        };
+
+        let stack_top_frame = self.peek_stack();
+
+        // if the only node in the tree is the root - return early
+        if stack_top_frame.is_none() {
+            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
+            leaf.write_len(leaf_len - 1);
+
+            return Some(v);
+        }
+
+        self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node)
+    }
+
     #[inline]
     pub fn get_copy(&self, key: &K) -> Option<V> {
         let (leaf_node, idx) = self.lookup(key, false)?;
@@ -193,6 +193,16 @@ where
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
         SBTreeMapIter::<K, V>::new(self)
+    }
+
+    #[inline]
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     // WARNING: return_early == true will return nonsense leaf node and idx
@@ -1007,7 +1017,7 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + Eq + Debug, V: StableAllocated + Debug> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1066,7 +1076,7 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + Eq, V: StableAllocated> Default for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,

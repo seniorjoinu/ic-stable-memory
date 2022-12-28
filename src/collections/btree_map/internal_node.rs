@@ -25,7 +25,7 @@ pub struct InternalBTreeNode<K> {
     _marker_k: PhantomData<K>,
 }
 
-impl<K: StableAllocated + Ord + Eq> InternalBTreeNode<K>
+impl<K: StableAllocated + Ord> InternalBTreeNode<K>
 where
     [(); K::SIZE]: Sized,
 {
@@ -361,7 +361,7 @@ impl<K> IBTreeNode for InternalBTreeNode<K> {
     }
 }
 
-impl<K: StableAllocated + Ord + Eq + Debug> InternalBTreeNode<K>
+impl<K: StableAllocated + Ord + Debug> InternalBTreeNode<K>
 where
     [(); K::SIZE]: Sized,
 {

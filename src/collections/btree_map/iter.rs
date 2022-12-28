@@ -21,7 +21,7 @@ impl<'a, K, V> SBTreeMapIter<'a, K, V> {
         }
     }
 }
-impl<'a, K: StableAllocated + Ord + Eq, V: StableAllocated> ExactSizeIterator
+impl<'a, K: StableAllocated + Ord, V: StableAllocated> ExactSizeIterator
     for SBTreeMapIter<'a, K, V>
 where
     [(); K::SIZE]: Sized,
@@ -32,7 +32,7 @@ where
     }
 }
 
-impl<'a, K: StableAllocated + Ord + Eq, V: StableAllocated> DoubleEndedIterator
+impl<'a, K: StableAllocated + Ord, V: StableAllocated> DoubleEndedIterator
     for SBTreeMapIter<'a, K, V>
 where
     [(); K::SIZE]: Sized,
@@ -86,7 +86,7 @@ where
     }
 }
 
-impl<'a, K: StableAllocated + Ord + Eq, V: StableAllocated> Iterator for SBTreeMapIter<'a, K, V>
+impl<'a, K: StableAllocated + Ord, V: StableAllocated> Iterator for SBTreeMapIter<'a, K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
