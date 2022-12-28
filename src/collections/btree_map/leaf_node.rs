@@ -1,6 +1,6 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::{
-    B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
+    IBTreeNode, B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
@@ -40,24 +40,6 @@ where
     #[inline]
     const fn calc_size() -> usize {
         values_offset::<K>() + V::SIZE * CAPACITY
-    }
-
-    #[inline]
-    pub unsafe fn from_ptr(ptr: u64) -> Self {
-        Self {
-            ptr,
-            _marker_k: PhantomData::default(),
-            _marker_v: PhantomData::default(),
-        }
-    }
-
-    #[inline]
-    pub unsafe fn copy(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            _marker_k: PhantomData::default(),
-            _marker_v: PhantomData::default(),
-        }
     }
 
     pub fn create() -> Self {
@@ -294,11 +276,6 @@ where
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> u64 {
-        self.ptr
-    }
-
-    #[inline]
     pub fn write_key(&mut self, idx: usize, key: &[u8; K::SIZE]) {
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key);
     }
@@ -373,6 +350,27 @@ where
     #[inline]
     fn init_node_type(&mut self) {
         SSlice::_as_fixed_size_bytes_write(self.ptr, NODE_TYPE_OFFSET, NODE_TYPE_LEAF);
+    }
+}
+
+impl<K, V> IBTreeNode for LeafBTreeNode<K, V> {
+    #[inline]
+    fn from_ptr(ptr: u64) -> Self {
+        Self {
+            ptr,
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
+        }
+    }
+
+    #[inline]
+    fn as_ptr(&self) -> u64 {
+        self.ptr
+    }
+
+    #[inline]
+    unsafe fn copy(&self) -> Self {
+        Self::from_ptr(self.ptr)
     }
 }
 

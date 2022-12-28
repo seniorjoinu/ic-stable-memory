@@ -1,5 +1,5 @@
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
-use crate::collections::btree_map::{BTreeNode, SBTreeMap};
+use crate::collections::btree_map::{BTreeNode, IBTreeNode, SBTreeMap};
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::AsFixedSizeBytes;
 

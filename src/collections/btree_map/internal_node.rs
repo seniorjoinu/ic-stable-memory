@@ -1,5 +1,5 @@
 use crate::collections::btree_map::{
-    B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
+    IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
@@ -32,22 +32,6 @@ where
     #[inline]
     const fn calc_byte_size() -> usize {
         KEYS_OFFSET + K::SIZE * CAPACITY
-    }
-
-    #[inline]
-    pub unsafe fn from_ptr(ptr: u64) -> Self {
-        Self {
-            ptr,
-            _marker_k: PhantomData::default(),
-        }
-    }
-
-    #[inline]
-    pub unsafe fn copy(&self) -> Self {
-        Self {
-            ptr: self.ptr,
-            _marker_k: PhantomData::default(),
-        }
     }
 
     pub fn create_empty() -> Self {
@@ -279,9 +263,24 @@ where
         self.write_child_ptrs_from_buf(idx, buf);
     }
 
-    #[inline]
-    pub fn as_ptr(&self) -> u64 {
-        self.ptr
+    pub fn read_left_sibling<T: IBTreeNode>(&self, idx: usize) -> Option<T> {
+        if idx == 0 {
+            return None;
+        }
+
+        let left_sibling_ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(idx - 1));
+
+        unsafe { Some(T::from_ptr(left_sibling_ptr)) }
+    }
+
+    pub fn read_right_sibling<T: IBTreeNode>(&self, idx: usize, len: usize) -> Option<T> {
+        if idx == len {
+            return None;
+        }
+
+        let right_sibling_ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(idx + 1));
+
+        unsafe { Some(T::from_ptr(right_sibling_ptr)) }
     }
 
     #[inline]
@@ -339,6 +338,26 @@ where
     #[inline]
     fn init_node_type(&mut self) {
         SSlice::_as_fixed_size_bytes_write(self.ptr, NODE_TYPE_OFFSET, NODE_TYPE_INTERNAL)
+    }
+}
+
+impl<K> IBTreeNode for InternalBTreeNode<K> {
+    #[inline]
+    fn from_ptr(ptr: u64) -> Self {
+        Self {
+            ptr,
+            _marker_k: PhantomData::default(),
+        }
+    }
+
+    #[inline]
+    fn as_ptr(&self) -> u64 {
+        self.ptr
+    }
+
+    #[inline]
+    unsafe fn copy(&self) -> Self {
+        Self::from_ptr(self.ptr)
     }
 }
 

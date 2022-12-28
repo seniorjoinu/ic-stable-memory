@@ -101,329 +101,7 @@ where
             return Some(v);
         }
 
-        let (mut parent, parent_len, parent_idx) = unsafe { stack_top_frame.unwrap_unchecked() };
-
-        // try to steal an element from the left sibling
-        let has_left_sibling = parent_idx > 0;
-        if has_left_sibling {
-            let left_sibling_ptr =
-                u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
-            let mut left_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(left_sibling_ptr) };
-            let left_sibling_len = left_sibling.read_len();
-
-            // if possible to steal - return early
-            if left_sibling_len > MIN_LEN_AFTER_SPLIT {
-                leaf.steal_from_left(
-                    MIN_LEN_AFTER_SPLIT,
-                    &mut left_sibling,
-                    left_sibling_len,
-                    &mut parent,
-                    parent_idx - 1,
-                    None,
-                    &mut self._buf,
-                );
-
-                left_sibling.write_len(left_sibling_len - 1);
-
-                // idx + 1, because after rotation leaf has one more key added before
-                let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
-
-                if let Some((mut fin, i)) = found_internal_node {
-                    fin.write_key(i, &leaf.read_key(0));
-                }
-
-                self._stack.clear();
-
-                return Some(v);
-            }
-
-            // also try to do the same thing for right sibling if possible
-            let has_right_sibling = parent_idx < parent_len;
-            if has_right_sibling {
-                let right_sibling_ptr =
-                    u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-                let mut right_sibling =
-                    unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
-                let right_sibling_len = right_sibling.read_len();
-
-                // if possible to steal - return early
-                if right_sibling_len > MIN_LEN_AFTER_SPLIT {
-                    leaf.steal_from_right(
-                        MIN_LEN_AFTER_SPLIT,
-                        &mut right_sibling,
-                        right_sibling_len,
-                        &mut parent,
-                        parent_idx,
-                        None,
-                        &mut self._buf,
-                    );
-
-                    right_sibling.write_len(right_sibling_len - 1);
-
-                    // just idx, because after rotation leaf has one more key added to the end
-                    let v = leaf.remove_by_idx(idx, B, &mut self._buf);
-
-                    if let Some((mut fin, i)) = found_internal_node {
-                        fin.write_key(i, &leaf.read_key(0));
-                    }
-
-                    self._stack.clear();
-
-                    return Some(v);
-                }
-
-                // otherwise merge with right
-                leaf.merge_min_len(right_sibling, &mut self._buf);
-                // just idx, because leaf keys stay unchanged
-                let v = leaf.remove_by_idx(idx, CAPACITY - 1, &mut self._buf);
-                leaf.write_len(CAPACITY - 2);
-
-                if let Some((mut fin, i)) = found_internal_node {
-                    fin.write_key(i, &leaf.read_key(0));
-                }
-
-                self.handle_stack_after_merge(true, leaf);
-
-                return Some(v);
-            }
-
-            // if there is no right sibling - merge with left
-            left_sibling.merge_min_len(leaf, &mut self._buf);
-            // idx + MIN_LEN_AFTER_SPLIT, because all keys of leaf are added to the
-            // end of left_sibling
-            let v =
-                left_sibling.remove_by_idx(idx + MIN_LEN_AFTER_SPLIT, CAPACITY - 1, &mut self._buf);
-            left_sibling.write_len(CAPACITY - 2);
-
-            // no reason to handle 'found_internal_node', because the key is
-            // guaranteed to be in the nearest parent and left_sibling keys are all
-            // continue to present
-
-            self.handle_stack_after_merge(false, left_sibling);
-
-            return Some(v);
-        }
-
-        // if there is no left sibling - repeat all the steps for the right one
-        // parent_idx is 0
-        let right_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(1));
-        let mut right_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
-        let right_sibling_len = right_sibling.read_len();
-
-        // if possible to steal - return early
-        if right_sibling_len > MIN_LEN_AFTER_SPLIT {
-            leaf.steal_from_right(
-                MIN_LEN_AFTER_SPLIT,
-                &mut right_sibling,
-                right_sibling_len,
-                &mut parent,
-                0,
-                None,
-                &mut self._buf,
-            );
-
-            right_sibling.write_len(right_sibling_len - 1);
-
-            // just idx, because after the rotation the leaf has one more key added to the end
-            let v = leaf.remove_by_idx(idx, B, &mut self._buf);
-
-            if let Some((mut fin, i)) = found_internal_node {
-                fin.write_key(i, &leaf.read_key(0));
-            }
-
-            self._stack.clear();
-
-            return Some(v);
-        }
-
-        // otherwise merge with right
-        leaf.merge_min_len(right_sibling, &mut self._buf);
-
-        // just idx, because leaf keys stay unchanged
-        let v = leaf.remove_by_idx(idx, CAPACITY - 1, &mut self._buf);
-        leaf.write_len(CAPACITY - 2);
-
-        if let Some((mut fin, i)) = found_internal_node {
-            fin.write_key(i, &leaf.read_key(0));
-        }
-
-        self.handle_stack_after_merge(true, leaf);
-
-        Some(v)
-    }
-
-    fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
-        let mut prev_node = BTreeNode::Leaf(leaf);
-
-        while let Some((mut node, node_len, remove_idx)) = self._stack.pop() {
-            let (idx_to_remove, child_idx_to_remove) = if merged_right {
-                (remove_idx, remove_idx + 1)
-            } else {
-                (remove_idx - 1, remove_idx)
-            };
-
-            // if the node has enough keys, return early
-            if node_len > MIN_LEN_AFTER_SPLIT {
-                node.remove_key(idx_to_remove, node_len, &mut self._buf);
-                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
-                node.write_len(node_len - 1);
-
-                self._stack.clear();
-
-                return;
-            }
-
-            let stack_top_frame = self.peek_stack();
-
-            // if there is no parent, return early
-            if stack_top_frame.is_none() {
-                // if the root has only one key, make child the new root
-                if node_len == 1 {
-                    node.destroy();
-                    self.root = Some(prev_node);
-
-                    return;
-                }
-
-                // otherwise simply remove and return
-                node.remove_key(idx_to_remove, node_len, &mut self._buf);
-                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
-                node.write_len(node_len - 1);
-
-                return;
-            }
-
-            let (mut parent, parent_len, parent_idx) =
-                unsafe { stack_top_frame.unwrap_unchecked() };
-
-            let has_left_sibling = parent_idx > 0;
-            if has_left_sibling {
-                let left_sibling_ptr =
-                    u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
-                let mut left_sibling =
-                    unsafe { InternalBTreeNode::<K>::from_ptr(left_sibling_ptr) };
-                let left_sibling_len = left_sibling.read_len();
-
-                // steal from left if it is possible
-                if left_sibling_len > MIN_LEN_AFTER_SPLIT {
-                    node.steal_from_left(
-                        node_len,
-                        &mut left_sibling,
-                        left_sibling_len,
-                        &mut parent,
-                        parent_idx - 1,
-                        None,
-                        &mut self._buf,
-                    );
-                    left_sibling.write_len(left_sibling_len - 1);
-                    node.remove_key(idx_to_remove + 1, B, &mut self._buf);
-                    node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
-
-                    self._stack.clear();
-
-                    return;
-                }
-
-                let has_right_sibling = parent_idx < parent_len;
-                if has_right_sibling {
-                    let right_sibling_ptr =
-                        u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-                    let mut right_sibling =
-                        unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
-                    let right_sibling_len = right_sibling.read_len();
-
-                    // steal from right if it's possible
-                    if right_sibling_len > MIN_LEN_AFTER_SPLIT {
-                        node.steal_from_right(
-                            node_len,
-                            &mut right_sibling,
-                            right_sibling_len,
-                            &mut parent,
-                            parent_idx,
-                            None,
-                            &mut self._buf,
-                        );
-                        right_sibling.write_len(right_sibling_len - 1);
-                        node.remove_key(idx_to_remove, B, &mut self._buf);
-                        node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
-
-                        self._stack.clear();
-
-                        return;
-                    }
-
-                    // otherwise merge with right
-                    let mid_element = parent.read_key(parent_idx);
-                    node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
-                    node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
-                    node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
-                    node.write_len(CAPACITY - 1);
-
-                    merged_right = true;
-                    prev_node = BTreeNode::Internal(node);
-
-                    continue;
-                }
-
-                // otherwise merge with left
-                let mid_element = parent.read_key(parent_idx - 1);
-                left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
-                left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
-                left_sibling.remove_child_ptr(
-                    child_idx_to_remove + B,
-                    CHILDREN_CAPACITY,
-                    &mut self._buf,
-                );
-                left_sibling.write_len(CAPACITY - 1);
-
-                merged_right = false;
-                prev_node = BTreeNode::Internal(left_sibling);
-
-                continue;
-            }
-
-            // otherwise merge with right
-            // parent_idx == 0
-            let right_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(1));
-            let mut right_sibling = unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
-            let right_sibling_len = right_sibling.read_len();
-
-            // steal from right if it's possible
-            if right_sibling_len > MIN_LEN_AFTER_SPLIT {
-                node.steal_from_right(
-                    node_len,
-                    &mut right_sibling,
-                    right_sibling_len,
-                    &mut parent,
-                    0,
-                    None,
-                    &mut self._buf,
-                );
-                right_sibling.write_len(right_sibling_len - 1);
-                node.remove_key(idx_to_remove, B, &mut self._buf);
-                node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
-
-                self._stack.clear();
-
-                return;
-            }
-
-            // otherwise merge with right
-            let mid_element = parent.read_key(parent_idx);
-            node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
-            node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
-            node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
-            node.write_len(CAPACITY - 1);
-
-            merged_right = true;
-            prev_node = BTreeNode::Internal(node);
-        }
-    }
-
-    fn peek_stack(&self) -> Option<(InternalBTreeNode<K>, usize, usize)> {
-        self._stack
-            .last()
-            .map(|(n, l, i)| (unsafe { n.copy() }, *l, *i))
+        self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node)
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -664,82 +342,49 @@ where
 
         let (mut parent, parent_len, parent_idx) = unsafe { stack_top_frame.unwrap_unchecked() };
 
-        let has_left_sibling = parent_idx > 0;
-        if !has_left_sibling {
-            let has_right_sibling = parent_idx < parent_len;
+        if let Some(mut left_sibling) = parent.read_left_sibling::<LeafBTreeNode<K, V>>(parent_idx)
+        {
+            let left_sibling_len = left_sibling.read_len();
 
-            if !has_right_sibling {
-                return false;
+            // if it is possible to pass to the left sibling - do that
+            if left_sibling_len < CAPACITY {
+                self.pass_to_left_sibling_leaf(
+                    &mut parent,
+                    parent_idx,
+                    leaf_node,
+                    &mut left_sibling,
+                    left_sibling_len,
+                    insert_idx,
+                    key,
+                    value,
+                );
+
+                return true;
             }
+        }
 
-            let right_sibling_ptr =
-                u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-            let mut right_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
+        if let Some(mut right_sibling) =
+            parent.read_right_sibling::<LeafBTreeNode<K, V>>(parent_idx, parent_len)
+        {
             let right_sibling_len = right_sibling.read_len();
 
-            if right_sibling_len == CAPACITY {
-                return false;
+            if right_sibling_len < CAPACITY {
+                self.pass_to_right_sibling_leaf(
+                    &mut parent,
+                    parent_idx,
+                    leaf_node,
+                    &mut right_sibling,
+                    right_sibling_len,
+                    insert_idx,
+                    key,
+                    value,
+                );
+
+                return true;
             }
-
-            self.pass_to_right_sibling_leaf(
-                &mut parent,
-                parent_idx,
-                leaf_node,
-                &mut right_sibling,
-                right_sibling_len,
-                insert_idx,
-                key,
-                value,
-            );
-
-            return true;
         }
 
-        let left_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
-        let mut left_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(left_sibling_ptr) };
-        let left_sibling_len = left_sibling.read_len();
-
-        // if it is possible to pass to the left sibling - do that
-        if left_sibling_len < CAPACITY {
-            self.pass_to_left_sibling_leaf(
-                &mut parent,
-                parent_idx,
-                leaf_node,
-                &mut left_sibling,
-                left_sibling_len,
-                insert_idx,
-                key,
-                value,
-            );
-
-            return true;
-        }
-
-        let has_right_sibling = parent_idx < parent_len;
-        if !has_right_sibling {
-            return false;
-        }
-
-        let right_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-        let mut right_sibling = unsafe { LeafBTreeNode::<K, V>::from_ptr(right_sibling_ptr) };
-        let right_sibling_len = right_sibling.read_len();
-
-        if right_sibling_len == CAPACITY {
-            return false;
-        }
-
-        self.pass_to_right_sibling_leaf(
-            &mut parent,
-            parent_idx,
-            leaf_node,
-            &mut right_sibling,
-            right_sibling_len,
-            insert_idx,
-            key,
-            value,
-        );
-
-        true
+        false
     }
 
     fn pass_to_right_sibling_leaf(
@@ -808,81 +453,48 @@ where
 
         let (mut parent, parent_len, parent_idx) = unsafe { stack_top_frame.unwrap_unchecked() };
 
-        let has_left_sibling = parent_idx > 0;
-        if !has_left_sibling {
-            let has_right_sibling = parent_idx < parent_len;
+        if let Some(mut left_sibling) = parent.read_left_sibling::<InternalBTreeNode<K>>(parent_idx)
+        {
+            let left_sibling_len = left_sibling.read_len();
 
-            if !has_right_sibling {
-                return false;
+            if left_sibling_len < CAPACITY {
+                self.pass_to_left_sibling_internal(
+                    &mut parent,
+                    parent_idx,
+                    internal_node,
+                    &mut left_sibling,
+                    left_sibling_len,
+                    idx,
+                    key,
+                    child_ptr,
+                );
+
+                return true;
             }
+        }
 
-            let right_sibling_ptr =
-                u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-            let mut right_sibling = unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
+        if let Some(mut right_sibling) =
+            parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
+        {
             let right_sibling_len = right_sibling.read_len();
 
-            if right_sibling_len == CAPACITY {
-                return false;
+            if right_sibling_len < CAPACITY {
+                self.pass_to_right_sibling_internal(
+                    &mut parent,
+                    parent_idx,
+                    internal_node,
+                    &mut right_sibling,
+                    right_sibling_len,
+                    idx,
+                    key,
+                    child_ptr,
+                );
+
+                return true;
             }
-
-            self.pass_to_right_sibling_internal(
-                &mut parent,
-                parent_idx,
-                internal_node,
-                &mut right_sibling,
-                right_sibling_len,
-                idx,
-                key,
-                child_ptr,
-            );
-
-            return true;
         }
 
-        let left_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx - 1));
-        let mut left_sibling = unsafe { InternalBTreeNode::<K>::from_ptr(left_sibling_ptr) };
-        let left_sibling_len = left_sibling.read_len();
-
-        if left_sibling_len < CAPACITY {
-            self.pass_to_left_sibling_internal(
-                &mut parent,
-                parent_idx,
-                internal_node,
-                &mut left_sibling,
-                left_sibling_len,
-                idx,
-                key,
-                child_ptr,
-            );
-
-            return true;
-        }
-
-        let has_right_sibling = parent_idx < parent_len;
-        if !has_right_sibling {
-            return false;
-        }
-
-        let right_sibling_ptr = u64::from_fixed_size_bytes(&parent.read_child_ptr(parent_idx + 1));
-        let mut right_sibling = unsafe { InternalBTreeNode::<K>::from_ptr(right_sibling_ptr) };
-        let right_sibling_len = right_sibling.read_len();
-
-        if right_sibling_len == CAPACITY {
-            return false;
-        }
-
-        self.pass_to_right_sibling_internal(
-            &mut parent,
-            parent_idx,
-            internal_node,
-            &mut right_sibling,
-            right_sibling_len,
-            idx,
-            key,
-            child_ptr,
-        );
-
-        true
+        false
     }
 
     fn pass_to_right_sibling_internal(
@@ -935,6 +547,452 @@ where
         let first = Some((key, child_ptr));
         ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, first, &mut self._buf);
         ls.write_len(ls_len + 1);
+    }
+
+    fn steal_from_sibling_leaf_or_merge(
+        &mut self,
+        stack_top_frame: Option<(InternalBTreeNode<K>, usize, usize)>,
+        mut leaf: LeafBTreeNode<K, V>,
+        idx: usize,
+        found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+    ) -> Option<V> {
+        let (mut parent, parent_len, parent_idx) = unsafe { stack_top_frame.unwrap_unchecked() };
+
+        if let Some(mut left_sibling) = parent.read_left_sibling::<LeafBTreeNode<K, V>>(parent_idx)
+        {
+            let left_sibling_len = left_sibling.read_len();
+
+            // if possible to steal - return early
+            if left_sibling_len > MIN_LEN_AFTER_SPLIT {
+                self.steal_from_left_sibling_leaf(
+                    &mut leaf,
+                    &mut left_sibling,
+                    left_sibling_len,
+                    &mut parent,
+                    parent_idx - 1,
+                    found_internal_node,
+                );
+
+                // idx + 1, because after the rotation the leaf has one more key added before
+                let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
+
+                return Some(v);
+            }
+
+            if let Some(mut right_sibling) =
+                parent.read_right_sibling::<LeafBTreeNode<K, V>>(parent_idx, parent_len)
+            {
+                let right_sibling_len = right_sibling.read_len();
+
+                // if possible to steal - return early
+                if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    self.steal_from_right_sibling_leaf(
+                        &mut leaf,
+                        &mut right_sibling,
+                        right_sibling_len,
+                        &mut parent,
+                        parent_idx,
+                        found_internal_node,
+                    );
+
+                    // just idx, because after rotation leaf has one more key added to the end
+                    let v = leaf.remove_by_idx(idx, B, &mut self._buf);
+
+                    return Some(v);
+                }
+
+                return self.merge_with_right_sibling_leaf(
+                    leaf,
+                    right_sibling,
+                    idx,
+                    found_internal_node,
+                );
+            }
+
+            return self.merge_with_left_sibling_leaf(leaf, left_sibling, idx);
+        }
+
+        if let Some(mut right_sibling) =
+            parent.read_right_sibling::<LeafBTreeNode<K, V>>(parent_idx, parent_len)
+        {
+            let right_sibling_len = right_sibling.read_len();
+
+            // if possible to steal - return early
+            if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                self.steal_from_right_sibling_leaf(
+                    &mut leaf,
+                    &mut right_sibling,
+                    right_sibling_len,
+                    &mut parent,
+                    parent_idx,
+                    found_internal_node,
+                );
+
+                // just idx, because after rotation leaf has one more key added to the end
+                let v = leaf.remove_by_idx(idx, B, &mut self._buf);
+
+                return Some(v);
+            }
+
+            return self.merge_with_right_sibling_leaf(
+                leaf,
+                right_sibling,
+                idx,
+                found_internal_node,
+            );
+        }
+
+        unreachable!();
+    }
+
+    fn merge_with_right_sibling_leaf(
+        &mut self,
+        mut leaf: LeafBTreeNode<K, V>,
+        right_sibling: LeafBTreeNode<K, V>,
+        idx: usize,
+        found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+    ) -> Option<V> {
+        // otherwise merge with right
+        leaf.merge_min_len(right_sibling, &mut self._buf);
+
+        // just idx, because leaf keys stay unchanged
+        let v = leaf.remove_by_idx(idx, CAPACITY - 1, &mut self._buf);
+        leaf.write_len(CAPACITY - 2);
+
+        if let Some((mut fin, i)) = found_internal_node {
+            fin.write_key(i, &leaf.read_key(0));
+        }
+
+        self.handle_stack_after_merge(true, leaf);
+
+        Some(v)
+    }
+
+    fn merge_with_left_sibling_leaf(
+        &mut self,
+        leaf: LeafBTreeNode<K, V>,
+        mut left_sibling: LeafBTreeNode<K, V>,
+        idx: usize,
+    ) -> Option<V> {
+        // if there is no right sibling - merge with left
+        left_sibling.merge_min_len(leaf, &mut self._buf);
+        // idx + MIN_LEN_AFTER_SPLIT, because all keys of leaf are added to the
+        // end of left_sibling
+        let v = left_sibling.remove_by_idx(idx + MIN_LEN_AFTER_SPLIT, CAPACITY - 1, &mut self._buf);
+        left_sibling.write_len(CAPACITY - 2);
+
+        // no reason to handle 'found_internal_node', because the key is
+        // guaranteed to be in the nearest parent and left_sibling keys are all
+        // continue to present
+
+        self.handle_stack_after_merge(false, left_sibling);
+
+        Some(v)
+    }
+
+    fn steal_from_left_sibling_leaf(
+        &mut self,
+        leaf: &mut LeafBTreeNode<K, V>,
+        left_sibling: &mut LeafBTreeNode<K, V>,
+        left_sibling_len: usize,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+        found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+    ) {
+        leaf.steal_from_left(
+            MIN_LEN_AFTER_SPLIT,
+            left_sibling,
+            left_sibling_len,
+            parent,
+            parent_idx,
+            None,
+            &mut self._buf,
+        );
+
+        left_sibling.write_len(left_sibling_len - 1);
+
+        if let Some((mut fin, i)) = found_internal_node {
+            fin.write_key(i, &leaf.read_key(0));
+        }
+
+        self._stack.clear();
+    }
+
+    fn steal_from_right_sibling_leaf(
+        &mut self,
+        leaf: &mut LeafBTreeNode<K, V>,
+        right_sibling: &mut LeafBTreeNode<K, V>,
+        right_sibling_len: usize,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+        found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+    ) {
+        leaf.steal_from_right(
+            MIN_LEN_AFTER_SPLIT,
+            right_sibling,
+            right_sibling_len,
+            parent,
+            parent_idx,
+            None,
+            &mut self._buf,
+        );
+
+        right_sibling.write_len(right_sibling_len - 1);
+
+        if let Some((mut fin, i)) = found_internal_node {
+            fin.write_key(i, &leaf.read_key(0));
+        }
+
+        self._stack.clear();
+    }
+
+    fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
+        let mut prev_node = BTreeNode::Leaf(leaf);
+
+        while let Some((mut node, node_len, remove_idx)) = self._stack.pop() {
+            let (idx_to_remove, child_idx_to_remove) = if merged_right {
+                (remove_idx, remove_idx + 1)
+            } else {
+                (remove_idx - 1, remove_idx)
+            };
+
+            // if the node has enough keys, return early
+            if node_len > MIN_LEN_AFTER_SPLIT {
+                node.remove_key(idx_to_remove, node_len, &mut self._buf);
+                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.write_len(node_len - 1);
+
+                self._stack.clear();
+
+                return;
+            }
+
+            let stack_top_frame = self.peek_stack();
+
+            // if there is no parent, return early
+            if stack_top_frame.is_none() {
+                // if the root has only one key, make child the new root
+                if node_len == 1 {
+                    node.destroy();
+                    self.root = Some(prev_node);
+
+                    return;
+                }
+
+                // otherwise simply remove and return
+                node.remove_key(idx_to_remove, node_len, &mut self._buf);
+                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.write_len(node_len - 1);
+
+                return;
+            }
+
+            let (mut parent, parent_len, parent_idx) =
+                unsafe { stack_top_frame.unwrap_unchecked() };
+
+            if let Some(mut left_sibling) =
+                parent.read_left_sibling::<InternalBTreeNode<K>>(parent_idx)
+            {
+                let left_sibling_len = left_sibling.read_len();
+
+                // steal from left if it is possible
+                if left_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    self.steal_from_left_sibling_internal(
+                        node,
+                        node_len,
+                        idx_to_remove,
+                        child_idx_to_remove,
+                        left_sibling,
+                        left_sibling_len,
+                        parent,
+                        parent_idx,
+                    );
+
+                    return;
+                }
+
+                if let Some(mut right_sibling) =
+                    parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
+                {
+                    let right_sibling_len = right_sibling.read_len();
+
+                    // steal from right if it's possible
+                    if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                        self.steal_from_right_sibling_internal(
+                            node,
+                            node_len,
+                            idx_to_remove,
+                            child_idx_to_remove,
+                            right_sibling,
+                            right_sibling_len,
+                            parent,
+                            parent_idx,
+                        );
+
+                        return;
+                    }
+
+                    // otherwise merge with right
+                    self.merge_with_right_sibling_internal(
+                        &mut node,
+                        idx_to_remove,
+                        child_idx_to_remove,
+                        right_sibling,
+                        &mut parent,
+                        parent_idx,
+                    );
+
+                    merged_right = true;
+                    prev_node = BTreeNode::Internal(node);
+
+                    continue;
+                }
+
+                // otherwise merge with left
+                self.merge_with_left_sibling_internal(
+                    node,
+                    idx_to_remove,
+                    child_idx_to_remove,
+                    &mut left_sibling,
+                    &mut parent,
+                    parent_idx,
+                );
+
+                merged_right = false;
+                prev_node = BTreeNode::Internal(left_sibling);
+
+                continue;
+            }
+
+            if let Some(right_sibling) =
+                parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
+            {
+                let right_sibling_len = right_sibling.read_len();
+
+                // steal from right if it's possible
+                if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    self.steal_from_right_sibling_internal(
+                        node,
+                        node_len,
+                        idx_to_remove,
+                        child_idx_to_remove,
+                        right_sibling,
+                        right_sibling_len,
+                        parent,
+                        parent_idx,
+                    );
+
+                    return;
+                }
+
+                // otherwise merge with right
+                self.merge_with_right_sibling_internal(
+                    &mut node,
+                    idx_to_remove,
+                    child_idx_to_remove,
+                    right_sibling,
+                    &mut parent,
+                    parent_idx,
+                );
+
+                merged_right = true;
+                prev_node = BTreeNode::Internal(node);
+
+                continue;
+            }
+        }
+    }
+
+    fn steal_from_right_sibling_internal(
+        &mut self,
+        mut node: InternalBTreeNode<K>,
+        node_len: usize,
+        idx_to_remove: usize,
+        child_idx_to_remove: usize,
+        mut right_sibling: InternalBTreeNode<K>,
+        right_sibling_len: usize,
+        mut parent: InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        node.steal_from_right(
+            node_len,
+            &mut right_sibling,
+            right_sibling_len,
+            &mut parent,
+            parent_idx,
+            None,
+            &mut self._buf,
+        );
+        right_sibling.write_len(right_sibling_len - 1);
+        node.remove_key(idx_to_remove, B, &mut self._buf);
+        node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
+
+        self._stack.clear();
+    }
+
+    fn steal_from_left_sibling_internal(
+        &mut self,
+        mut node: InternalBTreeNode<K>,
+        node_len: usize,
+        idx_to_remove: usize,
+        child_idx_to_remove: usize,
+        mut left_sibling: InternalBTreeNode<K>,
+        left_sibling_len: usize,
+        mut parent: InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        node.steal_from_left(
+            node_len,
+            &mut left_sibling,
+            left_sibling_len,
+            &mut parent,
+            parent_idx - 1,
+            None,
+            &mut self._buf,
+        );
+        left_sibling.write_len(left_sibling_len - 1);
+        node.remove_key(idx_to_remove + 1, B, &mut self._buf);
+        node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
+
+        self._stack.clear();
+    }
+
+    fn merge_with_right_sibling_internal(
+        &mut self,
+        node: &mut InternalBTreeNode<K>,
+        idx_to_remove: usize,
+        child_idx_to_remove: usize,
+        right_sibling: InternalBTreeNode<K>,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        let mid_element = parent.read_key(parent_idx);
+        node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
+        node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
+        node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
+        node.write_len(CAPACITY - 1);
+    }
+
+    fn merge_with_left_sibling_internal(
+        &mut self,
+        node: InternalBTreeNode<K>,
+        idx_to_remove: usize,
+        child_idx_to_remove: usize,
+        left_sibling: &mut InternalBTreeNode<K>,
+        parent: &mut InternalBTreeNode<K>,
+        parent_idx: usize,
+    ) {
+        let mid_element = parent.read_key(parent_idx - 1);
+        left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
+        left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
+        left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
+        left_sibling.write_len(CAPACITY - 1);
+    }
+
+    fn peek_stack(&self) -> Option<(InternalBTreeNode<K>, usize, usize)> {
+        self._stack
+            .last()
+            .map(|(n, l, i)| (unsafe { n.copy() }, *l, *i))
     }
 
     fn get_or_create_root(&mut self) -> BTreeNode<K, V> {
@@ -1015,6 +1073,12 @@ where
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub trait IBTreeNode {
+    fn from_ptr(ptr: u64) -> Self;
+    fn as_ptr(&self) -> u64;
+    unsafe fn copy(&self) -> Self;
 }
 
 enum BTreeNode<K, V> {
