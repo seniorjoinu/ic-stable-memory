@@ -1,6 +1,7 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::SSlice;
@@ -1075,8 +1076,63 @@ where
     }
 }
 
+impl<K, V> FixedSize for SBTreeMap<K, V> {
+    const SIZE: usize = u64::SIZE * 2;
+}
+
+impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+        let mut buf = [0u8; Self::SIZE];
+
+        let ptr = if let Some(root) = &self.root {
+            root.as_ptr().as_fixed_size_bytes()
+        } else {
+            EMPTY_PTR.as_fixed_size_bytes()
+        };
+
+        buf[..u64::SIZE].copy_from_slice(&ptr);
+        buf[u64::SIZE..].copy_from_slice(&self.len.as_fixed_size_bytes());
+
+        buf
+    }
+
+    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
+        let mut ptr_buf = [0u8; u64::SIZE];
+        let mut len_buf = [0u8; u64::SIZE];
+
+        ptr_buf.copy_from_slice(&buf[..u64::SIZE]);
+        len_buf.copy_from_slice(&buf[u64::SIZE..]);
+
+        let ptr = u64::from_fixed_size_bytes(&ptr_buf);
+        let len = u64::from_fixed_size_bytes(&len_buf);
+
+        Self {
+            root: if ptr == EMPTY_PTR {
+                None
+            } else {
+                Some(BTreeNode::from_ptr(ptr))
+            },
+            len,
+            _buf: Vec::default(),
+            _stack: Vec::default(),
+        }
+    }
+}
+
+impl<K, V> StableAllocated for SBTreeMap<K, V> {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    unsafe fn stable_drop(self) {
+        // TODO: impl drop and drop_collection
+    }
+}
+
 pub trait IBTreeNode {
-    fn from_ptr(ptr: u64) -> Self;
+    unsafe fn from_ptr(ptr: u64) -> Self;
     fn as_ptr(&self) -> u64;
     unsafe fn copy(&self) -> Self;
 }
@@ -1086,11 +1142,7 @@ enum BTreeNode<K, V> {
     Leaf(LeafBTreeNode<K, V>),
 }
 
-impl<K: StableAllocated + Ord + Eq, V: StableAllocated> BTreeNode<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K, V> BTreeNode<K, V> {
     fn from_ptr(ptr: u64) -> Self {
         let node_type: u8 = SSlice::_as_fixed_size_bytes_read(ptr, NODE_TYPE_OFFSET);
 

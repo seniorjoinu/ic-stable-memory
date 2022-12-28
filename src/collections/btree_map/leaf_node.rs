@@ -355,7 +355,7 @@ where
 
 impl<K, V> IBTreeNode for LeafBTreeNode<K, V> {
     #[inline]
-    fn from_ptr(ptr: u64) -> Self {
+    unsafe fn from_ptr(ptr: u64) -> Self {
         Self {
             ptr,
             _marker_k: PhantomData::default(),
