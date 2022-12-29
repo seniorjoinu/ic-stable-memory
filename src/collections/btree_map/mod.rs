@@ -4,7 +4,7 @@ use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::SSlice;
+use crate::{isoprint, SSlice};
 use std::fmt::Debug;
 
 pub const B: usize = 8;
@@ -1023,18 +1023,18 @@ where
     [(); V::SIZE]: Sized,
 {
     pub fn debug_print_stack(&self) {
-        println!(
+        isoprint(&format!(
             "STACK: {:?}",
             self._stack
                 .iter()
                 .map(|(p, l, i)| (p.as_ptr(), *l, *i))
                 .collect::<Vec<_>>()
-        );
+        ));
     }
 
     pub fn debug_print(&self) {
         if self.len == 0 {
-            println!("EMPTY");
+            isoprint("EMPTY BTREEMAP");
             return;
         }
 
@@ -1043,7 +1043,7 @@ where
 
         loop {
             Self::print_level(&level);
-            println!();
+            isoprint("");
 
             let mut new_level = Vec::new();
             for node in level {
@@ -1067,12 +1067,16 @@ where
     }
 
     fn print_level(level: &Vec<BTreeNode<K, V>>) {
+        let mut result = String::new();
+
         for node in level {
-            match node {
-                BTreeNode::Internal(i) => i.debug_print(),
-                BTreeNode::Leaf(l) => l.debug_print(),
+            result += &match node {
+                BTreeNode::Internal(i) => i.to_string(),
+                BTreeNode::Leaf(l) => l.to_string(),
             }
         }
+
+        isoprint(&result);
     }
 }
 
@@ -1129,7 +1133,11 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
     }
 }
 
-impl<K, V> StableAllocated for SBTreeMap<K, V> {
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
     #[inline]
     fn move_to_stable(&mut self) {}
 
@@ -1137,7 +1145,47 @@ impl<K, V> StableAllocated for SBTreeMap<K, V> {
     fn remove_from_stable(&mut self) {}
 
     unsafe fn stable_drop(self) {
-        // TODO: impl drop and drop_collection
+        if self.root.is_none() {
+            return;
+        }
+
+        let mut nodes = vec![unsafe { self.root.unwrap_unchecked() }];
+        let mut new_nodes = Vec::new();
+
+        loop {
+            if nodes.is_empty() {
+                return;
+            }
+
+            for i in 0..nodes.len() {
+                match unsafe { nodes.pop().unwrap_unchecked() } {
+                    BTreeNode::Internal(internal) => {
+                        for j in 0..(internal.read_len() + 1) {
+                            let child_ptr_raw = internal.read_child_ptr(j);
+                            let child_ptr = u64::from_fixed_size_bytes(&child_ptr_raw);
+                            let child = BTreeNode::<K, V>::from_ptr(child_ptr);
+
+                            new_nodes.push(child);
+                        }
+
+                        nodes = new_nodes;
+                        new_nodes = Vec::new();
+                        internal.destroy();
+                    }
+                    BTreeNode::Leaf(leaf) => {
+                        for j in 0..leaf.read_len() {
+                            let mut key = K::from_fixed_size_bytes(&leaf.read_key(j));
+                            let mut value = V::from_fixed_size_bytes(&leaf.read_value(j));
+
+                            key.remove_from_stable();
+                            value.remove_from_stable();
+
+                            leaf.destroy();
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

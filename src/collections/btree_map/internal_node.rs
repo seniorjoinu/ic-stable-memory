@@ -5,7 +5,7 @@ use crate::collections::btree_map::{
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, isoprint, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -365,24 +365,26 @@ impl<K: StableAllocated + Ord + Debug> InternalBTreeNode<K>
 where
     [(); K::SIZE]: Sized,
 {
-    pub fn debug_print(&self) {
-        print!(
+    pub fn to_string(&self) -> String {
+        let mut result = format!(
             "InternalBTreeNode(&{}, {})[",
             self.as_ptr(),
             self.read_len()
         );
         for i in 0..self.read_len() {
-            print!(
+            result += &format!(
                 "*({}), ",
                 u64::from_fixed_size_bytes(&self.read_child_ptr(i))
             );
-            print!("{:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
+            result += &format!("{:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
         }
 
-        print!(
+        result += &format!(
             "*({})]",
             u64::from_fixed_size_bytes(&self.read_child_ptr(self.read_len()))
         );
+        
+        result
     }
 }
 
@@ -409,7 +411,7 @@ mod tests {
         }
 
         node.write_len(CAPACITY);
-        node.debug_print();
+        println!("{}", node.to_string());
         println!();
 
         for i in 0..CAPACITY {
@@ -433,7 +435,7 @@ mod tests {
         node.push_child_ptr(&1u64.as_fixed_size_bytes(), CAPACITY);
 
         println!("before split: ");
-        node.debug_print();
+        println!("{}", node.to_string());
         println!();
 
         let (mut right, mid) = node.split_max_len(&mut buf);
@@ -442,8 +444,8 @@ mod tests {
         right.write_len(MIN_LEN_AFTER_SPLIT);
 
         println!("after split: ");
-        node.debug_print();
-        right.debug_print();
+        println!("{}", node.to_string());
+        println!("{}", right.to_string());
 
         assert_eq!(node.read_len(), MIN_LEN_AFTER_SPLIT);
         assert_eq!(right.read_len(), MIN_LEN_AFTER_SPLIT);

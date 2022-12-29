@@ -201,8 +201,9 @@ where
         SSlice::_write_bytes(self.ptr, self.len() * T::SIZE, &buf);
 
         self.len += other.len();
+        other.len = 0;
 
-        unsafe { other.stable_drop_collection() };
+        unsafe { other.stable_drop() };
     }
 
     pub fn binary_search_by<FN>(&self, mut f: FN) -> Result<usize, usize>
@@ -257,16 +258,6 @@ where
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
-
-    pub unsafe fn stable_drop_collection(&mut self) {
-        if self.ptr != EMPTY_PTR {
-            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
-
-            deallocate(slice);
-
-            self.ptr = EMPTY_PTR;
-        }
-    }
 }
 
 impl<T> Default for SVec<T> {
@@ -283,11 +274,11 @@ where
     fn from(mut svec: SVec<T>) -> Self {
         let mut vec = Self::new();
 
-        for elem in svec.iter() {
+        while let Some(elem) = svec.pop() {
             vec.push(elem);
         }
 
-        unsafe { svec.stable_drop_collection() };
+        unsafe { svec.stable_drop() };
 
         vec
     }
@@ -374,11 +365,15 @@ where
     fn remove_from_stable(&mut self) {}
 
     unsafe fn stable_drop(mut self) {
-        for elem in self.iter() {
-            elem.stable_drop();
-        }
+        if self.ptr != EMPTY_PTR {
+            for elem in self.iter() {
+                elem.stable_drop();
+            }
 
-        self.stable_drop_collection();
+            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+
+            deallocate(slice);
+        }
     }
 }
 

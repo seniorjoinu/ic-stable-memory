@@ -39,11 +39,6 @@ where
         self.inner.get_copy(0)
     }
 
-    #[inline]
-    pub unsafe fn stable_drop_collection(mut self) {
-        self.inner.stable_drop_collection();
-    }
-
     pub fn push(&mut self, elem: T) {
         self.inner.push(elem);
         let len = self.len();
@@ -52,13 +47,14 @@ where
         }
 
         let mut idx = len - 1;
-        let elem = self.inner.get_copy(idx).unwrap();
+        let elem = unsafe { self.inner.get_copy(idx).unwrap_unchecked() };
 
         loop {
             let parent_idx = idx / 2;
-            let parent = self.inner.get_copy(parent_idx).unwrap();
+            let parent = unsafe { self.inner.get_copy(parent_idx).unwrap_unchecked() };
 
             if elem > parent {
+                // TODO: optimize this swap and the one in pop
                 self.inner.swap(idx, parent_idx);
                 idx = parent_idx;
 
@@ -88,9 +84,8 @@ where
         loop {
             let parent = self.inner.get_copy(idx).unwrap();
 
-            // FIXME: check overflow
+            let right_child_idx = (idx + 1).checked_mul(2).unwrap();
             let left_child_idx = (idx + 1) * 2 - 1;
-            let right_child_idx = (idx + 1) * 2;
 
             if left_child_idx > last_idx {
                 return Some(elem);

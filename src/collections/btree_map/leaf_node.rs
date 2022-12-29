@@ -5,7 +5,7 @@ use crate::collections::btree_map::{
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, isoprint, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -379,18 +379,20 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
-    pub fn debug_print(&self) {
-        print!("LeafBTreeNode(&{}, {})[", self.as_ptr(), self.read_len());
+    pub fn to_string(&self) -> String {
+        let mut result = format!("LeafBTreeNode(&{}, {})[", self.as_ptr(), self.read_len());
         for i in 0..self.read_len() {
-            print!("({:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
-            print!("{:?})", V::from_fixed_size_bytes(&self.read_value(i)));
+            result += &format!("({:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
+            result += &format!("{:?})", V::from_fixed_size_bytes(&self.read_value(i)));
 
             if i < self.read_len() - 1 {
-                print!(", ");
+                result += ", ";
             }
         }
 
-        print!("]");
+        result += "]";
+        
+        result
     }
 }
 
@@ -439,7 +441,7 @@ mod tests {
         }
 
         node.write_len(CAPACITY);
-        node.debug_print();
+        println!("{}", node.to_string());
 
         for i in 0..CAPACITY {
             let k = node.read_key(i);
