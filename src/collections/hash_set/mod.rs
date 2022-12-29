@@ -64,20 +64,18 @@ where
     }
 
     #[inline]
-    pub unsafe fn stable_drop_collection(&mut self) {
-        self.map.stable_drop_collection()
-    }
-
-    #[inline]
     pub fn iter(&self) -> SHashSetIter<T> {
         SHashSetIter::new(self)
     }
 }
 
-impl<T> Default for SHashSet<T> {
+impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
     #[inline]
     fn default() -> Self {
-        SHashSet::default()
+        SHashSet::new()
     }
 }
 
@@ -202,6 +200,6 @@ mod tests {
         set.move_to_stable();
         set.remove_from_stable();
 
-        unsafe { set.stable_drop_collection() };
+        unsafe { set.stable_drop() };
     }
 }

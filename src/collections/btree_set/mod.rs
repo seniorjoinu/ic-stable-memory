@@ -85,7 +85,10 @@ impl<T: AsFixedSizeBytes> AsFixedSizeBytes for SBTreeSet<T> {
     }
 }
 
-impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T> {
+impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
     #[inline]
     fn move_to_stable(&mut self) {
         self.map.move_to_stable();
@@ -95,8 +98,6 @@ impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T> {
     fn remove_from_stable(&mut self) {
         self.map.remove_from_stable()
     }
-
-    // TODO: also implement stable_drop_collection
 
     #[inline]
     unsafe fn stable_drop(self) {

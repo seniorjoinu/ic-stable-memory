@@ -1174,14 +1174,14 @@ where
                     }
                     BTreeNode::Leaf(leaf) => {
                         for j in 0..leaf.read_len() {
-                            let mut key = K::from_fixed_size_bytes(&leaf.read_key(j));
-                            let mut value = V::from_fixed_size_bytes(&leaf.read_value(j));
+                            let key = K::from_fixed_size_bytes(&leaf.read_key(j));
+                            let value = V::from_fixed_size_bytes(&leaf.read_value(j));
 
-                            key.remove_from_stable();
-                            value.remove_from_stable();
-
-                            leaf.destroy();
+                            key.stable_drop();
+                            value.stable_drop();
                         }
+
+                        leaf.destroy();
                     }
                 }
             }

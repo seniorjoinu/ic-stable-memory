@@ -39,12 +39,6 @@ pub struct SHashMap<K, V> {
 }
 
 impl<K, V> SHashMap<K, V> {
-    #[inline]
-    pub unsafe fn stable_drop_collection(&mut self) {
-        let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
-        deallocate(slice);
-    }
-
     fn hash<T: Hash>(val: &T) -> KeyHash {
         let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
@@ -114,7 +108,9 @@ where
 
                         let res = new.insert(key, value);
 
-                        unsafe { self.stable_drop_collection() };
+                        let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+                        deallocate(slice);
+
                         *self = new;
 
                         return res;
@@ -394,13 +390,16 @@ where
     #[inline]
     fn remove_from_stable(&mut self) {}
 
-    unsafe fn stable_drop(mut self) {
-        for (k, v) in self.iter() {
-            k.stable_drop();
-            v.stable_drop();
-        }
+    unsafe fn stable_drop(self) {
+        if self.table_ptr != EMPTY_PTR {
+            for (k, v) in self.iter() {
+                k.stable_drop();
+                v.stable_drop();
+            }
 
-        self.stable_drop_collection();
+            let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+            deallocate(slice);
+        }
     }
 }
 

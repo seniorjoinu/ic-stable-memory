@@ -1,7 +1,9 @@
+use arrayvec::ArrayString;
 use candid::{Int, Nat, Principal};
 use num_bigint::{BigInt, BigUint, Sign};
 use std::io::Write;
 use std::mem::{size_of, MaybeUninit};
+use crate::primitive::StableAllocated;
 
 pub trait FixedSize {
     const SIZE: usize;
@@ -402,6 +404,34 @@ impl AsFixedSizeBytes for Int {
     }
 }
 
+impl FixedSize for ArrayString<100> {
+    const SIZE: usize = 100;
+}
+
+impl AsFixedSizeBytes for ArrayString<100> {
+    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
+        ArrayString::<100>::from_byte_string(buf).unwrap()
+    }
+
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+        let mut result = [0u8; Self::SIZE];
+        result.copy_from_slice(self.as_bytes());
+        
+        result
+    }
+}
+
+impl StableAllocated for ArrayString<100> {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+    
+    #[inline]
+    unsafe fn stable_drop(self) {}
+}
+
 pub trait AsDynSizeBytes {
     fn as_dyn_size_bytes(&self, result: &mut Vec<u8>);
     fn from_dyn_size_bytes(buf: &[u8]) -> Self;
@@ -411,26 +441,6 @@ pub trait AsDynSizeBytes {
         self.as_dyn_size_bytes(&mut buf);
 
         buf
-    }
-}
-
-impl AsDynSizeBytes for Vec<u8> {
-    fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
-        result.extend_from_slice(self);
-    }
-
-    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
-        buf.to_vec()
-    }
-}
-
-impl AsDynSizeBytes for String {
-    fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
-        result.extend_from_slice(self.as_bytes());
-    }
-
-    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
-        Self::from_utf8(buf.to_vec()).unwrap()
     }
 }
 

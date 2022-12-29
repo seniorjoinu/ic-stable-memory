@@ -226,7 +226,6 @@ where
 
             match res {
                 Ordering::Equal => return Ok(mid),
-                // actually LESS
                 Ordering::Greater => {
                     max = mid;
                     let new_mid = (max - min) / 2 + min;
@@ -238,7 +237,6 @@ where
                     mid = new_mid;
                     continue;
                 }
-                // actually GREATER
                 Ordering::Less => {
                     min = mid;
                     let new_mid = (max - min) / 2 + min;
@@ -274,10 +272,11 @@ where
     fn from(mut svec: SVec<T>) -> Self {
         let mut vec = Self::new();
 
-        while let Some(elem) = svec.pop() {
-            vec.push(elem);
+        for i in svec.iter() {
+            vec.push(i);
         }
 
+        svec.len = 0;
         unsafe { svec.stable_drop() };
 
         vec
@@ -379,7 +378,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::vec::SVec;
+    use crate::collections::vec::{SVec, DEFAULT_CAPACITY};
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
     use crate::primitive::s_box_mut::SBoxMut;
@@ -438,11 +437,11 @@ mod tests {
         init_allocator(0);
 
         let mut stable_vec = SVec::new();
-        assert_eq!(stable_vec.capacity(), 0);
+        assert_eq!(stable_vec.capacity(), DEFAULT_CAPACITY);
         assert_eq!(stable_vec.len(), 0);
 
         stable_vec.push(10);
-        assert_eq!(stable_vec.capacity(), 4);
+        assert_eq!(stable_vec.capacity(), DEFAULT_CAPACITY);
         assert_eq!(stable_vec.len(), 1);
 
         unsafe { stable_vec.stable_drop() };

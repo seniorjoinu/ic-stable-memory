@@ -32,7 +32,7 @@ impl<T> SBox<T> {
     }
 }
 
-impl<'a, T: AsDynSizeBytes> SBox<T> {
+impl<T: AsDynSizeBytes> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 

@@ -293,6 +293,6 @@ mod tests {
         let mut heap = SBinaryHeap::<u32>::default();
         heap.move_to_stable(); // does nothing
         heap.remove_from_stable(); // does nothing
-        unsafe { heap.stable_drop_collection() };
+        unsafe { heap.stable_drop() };
     }
 }

@@ -54,13 +54,17 @@ impl<'a, T: AsDynSizeBytes> SBoxMut<T> {
     }
 
     pub fn get_cloned(&self) -> T {
-        let inner_slice_ptr = self.outer_slice.unwrap().as_fixed_size_bytes_read(0);
-        let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
+        if let Some(outer_slice) = self.outer_slice {
+            let inner_slice_ptr = outer_slice.as_fixed_size_bytes_read(0);
+            let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-        let mut buf = vec![0u8; inner_slice.get_size_bytes()];
-        inner_slice.read_bytes(0, &mut buf);
+            let mut buf = vec![0u8; inner_slice.get_size_bytes()];
+            inner_slice.read_bytes(0, &mut buf);
 
-        T::from_dyn_size_bytes(&buf)
+            T::from_dyn_size_bytes(&buf)
+        } else {
+            panic!("No stable copy exist - call 'move_to_stable()' first");
+        }
     }
 
     fn repersist(&mut self) {
@@ -282,6 +286,8 @@ mod tests {
         sbox.remove_from_stable();
 
         let mut sbox = SBoxMut::<Vec<u8>>::default();
+        sbox.move_to_stable();
+
         sbox.get_mut().extend(vec![0u8; 100]);
         assert_eq!(sbox.get_cloned(), vec![0u8; 100]);
 
