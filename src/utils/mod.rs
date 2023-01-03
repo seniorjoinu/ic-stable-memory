@@ -1,10 +1,9 @@
 #[allow(unused_imports)]
 use ic_cdk::{print, trap};
 
-pub mod ic_types;
+pub mod encoding;
 pub mod math;
 pub mod mem_context;
-pub mod phantom_data;
 pub mod vars;
 
 pub struct MemMetrics {
@@ -14,21 +13,25 @@ pub struct MemMetrics {
 }
 
 #[cfg(target_family = "wasm")]
+#[inline]
 pub fn isoprint(str: &str) {
     print(str)
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[inline]
 pub fn isoprint(str: &str) {
     println!("{}", str)
 }
 
 #[cfg(target_family = "wasm")]
+#[inline]
 pub fn _isotrap(str: &str) {
     trap(str);
 }
 
 #[cfg(not(target_family = "wasm"))]
+#[inline]
 pub fn _isotrap(str: &str) {
     panic!("{}", str);
 }

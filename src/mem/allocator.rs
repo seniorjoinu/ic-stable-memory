@@ -78,30 +78,30 @@ impl StableMemoryAllocator {
 
         for i in 0..SEG_CLASS_PTRS_COUNT as usize {
             if let Some(free_block) = self.seg_class_heads[i] {
-                slice.write_word(offset, free_block.ptr);
+                slice.as_fixed_size_bytes_write(offset, free_block.ptr);
             } else {
-                slice.write_word(offset, EMPTY_PTR);
+                slice.as_fixed_size_bytes_write(offset, EMPTY_PTR);
             }
             offset += PTR_SIZE;
         }
 
         for i in 0..SEG_CLASS_PTRS_COUNT as usize {
             if let Some(free_block) = self.seg_class_tails[i] {
-                slice.write_word(offset, free_block.ptr);
+                slice.as_fixed_size_bytes_write(offset, free_block.ptr);
             } else {
-                slice.write_word(offset, EMPTY_PTR);
+                slice.as_fixed_size_bytes_write(offset, EMPTY_PTR);
             }
             offset += PTR_SIZE;
         }
 
-        slice.write_word(offset, self.free_size);
+        slice.as_fixed_size_bytes_write(offset, self.free_size);
         offset += PTR_SIZE;
 
-        slice.write_word(offset, self.allocated_size);
+        slice.as_fixed_size_bytes_write(offset, self.allocated_size);
         offset += PTR_SIZE;
 
         for i in 0..CUSTOM_DATA_PTRS_COUNT {
-            slice.write_word(offset, self.custom_data_ptrs[i]);
+            slice.as_fixed_size_bytes_write(offset, self.custom_data_ptrs[i]);
             offset += PTR_SIZE;
         }
     }
@@ -124,7 +124,7 @@ impl StableMemoryAllocator {
 
         let mut seg_class_heads = [None; SEG_CLASS_PTRS_COUNT as usize];
         for free_block in &mut seg_class_heads {
-            let ptr = slice.read_word(offset);
+            let ptr = slice.as_fixed_size_bytes_read(offset);
 
             *free_block = if ptr == EMPTY_PTR {
                 None
@@ -137,7 +137,7 @@ impl StableMemoryAllocator {
 
         let mut seg_class_tails = [None; SEG_CLASS_PTRS_COUNT as usize];
         for free_block in &mut seg_class_tails {
-            let ptr = slice.read_word(offset);
+            let ptr = slice.as_fixed_size_bytes_read(offset);
 
             *free_block = if ptr == EMPTY_PTR {
                 None
@@ -148,15 +148,15 @@ impl StableMemoryAllocator {
             offset += PTR_SIZE;
         }
 
-        let free_size = slice.read_word(offset);
+        let free_size = slice.as_fixed_size_bytes_read(offset);
         offset += PTR_SIZE;
 
-        let allocated_size = slice.read_word(offset);
+        let allocated_size = slice.as_fixed_size_bytes_read(offset);
         offset += PTR_SIZE;
 
         let mut custom_data_ptrs = [0u64; CUSTOM_DATA_PTRS_COUNT];
         for ptr in &mut custom_data_ptrs {
-            *ptr = slice.read_word(offset);
+            *ptr = slice.as_fixed_size_bytes_read(offset);
             offset += PTR_SIZE;
         }
 

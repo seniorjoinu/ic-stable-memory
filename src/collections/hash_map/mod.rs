@@ -2,80 +2,48 @@ use crate::collections::hash_map::iter::SHashMapIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
-use crate::utils::phantom_data::SPhantomData;
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
+use zwohash::ZwoHasher;
 
 pub mod iter;
 
-const LOAD_FACTOR: f64 = 0.75;
-const DEFAULT_CAPACITY: usize = 5;
+// BY DEFAULT:
+// KEYS: [K; CAPACITY] = [zeroed(K); CAPACITY]
+// VALUES: [V; CAPACITY] = [zeroed(V); CAPACITY]
+
+const KEYS_OFFSET: usize = 0;
+
+#[inline]
+const fn values_offset<K: FixedSize>(capacity: usize) -> usize {
+    KEYS_OFFSET + (1 + K::SIZE) * capacity
+}
+
+const DEFAULT_CAPACITY: usize = 7;
 
 const EMPTY: u8 = 0;
-const OCCUPIED: u8 = 1;
-const TOMBSTONE: u8 = 255;
+const OCCUPIED: u8 = 255;
 
-// reallocating, open addressing, quadratic probing
+type KeyHash = usize;
+
+// all for maximum cache-efficiency
+// fixed-size, open addressing, linear probing, 3/4 load factor, non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
 pub struct SHashMap<K, V> {
-    pub(crate) len: usize,
-    pub(crate) capacity: usize,
-    pub(crate) table: Option<SSlice>,
-    _marker_k: SPhantomData<K>,
-    _marker_v: SPhantomData<V>,
+    table_ptr: u64,
+    len: usize,
+    cap: usize,
+    _marker_k: PhantomData<K>,
+    _marker_v: PhantomData<V>,
 }
 
 impl<K, V> SHashMap<K, V> {
-    #[inline]
-    pub fn new() -> Self {
-        Self::new_with_capacity(DEFAULT_CAPACITY)
-    }
-
-    pub fn new_with_capacity(capacity: usize) -> Self {
-        Self {
-            len: 0,
-            capacity,
-            table: None,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub unsafe fn stable_drop_collection(&mut self) {
-        if let Some(slice) = self.table {
-            deallocate(slice);
-            self.table = None;
-        }
-    }
-
-    fn hash<T: Hash>(&self, val: &T) -> u64 {
-        let mut hasher = DefaultHasher::new();
+    fn hash<T: Hash>(val: &T) -> KeyHash {
+        let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
 
-        hasher.finish()
-    }
-
-    fn to_offset_or_size(idx: usize, size_k: usize, size_v: usize) -> usize {
-        idx * (1 + size_k + size_v)
-    }
-
-    fn is_about_to_grow(&self) -> bool {
-        // TODO: optimize - can be calculated once at each resize
-        self.table.is_none() || self.len as f64 > (self.capacity as f64) * LOAD_FACTOR
+        hasher.finish() as KeyHash
     }
 }
 
@@ -84,198 +52,201 @@ where
     [u8; K::SIZE]: Sized,
     [u8; V::SIZE]: Sized,
 {
+    #[inline]
+    pub fn new() -> Self {
+        Self::new_with_capacity(DEFAULT_CAPACITY)
+    }
+
+    pub fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            table_ptr: EMPTY_PTR,
+            len: 0,
+            cap: capacity,
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
+        }
+    }
+
     pub fn insert(&mut self, mut key: K, mut value: V) -> Option<V> {
-        self.maybe_reallocate();
+        if self.table_ptr == EMPTY_PTR {
+            let size = (1 + K::SIZE + V::SIZE) * self.capacity();
+            let table = allocate(size as usize);
 
-        let mut prev = None;
-        let key_hash = self.hash(&key) as usize;
-        let mut i = 0;
+            let zeroed = vec![0u8; size as usize];
+            table.write_bytes(0, &zeroed);
 
-        let table = self.table.as_ref().unwrap();
+            self.table_ptr = table.get_ptr();
+        }
 
-        let mut remembered_at = None;
+        let key_hash = Self::hash(&key);
+        let mut i = key_hash % self.capacity();
 
         loop {
-            let at = (key_hash + i * i) % self.capacity;
-
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
+            match self.read_key_at(i, true) {
                 HashMapKey::Occupied(prev_key) => {
                     if prev_key.eq(&key) {
-                        let mut prev_value = Self::read_val_at(table, at);
+                        let mut prev_value = self.read_val_at(i);
                         prev_value.remove_from_stable();
 
-                        prev = Some(prev_value);
-
                         value.move_to_stable();
-                        Self::write_val_at(table, at, value);
+                        self.write_val_at(i, value);
 
-                        break;
+                        return Some(prev_value);
                     } else {
+                        i = (i + 1) % self.capacity();
+
                         continue;
                     }
                 }
-                HashMapKey::Tombstone => {
-                    if remembered_at.is_none() {
-                        remembered_at = Some(at);
-                    }
-                    continue;
-                }
                 HashMapKey::Empty => {
-                    let at = if let Some(a) = remembered_at { a } else { at };
+                    if self.is_full() {
+                        let mut new = Self::new_with_capacity(self.capacity() * 2 - 1);
+
+                        for (k, v) in self.iter() {
+                            new.insert(k, v);
+                        }
+
+                        let res = new.insert(key, value);
+
+                        let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+                        deallocate(slice);
+
+                        *self = new;
+
+                        return res;
+                    }
 
                     key.move_to_stable();
                     value.move_to_stable();
 
-                    Self::write_key_at(table, at, HashMapKey::Occupied(key));
-                    Self::write_val_at(table, at, value);
+                    self.write_key_at(i, HashMapKey::Occupied(key));
+                    self.write_val_at(i, value);
 
                     self.len += 1;
 
-                    break;
+                    return None;
                 }
                 _ => unreachable!(),
             }
         }
-
-        prev
     }
 
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.table?;
+        let (i, mut k) = self.find_inner_idx(key)?;
+        let mut v = self.remove_by_idx(i);
 
-        let mut prev = None;
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
+        k.remove_from_stable();
+        v.remove_from_stable();
 
-        let table = self.table.as_ref().unwrap();
+        Some(v)
+    }
+
+    fn remove_by_idx(&mut self, mut i: usize) -> V {
+        let prev_value = self.read_val_at(i);
+        let mut j = i;
 
         loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
+            j = (j + 1) % self.capacity();
+            if j == i {
+                break;
+            }
+            match self.read_key_at(j, true) {
+                HashMapKey::Empty => break,
+                HashMapKey::Occupied(next_key) => {
+                    let k = Self::hash(&next_key) % self.capacity();
+                    if (j < i) ^ (k <= i) ^ (k > j) {
+                        self.write_key_at(i, HashMapKey::Occupied(next_key));
+                        self.write_val_at(i, self.read_val_at(j));
 
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(mut prev_key) => {
-                    if prev_key.eq(key) {
-                        let mut prev_value = Self::read_val_at(table, at);
-
-                        prev_key.remove_from_stable();
-                        prev_value.remove_from_stable();
-
-                        prev = Some(prev_value);
-                        Self::write_key_at(table, at, HashMapKey::Tombstone);
-
-                        self.len -= 1;
-
-                        break;
-                    } else {
-                        continue;
+                        i = j;
                     }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
                 }
                 _ => unreachable!(),
             }
         }
 
-        prev
+        self.write_key_at(i, HashMapKey::Empty);
+        self.len -= 1;
+
+        prev_value
     }
 
+    #[inline]
     pub fn get_copy(&self, key: &K) -> Option<V> {
-        self.table?;
+        let (i, _) = self.find_inner_idx(key)?;
 
-        let mut prev = None;
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
-
-        let table = self.table.as_ref().unwrap();
-
-        loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
-                        prev = Some(Self::read_val_at(table, at));
-
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        prev
+        Some(self.read_val_at(i))
     }
 
+    #[inline]
     pub fn contains_key(&self, key: &K) -> bool {
-        if self.table.is_none() {
-            return false;
-        }
-
-        let key_hash = self.hash(key) as usize;
-        let mut i = 0;
-
-        let table = self.table.as_ref().unwrap();
-
-        loop {
-            let at = (key_hash + i * i) % self.capacity;
-            i += 1;
-
-            match Self::read_key_at(table, at, true) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
-                        return true;
-                    } else {
-                        continue;
-                    }
-                }
-                HashMapKey::Tombstone => {
-                    continue;
-                }
-                HashMapKey::Empty => {
-                    break;
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        false
+        self.find_inner_idx(key).is_some()
     }
 
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        self.cap
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.len() == (self.capacity() >> 2) * 3
+    }
+
+    #[inline]
     pub fn iter(&self) -> SHashMapIter<K, V> {
         SHashMapIter::new(self)
     }
 
-    fn read_key_at(slice: &SSlice, idx: usize, read_value: bool) -> HashMapKey<K> {
-        let mut key_flag = [0u8];
-        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE);
+    fn find_inner_idx(&self, key: &K) -> Option<(usize, K)> {
+        if self.is_empty() {
+            return None;
+        }
 
-        slice.read_bytes(at, &mut key_flag);
+        let key_hash = Self::hash(key);
+        let mut i = key_hash % self.capacity();
+
+        loop {
+            match self.read_key_at(i, true) {
+                HashMapKey::Occupied(prev_key) => {
+                    if prev_key.eq(key) {
+                        return Some((i, prev_key));
+                    } else {
+                        i = (i + 1) % self.capacity();
+                        continue;
+                    }
+                }
+                HashMapKey::Empty => {
+                    return None;
+                }
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    pub(crate) fn read_key_at(&self, idx: usize, read_value: bool) -> HashMapKey<K> {
+        let mut key_flag = [0u8];
+        let offset = KEYS_OFFSET + (1 + K::SIZE) * idx;
+
+        SSlice::_read_bytes(self.table_ptr, offset, &mut key_flag);
 
         match key_flag[0] {
             EMPTY => HashMapKey::Empty,
-            TOMBSTONE => HashMapKey::Tombstone,
             OCCUPIED => {
                 if read_value {
-                    let mut key_at_idx = K::super_size_u8_arr();
-                    slice.read_bytes(at + 1, &mut key_at_idx);
+                    let k = SSlice::_as_fixed_size_bytes_read(self.table_ptr, offset + 1);
 
-                    HashMapKey::Occupied(K::from_bytes(key_at_idx))
+                    HashMapKey::Occupied(k)
                 } else {
                     HashMapKey::OccupiedNull
                 }
@@ -284,146 +255,82 @@ where
         }
     }
 
-    fn read_val_at(slice: &SSlice, idx: usize) -> V {
-        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE) + 1 + K::SIZE;
+    #[inline]
+    pub(crate) fn read_val_at(&self, idx: usize) -> V {
+        let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
 
-        let mut val_at_idx = V::super_size_u8_arr();
-        slice.read_bytes(at, &mut val_at_idx);
-
-        V::from_bytes(val_at_idx)
+        SSlice::_as_fixed_size_bytes_read(self.table_ptr, offset)
     }
 
-    fn write_key_at(slice: &SSlice, idx: usize, key: HashMapKey<K>) {
-        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE);
+    fn write_key_at(&mut self, idx: usize, key: HashMapKey<K>) {
+        let offset = KEYS_OFFSET + (1 + K::SIZE) * idx;
 
         let key_flag = match key {
             HashMapKey::Empty => [EMPTY],
-            HashMapKey::Tombstone => [TOMBSTONE],
             HashMapKey::Occupied(k) => {
-                let key_bytes = k.to_bytes();
-                slice.write_bytes(at + 1, &key_bytes);
+                SSlice::_as_fixed_size_bytes_write(self.table_ptr, offset + 1, k);
 
                 [OCCUPIED]
             }
             _ => unreachable!(),
         };
 
-        slice.write_bytes(at, &key_flag);
+        SSlice::_write_bytes(self.table_ptr, offset, &key_flag);
     }
 
-    fn write_val_at(slice: &SSlice, idx: usize, val: V) {
-        let at = Self::to_offset_or_size(idx, K::SIZE, V::SIZE) + 1 + K::SIZE;
-        let val_bytes = val.to_bytes();
+    #[inline]
+    fn write_val_at(&mut self, idx: usize, val: V) {
+        let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
 
-        slice.write_bytes(at, &val_bytes);
+        SSlice::_as_fixed_size_bytes_write(self.table_ptr, offset, val);
     }
 
-    fn maybe_reallocate(&mut self) {
-        if !self.is_about_to_grow() {
-            return;
-        }
+    pub fn debug_print(&self) {
+        print!("Node({}, {})[", self.len(), self.capacity());
+        for i in 0..self.capacity() {
+            let mut k_flag = [0u8];
+            let mut k = [0u8; K::SIZE];
+            let mut v = [0u8; V::SIZE];
 
-        if let Some(old_table) = self.table {
-            let new_capacity = self.capacity * 2 + 1;
+            SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i, &mut k_flag);
+            SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i + 1, &mut k);
+            SSlice::_read_bytes(
+                self.table_ptr,
+                values_offset::<K>(self.capacity()) + V::SIZE * i,
+                &mut v,
+            );
 
-            let new_table = allocate(Self::to_offset_or_size(new_capacity, K::SIZE, V::SIZE));
-            new_table.write_bytes(0, &vec![0u8; new_table.get_size_bytes()]);
+            print!("(");
 
-            for idx in 0..self.capacity {
-                let k = Self::read_key_at(&old_table, idx, true);
-                if matches!(k, HashMapKey::Empty | HashMapKey::Tombstone) {
-                    continue;
-                }
+            match k_flag[0] {
+                EMPTY => print!("<empty> = "),
+                OCCUPIED => print!("<occupied> = "),
+                _ => unreachable!(),
+            };
 
-                let key = k.unwrap();
-                let val = Self::read_val_at(&old_table, idx);
-                let key_hash = self.hash(&key) as usize;
+            print!("{:?}, {:?})", k, v);
 
-                let mut i = 0;
-
-                loop {
-                    let at = (key_hash + i * i) % new_capacity as usize;
-                    i += 1;
-
-                    match Self::read_key_at(&new_table, at, false) {
-                        HashMapKey::OccupiedNull => {
-                            continue;
-                        }
-                        HashMapKey::Empty => {
-                            Self::write_key_at(&new_table, at, HashMapKey::Occupied(key));
-                            Self::write_val_at(&new_table, at, val);
-
-                            break;
-                        }
-                        _ => unreachable!(),
-                    }
-                }
+            if i < self.capacity() - 1 {
+                print!(", ");
             }
-
-            self.capacity = new_capacity;
-            self.table = Some(new_table);
-
-            deallocate(old_table);
-        } else {
-            let slice = allocate(Self::to_offset_or_size(self.capacity, K::SIZE, V::SIZE));
-            slice.write_bytes(0, &vec![0u8; slice.get_size_bytes()]);
-
-            self.table = Some(slice)
         }
+        println!("]");
     }
 }
 
-impl<K, V> Default for SHashMap<K, V> {
+impl<K: StableAllocated + Hash + Eq, V: StableAllocated> Default for SHashMap<K, V>
+where
+    [u8; K::SIZE]: Sized,
+    [u8; V::SIZE]: Sized,
+{
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, K, V> Readable<'a, LittleEndian> for SHashMap<K, V> {
-    fn read_from<R: Reader<'a, LittleEndian>>(
-        reader: &mut R,
-    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let ptr = reader.read_u64()?;
-        let len = reader.read_u32()? as usize;
-        let capacity = reader.read_u32()? as usize;
-
-        let table = if ptr == EMPTY_PTR {
-            None
-        } else {
-            SSlice::from_ptr(ptr, Side::Start)
-        };
-
-        let it = Self {
-            len,
-            capacity,
-            table,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
-        };
-
-        Ok(it)
-    }
-}
-
-impl<K, V> Writable<LittleEndian> for SHashMap<K, V> {
-    fn write_to<T: ?Sized + Writer<LittleEndian>>(
-        &self,
-        writer: &mut T,
-    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        if let Some(slice) = self.table {
-            writer.write_u64(slice.get_ptr())?;
-        } else {
-            writer.write_u64(EMPTY_PTR)?;
-        }
-
-        writer.write_u32(self.len as u32)?;
-        writer.write_u32(self.capacity as u32)
-    }
-}
-
-enum HashMapKey<K> {
+pub(crate) enum HashMapKey<K> {
     Empty,
-    Tombstone,
     Occupied(K),
     OccupiedNull,
 }
@@ -437,44 +344,37 @@ impl<K> HashMapKey<K> {
     }
 }
 
-impl<K, V> SuperSized for SHashMap<K, V> {
-    const SIZE: usize = usize::SIZE * 2 + u64::SIZE;
+impl<K, V> FixedSize for SHashMap<K, V> {
+    const SIZE: usize = u64::SIZE + usize::SIZE * 2;
 }
 
-impl<K, V> AsBytes for SHashMap<K, V> {
-    fn to_bytes(self) -> [u8; Self::SIZE] {
-        let mut buf = [0u8; Self::SIZE];
-        buf[..usize::SIZE].copy_from_slice(&self.len.to_bytes());
-        buf[usize::SIZE..(usize::SIZE * 2)].copy_from_slice(&self.capacity.to_bytes());
-        
-        let table_buf = self.table.map(|it| it.get_ptr()).unwrap_or(EMPTY_PTR).to_bytes();
-        buf[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)].copy_from_slice(&table_buf);
+impl<K, V> AsFixedSizeBytes for SHashMap<K, V> {
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+        let mut result = [0u8; Self::SIZE];
 
-        buf
+        result[0..u64::SIZE].copy_from_slice(&self.table_ptr.as_fixed_size_bytes());
+        result[u64::SIZE..(usize::SIZE + u64::SIZE)]
+            .copy_from_slice(&self.len.as_fixed_size_bytes());
+        result[(usize::SIZE + u64::SIZE)..].copy_from_slice(&self.cap.as_fixed_size_bytes());
+
+        result
     }
 
-    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
-        let mut len_buf = [0u8; usize::SIZE];
-        let mut cap_buf = [0u8; usize::SIZE];
-        let mut ptr_buf = [0u8; u64::SIZE];
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+        let mut table_ptr_arr = u64::_u8_arr_of_size();
+        let mut len_arr = usize::_u8_arr_of_size();
+        let mut cap_arr = usize::_u8_arr_of_size();
 
-        len_buf.copy_from_slice(&arr[..usize::SIZE]);
-        cap_buf.copy_from_slice(&arr[usize::SIZE..(usize::SIZE * 2)]);
-        ptr_buf.copy_from_slice(&arr[(usize::SIZE * 2)..(usize::SIZE * 2 + u64::SIZE)]);
-
-        let table_ptr = u64::from_bytes(ptr_buf);
-        let table = if table_ptr == EMPTY_PTR {
-            None
-        } else {
-            Some(SSlice::from_ptr(table_ptr, Side::Start).unwrap())
-        };
+        table_ptr_arr.copy_from_slice(&arr[0..u64::SIZE]);
+        len_arr.copy_from_slice(&arr[u64::SIZE..(usize::SIZE + u64::SIZE)]);
+        cap_arr.copy_from_slice(&arr[(usize::SIZE + u64::SIZE)..]);
 
         Self {
-            len: usize::from_bytes(len_buf),
-            capacity: usize::from_bytes(cap_buf),
-            table,
-            _marker_k: SPhantomData::default(),
-            _marker_v: SPhantomData::default(),
+            table_ptr: u64::from_fixed_size_bytes(&table_ptr_arr),
+            len: usize::from_fixed_size_bytes(&len_arr),
+            cap: usize::from_fixed_size_bytes(&cap_arr),
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
         }
     }
 }
@@ -490,13 +390,16 @@ where
     #[inline]
     fn remove_from_stable(&mut self) {}
 
-    unsafe fn stable_drop(mut self) {
-        for (k, v) in self.iter() {
-            k.stable_drop();
-            v.stable_drop();
-        }
+    unsafe fn stable_drop(self) {
+        if self.table_ptr != EMPTY_PTR {
+            for (k, v) in self.iter() {
+                k.stable_drop();
+                v.stable_drop();
+            }
 
-        self.stable_drop_collection();
+            let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+            deallocate(slice);
+        }
     }
 }
 
@@ -505,13 +408,11 @@ mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
-    use crate::primitive::s_box_mut::SBoxMut;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::utils::mem_context::stable;
-    use copy_as_bytes::traits::AsBytes;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
-    use speedy::{Readable, Writable};
 
     #[test]
     fn simple_flow_works_well() {
@@ -687,23 +588,16 @@ mod tests {
         let mut map = SHashMap::new();
         map.insert(0, 0);
 
-        let buf = map.write_to_vec().unwrap();
-        let map1 = SHashMap::<i32, i32>::read_from_buffer_copying_data(&buf).unwrap();
+        let len = map.len();
+        let cap = map.capacity();
+        let ptr = map.table_ptr;
 
-        assert_eq!(map.len, map1.len);
-        assert_eq!(map.capacity, map1.capacity);
-        assert_eq!(map.table.unwrap().get_ptr(), map1.table.unwrap().get_ptr());
+        let buf = map.as_fixed_size_bytes();
+        let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
-        let len = map.len;
-        let cap = map.capacity;
-        let ptr = map.table.unwrap().get_ptr();
-
-        let buf = map.to_bytes();
-        let map1 = SHashMap::<i32, i32>::from_bytes(buf);
-
-        assert_eq!(len, map1.len);
-        assert_eq!(cap, map1.capacity);
-        assert_eq!(ptr, map1.table.unwrap().get_ptr());
+        assert_eq!(len, map1.len());
+        assert_eq!(cap, map1.capacity());
+        assert_eq!(ptr, map1.table_ptr);
     }
 
     #[test]

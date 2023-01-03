@@ -1,5 +1,8 @@
 #![feature(thread_local)]
 #![feature(generic_const_exprs)]
+#![feature(bench_black_box)]
+
+extern crate core;
 
 use crate::mem::allocator::StableMemoryAllocator;
 use mem::s_slice::SSlice;

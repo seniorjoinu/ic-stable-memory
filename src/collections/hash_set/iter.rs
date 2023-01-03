@@ -1,12 +1,13 @@
 use crate::collections::hash_map::iter::SHashMapIter;
 use crate::collections::hash_set::SHashSet;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
+use crate::primitive::StableAllocated;
+use std::hash::Hash;
 
 pub struct SHashSetIter<'a, T> {
     iter: SHashMapIter<'a, T, ()>,
 }
 
-impl<'a, T: SuperSized> SHashSetIter<'a, T> {
+impl<'a, T> SHashSetIter<'a, T> {
     pub fn new(set: &'a SHashSet<T>) -> Self {
         Self {
             iter: SHashMapIter::new(&set.map),
@@ -14,7 +15,7 @@ impl<'a, T: SuperSized> SHashSetIter<'a, T> {
     }
 }
 
-impl<'a, T: AsBytes> Iterator for SHashSetIter<'a, T>
+impl<'a, T: StableAllocated + Eq + Hash> Iterator for SHashSetIter<'a, T>
 where
     [(); T::SIZE]: Sized,
 {

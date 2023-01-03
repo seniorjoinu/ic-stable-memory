@@ -1,8 +1,7 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
 use crate::primitive::StableAllocated;
-use copy_as_bytes::traits::{AsBytes, SuperSized};
-use speedy::{Context, LittleEndian, Readable, Reader, Writable, Writer};
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use std::hash::Hash;
 
 pub mod iter;
@@ -11,89 +10,88 @@ pub struct SHashSet<T> {
     map: SHashMap<T, ()>,
 }
 
-impl<T> SHashSet<T> {
+impl<T: StableAllocated + Hash + Eq> SHashSet<T>
+where
+    [u8; T::SIZE]: Sized,
+{
+    #[inline]
     pub fn new() -> Self {
         Self {
             map: SHashMap::new(),
         }
     }
 
+    #[inline]
     pub fn new_with_capacity(capacity: usize) -> Self {
         Self {
             map: SHashMap::new_with_capacity(capacity),
         }
     }
-}
 
-impl<T: StableAllocated + Hash + Eq> SHashSet<T>
-where
-    [u8; T::SIZE]: Sized,
-{
+    #[inline]
     pub fn insert(&mut self, value: T) -> bool {
         self.map.insert(value, ()).is_some()
     }
 
+    #[inline]
     pub fn remove(&mut self, value: &T) -> bool {
         self.map.remove(value).is_some()
     }
 
+    #[inline]
     pub fn contains(&self, value: &T) -> bool {
         self.map.contains_key(value)
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.map.capacity()
+    }
+
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
-    pub unsafe fn stable_drop_collection(&mut self) {
-        self.map.stable_drop_collection()
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.map.is_full()
     }
 
+    #[inline]
     pub fn iter(&self) -> SHashSetIter<T> {
         SHashSetIter::new(self)
     }
 }
 
-impl<T> Default for SHashSet<T> {
+impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    #[inline]
     fn default() -> Self {
         SHashSet::new()
     }
 }
 
-impl<'a, T> Readable<'a, LittleEndian> for SHashSet<T> {
-    fn read_from<R: Reader<'a, LittleEndian>>(
-        reader: &mut R,
-    ) -> Result<Self, <speedy::LittleEndian as Context>::Error> {
-        let map = SHashMap::read_from(reader)?;
-
-        Ok(Self { map })
-    }
-}
-
-impl<T> Writable<LittleEndian> for SHashSet<T> {
-    fn write_to<W: ?Sized + Writer<LittleEndian>>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), <speedy::LittleEndian as Context>::Error> {
-        self.map.write_to(writer)
-    }
-}
-
-impl<T> SuperSized for SHashSet<T> {
+impl<T> FixedSize for SHashSet<T> {
     const SIZE: usize = SHashMap::<T, ()>::SIZE;
 }
 
-impl<T> AsBytes for SHashSet<T> {
-    fn to_bytes(self) -> [u8; Self::SIZE] {
-        self.map.to_bytes()
+impl<T> AsFixedSizeBytes for SHashSet<T> {
+    #[inline]
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+        self.map.as_fixed_size_bytes()
     }
 
-    fn from_bytes(arr: [u8; Self::SIZE]) -> Self {
-        let map = SHashMap::<T, ()>::from_bytes(arr);
+    #[inline]
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+        let map = SHashMap::<T, ()>::from_fixed_size_bytes(arr);
         Self { map }
     }
 }
@@ -122,9 +120,8 @@ where
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::primitive::StableAllocated;
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
-    use copy_as_bytes::traits::AsBytes;
-    use speedy::{Readable, Writable};
 
     #[test]
     fn basic_flow_works_fine() {
@@ -181,22 +178,15 @@ mod tests {
         init_allocator(0);
 
         let set = SHashSet::<u32>::default();
-        let buf = set.write_to_vec().unwrap();
-        let set1 = SHashSet::<u32>::read_from_buffer_copying_data(&buf).unwrap();
 
-        assert_eq!(set.map.len(), set1.map.len());
-        assert_eq!(set.map.capacity, set1.map.capacity);
-        assert!(set.map.table.is_none() && set1.map.table.is_none());
+        let len = set.len();
+        let cap = set.capacity();
 
-        let len = set.map.len;
-        let cap = set.map.capacity;
+        let buf = set.as_fixed_size_bytes();
+        let set1 = SHashSet::<u32>::from_fixed_size_bytes(&buf);
 
-        let buf = set.to_bytes();
-        let set1 = SHashSet::<u32>::from_bytes(buf);
-
-        assert_eq!(len, set1.map.len);
-        assert_eq!(cap, set1.map.capacity);
-        assert!(set1.map.table.is_none());
+        assert_eq!(len, set1.len());
+        assert_eq!(cap, set1.capacity());
     }
 
     #[test]
@@ -210,6 +200,6 @@ mod tests {
         set.move_to_stable();
         set.remove_from_stable();
 
-        unsafe { set.stable_drop_collection() };
+        unsafe { set.stable_drop() };
     }
 }

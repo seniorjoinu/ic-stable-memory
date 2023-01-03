@@ -4,63 +4,8 @@ mod vec_benchmark {
     use crate::measure;
     use crate::primitive::s_box::SBox;
     use crate::{init_allocator, stable};
-    use copy_as_bytes::traits::{AsBytes, SuperSized};
-    use speedy::{Readable, Writable};
-    use std::hint::black_box;
 
     const ITERATIONS: usize = 1_000_000;
-
-    #[test]
-    #[ignore]
-    fn body_indirect() {
-        {
-            let mut classic_vec = Vec::new();
-
-            measure!("Classic vec push", ITERATIONS, {
-                for _ in 0..ITERATIONS {
-                    classic_vec.push(String::from("Some short string"));
-                }
-            });
-
-            measure!("Classic vec search", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    classic_vec.get(i).unwrap();
-                }
-            });
-
-            measure!("Classic vec pop", ITERATIONS, {
-                for _ in 0..ITERATIONS {
-                    classic_vec.pop().unwrap();
-                }
-            });
-        }
-
-        {
-            stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
-
-            let mut stable_vec = SVec::new();
-
-            measure!("Stable vec push", ITERATIONS, {
-                for _ in 0..ITERATIONS {
-                    stable_vec.push(SBox::new(String::from("Some short string")));
-                }
-            });
-
-            measure!("Stable vec search", ITERATIONS, {
-                for i in 0..ITERATIONS {
-                    stable_vec.get_copy(i).unwrap();
-                }
-            });
-
-            measure!("Stable vec pop", ITERATIONS, {
-                for _ in 0..ITERATIONS {
-                    stable_vec.pop().unwrap();
-                }
-            });
-        }
-    }
 
     #[test]
     #[ignore]

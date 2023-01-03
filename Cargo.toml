@@ -12,12 +12,13 @@ keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "collections"
 path = "./src/lib.rs"
 
 [dependencies]
-ic-cdk = "0.6.1"
-speedy = "0.8.3"
+ic-cdk = "0.6.5"
 candid = "0.8.3"
-serde = "1.0.146"
+serde = "1.0.147"
 num-bigint = "0.4.3"
-copy_as_bytes = "0.1.1"
+sha2 = "0.10.6"
+zwohash = "0.1.2"
 
 [dev-dependencies]
 rand = "0.8.5"
+ic-certified-map = "0.3.1"

@@ -1,4 +1,3 @@
-use crate::mem::s_slice::PTR_SIZE;
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 use std::cmp::min;
 
@@ -12,17 +11,6 @@ pub(crate) trait MemContext {
     fn grow(&mut self, new_pages: u64) -> Result<u64, OutOfMemory>;
     fn read(&self, offset: u64, buf: &mut [u8]);
     fn write(&mut self, offset: u64, buf: &[u8]);
-
-    fn read_word(&self, offset: u64) -> u64 {
-        let mut buf = [0u8; PTR_SIZE];
-        self.read(offset, &mut buf);
-
-        u64::from_le_bytes(buf)
-    }
-
-    fn write_word(&mut self, offset: u64, word: u64) {
-        self.write(offset, &word.to_le_bytes());
-    }
 }
 
 #[derive(Clone)]
@@ -176,16 +164,6 @@ pub mod stable {
     pub fn write(offset: u64, buf: &[u8]) {
         MemContext::write(&mut StableMemContext, offset, buf)
     }
-
-    #[inline]
-    pub fn read_word(offset: u64) -> u64 {
-        MemContext::read_word(&StableMemContext, offset)
-    }
-
-    #[inline]
-    pub fn write_word(offset: u64, word: u64) {
-        MemContext::write_word(&mut StableMemContext, offset, word);
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -219,16 +197,6 @@ pub mod stable {
     #[inline]
     pub fn write(offset: u64, buf: &[u8]) {
         CONTEXT.borrow_mut().write(offset, buf)
-    }
-
-    #[inline]
-    pub fn read_word(offset: u64) -> u64 {
-        CONTEXT.borrow().read_word(offset)
-    }
-
-    #[inline]
-    pub fn write_word(offset: u64, word: u64) {
-        CONTEXT.borrow_mut().write_word(offset, word);
     }
 }
 

@@ -1,13 +1,13 @@
 use crate::collections::hash_map::SHashMap;
+use crate::mem::s_slice::Side;
 use crate::primitive::s_box::SBox;
 use crate::primitive::StableAllocated;
-use crate::{_get_custom_data_ptr, _set_custom_data_ptr};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
+use crate::{_get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate, SSlice};
 use ic_cdk::trap;
-use speedy::{LittleEndian, Readable, Writable};
 use std::cell::RefCell;
 
-const MAX_VAR_NAME_LEN: usize = 128;
-type Variables = SHashMap<[u8; MAX_VAR_NAME_LEN], u64>;
+type Variables = SHashMap<[u8; 128], u64>;
 
 #[thread_local]
 static VARS: RefCell<Option<Variables>> = RefCell::new(None);
@@ -22,11 +22,13 @@ pub fn init_vars() {
 
 pub fn deinit_vars() {
     if VARS.borrow().is_some() {
-        let vars = VARS.take();
-        let mut vars_box = SBox::new(vars.expect("Stable vars are not initialized yet"));
-        vars_box.move_to_stable();
+        let vars = VARS.take().unwrap();
+        let vars_buf = vars.as_fixed_size_bytes();
+        let slice = allocate(vars_buf.len());
 
-        _set_custom_data_ptr(0, vars_box.as_ptr());
+        slice.write_bytes(0, &vars_buf);
+
+        _set_custom_data_ptr(0, slice.get_ptr());
     } else {
         unreachable!("Stable variables are not initialized");
     }
@@ -34,11 +36,14 @@ pub fn deinit_vars() {
 
 pub fn reinit_vars() {
     if VARS.borrow().is_none() {
-        let vars_box_ptr = _get_custom_data_ptr(0);
-        let vars_box: SBox<Variables> = unsafe { SBox::from_ptr(vars_box_ptr) };
-        let vars = vars_box.get_cloned();
+        let slice_ptr = _get_custom_data_ptr(0);
+        let slice = SSlice::from_ptr(slice_ptr, Side::Start).unwrap();
 
-        unsafe { vars_box.stable_drop() };
+        let mut vars_buf = Variables::_u8_arr_of_size();
+        slice.read_bytes(0, &mut vars_buf);
+
+        let vars = Variables::from_fixed_size_bytes(&vars_buf);
+        deallocate(slice);
 
         *VARS.borrow_mut() = Some(vars);
     } else {
@@ -46,38 +51,36 @@ pub fn reinit_vars() {
     }
 }
 
-fn name_to_arr(name: &str) -> [u8; MAX_VAR_NAME_LEN] {
-    assert!(
-        name.len() <= MAX_VAR_NAME_LEN,
-        "Stable variable name is too long (max 128 chars)"
-    );
+fn format_name(name: &[u8]) -> [u8; 128] {
+    let mut name = name.to_vec();
+    assert!(name.len() <= 128, "Var name too long");
+    name.resize(128, 0u8);
 
-    let mut bytes = [0u8; MAX_VAR_NAME_LEN];
-    bytes[0..name.len()].copy_from_slice(name.as_bytes());
-
-    bytes
+    name.try_into().unwrap()
 }
 
-pub fn set_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str, value: T) {
-    let bytes = name_to_arr(name);
+pub fn set_var<T: AsDynSizeBytes>(name: &[u8], value: T) {
+    let name = format_name(name);
     let mut val_box = SBox::new(value);
-    val_box.move_to_stable();
 
+    val_box.move_to_stable();
     let val_box_ptr = val_box.as_ptr();
 
     if let Some(m) = &mut *VARS.borrow_mut() {
-        m.insert(bytes, val_box_ptr);
+        if let Some(prev_val_box_ptr) = m.insert(name, val_box_ptr) {
+            let mut prev_val_box = unsafe { SBox::<T>::from_ptr(prev_val_box_ptr) };
+            prev_val_box.remove_from_stable();
+        }
     } else {
         unreachable!("Stable variables are not initialized");
     }
 }
 
-pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
+pub fn get_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
     let ptr = if let Some(m) = &*VARS.borrow() {
-        let bytes = name_to_arr(name);
+        let name = format_name(name);
 
-        m.get_copy(&bytes)
-            .unwrap_or_else(|| trap(format!("Invalid stable var name {}", name).as_str()))
+        m.get_copy(&name).expect("Stable variable not found")
     } else {
         unreachable!("Stable variables are not initialized");
     };
@@ -85,13 +88,11 @@ pub fn get_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name:
     unsafe { SBox::<T>::from_ptr(ptr).get_cloned() }
 }
 
-pub fn remove_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(name: &str) -> T {
+pub fn remove_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
     if let Some(vars) = &mut *VARS.borrow_mut() {
-        let bytes = name_to_arr(name);
+        let name = format_name(name);
 
-        let sbox_ptr = vars
-            .remove(&bytes)
-            .unwrap_or_else(|| trap(format!("Invalid stable var name {}", name).as_str()));
+        let sbox_ptr = vars.remove(&name).expect("Stable variable not found");
 
         let mut sbox = unsafe { SBox::<T>::from_ptr(sbox_ptr) };
         let copy = sbox.get_cloned();
@@ -105,9 +106,33 @@ pub fn remove_var<'a, T: Readable<'a, LittleEndian> + Writable<LittleEndian>>(na
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
     use crate::{s, s_remove, stable, stable_memory_init};
 
     type Var = Vec<u8>;
+
+    impl AsDynSizeBytes for Var {
+        fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+            let mut len_buf = usize::_u8_arr_of_size();
+            len_buf.copy_from_slice(&buf[..usize::SIZE]);
+            let len = usize::from_fixed_size_bytes(&len_buf);
+
+            let mut var = vec![0u8; len];
+            var.copy_from_slice(&buf[usize::SIZE..(usize::SIZE + len)]);
+
+            var
+        }
+
+        fn as_dyn_size_bytes(&self) -> Vec<u8> {
+            let mut result = vec![0u8; self.len() + usize::SIZE];
+            let len_buf = self.len().as_fixed_size_bytes();
+
+            result[..usize::SIZE].copy_from_slice(&len_buf);
+            result[usize::SIZE..].copy_from_slice(self);
+
+            result
+        }
+    }
 
     #[test]
     fn basic_flow_works_fine() {
