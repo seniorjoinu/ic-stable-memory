@@ -87,7 +87,7 @@ impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBox<T> {
 impl<T: AsDynSizeBytes> StableAllocated for SBox<T> {
     fn move_to_stable(&mut self) {
         if self.slice.is_none() {
-            let buf = self.inner.as_new_dyn_size_bytes();
+            let buf = self.inner.as_dyn_size_bytes();
             let slice = allocate(buf.len());
 
             slice.write_bytes(0, &buf);

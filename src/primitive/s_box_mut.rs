@@ -32,7 +32,7 @@ impl<T> SBoxMut<T> {
     }
 }
 
-impl<'a, T: AsDynSizeBytes> SBoxMut<T> {
+impl<T: AsDynSizeBytes> SBoxMut<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let outer_slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
@@ -72,7 +72,7 @@ impl<'a, T: AsDynSizeBytes> SBoxMut<T> {
             let inner_slice_ptr = outer_slice.as_fixed_size_bytes_read(0);
             let inner_slice = SSlice::from_ptr(inner_slice_ptr, Side::Start).unwrap();
 
-            let buf = self.inner.as_new_dyn_size_bytes();
+            let buf = self.inner.as_dyn_size_bytes();
 
             let (inner_slice, should_rewrite_outer) = if buf.len() > inner_slice.get_size_bytes() {
                 match reallocate(inner_slice, buf.len()) {
@@ -145,7 +145,7 @@ impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBoxMut<T> {
 impl<T: AsDynSizeBytes> StableAllocated for SBoxMut<T> {
     fn move_to_stable(&mut self) {
         if self.outer_slice.is_none() {
-            let buf = self.inner.as_new_dyn_size_bytes();
+            let buf = self.inner.as_dyn_size_bytes();
             let inner_slice = allocate(buf.len());
 
             inner_slice.write_bytes(0, &buf);
@@ -242,8 +242,11 @@ mod tests {
     use std::mem::size_of;
 
     impl AsDynSizeBytes for i32 {
-        fn as_dyn_size_bytes(&self, result: &mut Vec<u8>) {
-            result.extend_from_slice(&self.to_le_bytes())
+        fn as_dyn_size_bytes(&self) -> Vec<u8> {
+            let mut buf = vec![0u8; size_of::<i32>()];
+            buf.copy_from_slice(&self.to_le_bytes());
+
+            buf
         }
 
         fn from_dyn_size_bytes(buf: &[u8]) -> Self {
