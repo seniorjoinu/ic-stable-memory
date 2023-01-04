@@ -1,9 +1,10 @@
-use crate::collections::btree_map::{
+use crate::collections::certified_btree_map::{
     IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
+use crate::utils::certification::{fork, fork_hash, pruned, AsHashTree, Hash, HashTree};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, isoprint, SSlice};
 use std::cmp::Ordering;
@@ -16,11 +17,13 @@ pub type PtrRaw = [u8; u64::SIZE];
 // node_type: u8
 // len: usize
 // children: [u64; CHILDREN_CAPACITY]
+// children_hashes: [Hash; CHILDREN_CAPACITY]
 // keys: [K; CAPACITY]
 
 const LEN_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 const CHILDREN_OFFSET: usize = LEN_OFFSET + usize::SIZE;
-const KEYS_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
+const CHILDREN_HASHES_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
+const KEYS_OFFSET: usize = CHILDREN_HASHES_OFFSET + Hash::SIZE * CHILDREN_CAPACITY;
 
 pub struct InternalBTreeNode<K> {
     ptr: u64,
@@ -49,7 +52,7 @@ where
         it
     }
 
-    pub fn create(key: &[u8; K::SIZE], lcp: &PtrRaw, rcp: &PtrRaw) -> Self {
+    pub fn create(key: &[u8; K::SIZE], lcp: &PtrRaw, lch: &Hash, rcp: &PtrRaw, rch: &Hash) -> Self {
         let slice = allocate(Self::calc_byte_size());
         let mut it = Self {
             ptr: slice.get_ptr(),
@@ -60,8 +63,12 @@ where
         it.init_node_type();
 
         it.write_key(0, key);
+
         it.write_child_ptr(0, lcp);
+        it.write_child_hash(0, lch);
+
         it.write_child_ptr(1, rcp);
+        it.write_child_hash(1, rch);
 
         it
     }
@@ -124,20 +131,23 @@ where
         left_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        left_insert_last_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        left_insert_last_element: Option<(&[u8; K::SIZE], &PtrRaw, &Hash)>,
         buf: &mut Vec<u8>,
     ) {
         let pk = parent.read_key(parent_idx);
 
-        if let Some((k, c)) = left_insert_last_element {
+        if let Some((k, c, h)) = left_insert_last_element {
             parent.write_key(parent_idx, k);
             self.insert_child_ptr(0, c, self_len + 1, buf);
+            self.insert_child_hash(0, h, self_len + 1, buf);
         } else {
             let lsk = left_sibling.read_key(left_sibling_len - 1);
+            let lsh = left_sibling.read_child_hash(left_sibling_len);
             let lsc = left_sibling.read_child_ptr(left_sibling_len);
 
             parent.write_key(parent_idx, &lsk);
             self.insert_child_ptr(0, &lsc, self_len + 1, buf);
+            self.insert_child_hash(0, &lsh, self_len + 1, buf);
         };
 
         self.insert_key(0, &pk, self_len, buf);
@@ -150,32 +160,38 @@ where
         right_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        right_insert_first_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        right_insert_first_element: Option<(&[u8; K::SIZE], &PtrRaw, &Hash)>,
         buf: &mut Vec<u8>,
     ) {
         let pk = parent.read_key(parent_idx);
 
-        let rsc = if let Some((k, c)) = right_insert_first_element {
+        let (rsc, rsh) = if let Some((k, c, h)) = right_insert_first_element {
+            let rsh = right_sibling.read_child_hash(0);
+            right_sibling.write_child_hash(0, h);
+
             let rsc = right_sibling.read_child_ptr(0);
             right_sibling.write_child_ptr(0, c);
 
             parent.write_key(parent_idx, k);
 
-            rsc
+            (rsc, rsh)
         } else {
             let rsk = right_sibling.read_key(0);
+            let rsh = right_sibling.read_child_hash(0);
             let rsc = right_sibling.read_child_ptr(0);
 
             right_sibling.remove_key(0, right_sibling_len, buf);
+            right_sibling.remove_child_hash(0, right_sibling_len + 1, buf);
             right_sibling.remove_child_ptr(0, right_sibling_len + 1, buf);
 
             parent.write_key(parent_idx, &rsk);
 
-            rsc
+            (rsc, rsh)
         };
 
         self.push_key(&pk, self_len);
         self.push_child_ptr(&rsc, self_len + 1);
+        self.push_child_hash(&rsh, self_len + 1);
     }
 
     pub fn split_max_len(&mut self, buf: &mut Vec<u8>) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
@@ -186,6 +202,9 @@ where
 
         self.read_child_ptrs_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
         right.write_child_ptrs_from_buf(0, buf);
+
+        self.read_child_hashes_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+        right.write_child_hashes_from_buf(0, buf);
 
         (right, self.read_key(MIN_LEN_AFTER_SPLIT))
     }
@@ -203,6 +222,9 @@ where
 
         right.read_child_ptrs_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
         self.write_child_ptrs_from_buf(B, buf);
+
+        right.read_child_hashes_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+        self.write_child_hashes_from_buf(B, buf);
 
         right.destroy();
     }
@@ -263,6 +285,38 @@ where
 
         self.read_child_ptrs_to_buf(idx + 1, children_len - idx - 1, buf);
         self.write_child_ptrs_from_buf(idx, buf);
+    }
+
+    #[inline]
+    pub fn push_child_hash(&mut self, hash: &Hash, children_len: usize) {
+        self.write_child_hash(children_len, hash);
+    }
+
+    pub fn insert_child_hash(
+        &mut self,
+        idx: usize,
+        hash: &Hash,
+        children_len: usize,
+        buf: &mut Vec<u8>,
+    ) {
+        if idx == children_len {
+            self.push_child_hash(hash, children_len);
+            return;
+        }
+
+        self.read_child_hashes_to_buf(idx, children_len - idx, buf);
+        self.write_child_hashes_from_buf(idx + 1, buf);
+
+        self.write_child_hash(idx, hash);
+    }
+
+    pub fn remove_child_hash(&mut self, idx: usize, children_len: usize, buf: &mut Vec<u8>) {
+        if idx == children_len - 1 {
+            return;
+        }
+
+        self.read_child_hashes_to_buf(idx + 1, children_len - idx - 1, buf);
+        self.write_child_hashes_from_buf(idx, buf);
     }
 
     pub fn read_left_sibling<T: IBTreeNode>(&self, idx: usize) -> Option<T> {
@@ -328,6 +382,38 @@ where
     }
 
     #[inline]
+    pub fn read_child_hash(&self, idx: usize) -> Hash {
+        SSlice::_read_const_u8_array_of_size::<Hash>(
+            self.ptr,
+            CHILDREN_HASHES_OFFSET + idx * Hash::SIZE,
+        )
+    }
+
+    #[inline]
+    fn read_child_hashes_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
+        buf.resize(len * Hash::SIZE, 0);
+        SSlice::_read_bytes(
+            self.ptr,
+            CHILDREN_HASHES_OFFSET + from_idx * Hash::SIZE,
+            buf,
+        );
+    }
+
+    #[inline]
+    pub fn write_child_hash(&mut self, idx: usize, hash: &Hash) {
+        SSlice::_write_bytes(self.ptr, CHILDREN_HASHES_OFFSET + idx * Hash::SIZE, hash);
+    }
+
+    #[inline]
+    fn write_child_hashes_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
+        SSlice::_write_bytes(
+            self.ptr,
+            CHILDREN_HASHES_OFFSET + from_idx * Hash::SIZE,
+            buf,
+        );
+    }
+
+    #[inline]
     pub fn write_len(&mut self, len: usize) {
         SSlice::_as_fixed_size_bytes_write(self.ptr, LEN_OFFSET, len)
     }
@@ -340,6 +426,43 @@ where
     #[inline]
     fn init_node_type(&mut self) {
         SSlice::_as_fixed_size_bytes_write(self.ptr, NODE_TYPE_OFFSET, NODE_TYPE_INTERNAL)
+    }
+}
+
+impl<K: StableAllocated + Ord> AsHashTree<usize> for InternalBTreeNode<K>
+where
+    [(); K::SIZE]: Sized,
+{
+    fn root_hash(&self) -> Hash {
+        let len = self.read_len();
+        let mut lh = self.read_child_hash(0);
+
+        for i in 1..len {
+            lh = fork_hash(&lh, &self.read_child_hash(i));
+        }
+
+        lh
+    }
+
+    fn witness(&self, index: usize, indexed_subtree: Option<HashTree>) -> HashTree {
+        debug_assert!(indexed_subtree.is_some());
+
+        let len = self.read_len();
+        let mut lh = if index == 0 {
+            unsafe { indexed_subtree.unwrap_unchecked() }
+        } else {
+            pruned(self.read_child_hash(0))
+        };
+
+        for i in 1..len {
+            lh = if index == i {
+                fork(lh, unsafe { indexed_subtree.unwrap_unchecked() })
+            } else {
+                fork(lh, pruned(self.read_child_hash(i)))
+            };
+        }
+
+        lh
     }
 }
 
@@ -385,15 +508,15 @@ where
             "*({})]",
             u64::from_fixed_size_bytes(&self.read_child_ptr(self.read_len()))
         );
-        
+
         result
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::internal_node::InternalBTreeNode;
-    use crate::collections::btree_map::{
+    use crate::collections::certified_btree_map::internal_node::InternalBTreeNode;
+    use crate::collections::certified_btree_map::{
         B, CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     };
     use crate::utils::encoding::AsFixedSizeBytes;

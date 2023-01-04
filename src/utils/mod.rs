@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use ic_cdk::{print, trap};
 
+pub mod certification;
 pub mod encoding;
 pub mod math;
 pub mod mem_context;

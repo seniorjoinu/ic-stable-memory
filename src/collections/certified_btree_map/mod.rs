@@ -1,8 +1,9 @@
-use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
-use crate::collections::btree_map::iter::SBTreeMapIter;
-use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::collections::certified_btree_map::internal_node::InternalBTreeNode;
+use crate::collections::certified_btree_map::iter::SBTreeMapIter;
+use crate::collections::certified_btree_map::leaf_node::LeafBTreeNode;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
+use crate::utils::certification::{AsHashTree, Hash, EMPTY_HASH};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{isoprint, SSlice};
 use std::fmt::Debug;
@@ -27,11 +28,12 @@ mod leaf_node;
 pub struct SBTreeMap<K, V> {
     root: Option<BTreeNode<K, V>>,
     len: u64,
+    root_hash: Hash,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated + AsHashTree> SBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -41,6 +43,7 @@ where
         Self {
             root: None,
             len: 0,
+            root_hash: EMPTY_HASH,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
@@ -69,7 +72,12 @@ where
 
         let right_leaf = match self.insert_leaf(&mut leaf, key, value) {
             Ok(v) => {
-                self._stack.clear();
+                let mut node_hash = leaf.root_hash();
+                while let Some((mut parent, parent_len, parent_idx)) = self._stack.pop() {
+                    parent.write_child_hash(parent_idx, &node_hash);
+                    node_hash = parent.root_hash();
+                }
+                self.root_hash = node_hash;
 
                 return Some(v);
             }
@@ -77,7 +85,12 @@ where
                 if let Some(right_leaf) = right_leaf_opt {
                     right_leaf
                 } else {
-                    self._stack.clear();
+                    let mut node_hash = leaf.root_hash();
+                    while let Some((mut parent, parent_len, parent_idx)) = self._stack.pop() {
+                        parent.write_child_hash(parent_idx, &node_hash);
+                        node_hash = parent.root_hash();
+                    }
+                    self.root_hash = node_hash;
                     self.len += 1;
 
                     return None;
@@ -89,6 +102,7 @@ where
         let mut ptr = right_leaf.as_ptr();
 
         while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
+            // TODO: INSERT AND UPDATE HASHES
             if let Some((right, _k)) = self.insert_internal(
                 &mut parent,
                 parent_len,
@@ -305,7 +319,7 @@ where
         len: usize,
         idx: usize,
         key: [u8; K::SIZE],
-        child_ptr: PtrRaw,
+        child_ptr: [u8; u64::SIZE],
     ) -> Option<(InternalBTreeNode<K>, [u8; K::SIZE])> {
         if len < CAPACITY {
             internal_node.insert_key(idx, &key, len, &mut self._buf);
@@ -455,7 +469,7 @@ where
         internal_node: &mut InternalBTreeNode<K>,
         idx: usize,
         key: &[u8; K::SIZE],
-        child_ptr: &PtrRaw,
+        child_ptr: &[u8; u64::SIZE],
     ) -> bool {
         let stack_top_frame = self.peek_stack();
         if stack_top_frame.is_none() {
@@ -517,7 +531,7 @@ where
         rs_len: usize,
         i_idx: usize,
         key: &[u8; K::SIZE],
-        child_ptr: &PtrRaw,
+        child_ptr: &[u8; u64::SIZE],
     ) {
         if i_idx != CAPACITY {
             rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, None, &mut self._buf);
@@ -543,7 +557,7 @@ where
         ls_len: usize,
         i_idx: usize,
         key: &[u8; K::SIZE],
-        child_ptr: &PtrRaw,
+        child_ptr: &[u8; u64::SIZE],
     ) {
         if i_idx != 0 {
             ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, None, &mut self._buf);
@@ -1230,7 +1244,7 @@ impl<K, V> BTreeNode<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::SBTreeMap;
+    use crate::collections::certified_btree_map::SBTreeMap;
     use crate::{init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
