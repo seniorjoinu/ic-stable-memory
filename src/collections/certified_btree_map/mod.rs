@@ -98,20 +98,24 @@ where
 
         let mut key_to_index = right_leaf.read_key(0);
         let mut ptr = right_leaf.as_ptr();
-        let mut hash = right_leaf.root_hash();
+        let mut left_hash = leaf.root_hash();
+        let mut right_hash = right_leaf.root_hash();
 
         while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
+            parent.write_child_hash(idx, &left_hash);
+
             if let Some((right, _k)) = self.insert_internal(
                 &mut parent,
                 parent_len,
                 idx,
                 key_to_index,
                 ptr.as_fixed_size_bytes(),
-                hash,
+                right_hash,
             ) {
                 key_to_index = _k;
                 ptr = right.as_ptr();
-                hash = right.root_hash();
+                left_hash = parent.root_hash();
+                right_hash = right.root_hash();
                 node = BTreeNode::Internal(parent);
             } else {
                 self.recalculate_root_hash(parent.root_hash());
@@ -126,7 +130,7 @@ where
             &node.as_ptr().as_fixed_size_bytes(),
             &node.root_hash(),
             &ptr.as_fixed_size_bytes(),
-            &hash,
+            &right_hash,
         );
         self.root_hash = new_root.root_hash();
         self.root = Some(BTreeNode::Internal(new_root));
@@ -701,6 +705,12 @@ where
                 // just idx, because after rotation leaf has one more key added to the end
                 let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
+                parent.write_child_hash(parent_idx, &leaf.root_hash());
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+
+                self._stack.pop();
+                self.recalculate_root_hash(parent.root_hash());
+
                 return Some(v);
             }
 
@@ -811,8 +821,6 @@ where
         if let Some((mut fin, i)) = found_internal_node {
             fin.write_key(i, &leaf.read_key(0));
         }
-
-        self._stack.clear();
     }
 
     fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
@@ -1384,7 +1392,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::certified_btree_map::SBTreeMap;
-    use crate::utils::certification::{leaf, AsHashTree, Hash, HashTree};
+    use crate::utils::certification::{leaf, leaf_hash, AsHashTree, Hash, HashTree};
     use crate::{init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -1392,9 +1400,7 @@ mod tests {
 
     impl AsHashTree for u64 {
         fn root_hash(&self) -> Hash {
-            let mut hasher = Sha256::default();
-            hasher.update(&self.to_le_bytes());
-            hasher.finalize().into()
+            leaf_hash(&self.to_le_bytes())
         }
 
         fn witness(&self, _: (), _: Option<HashTree>) -> HashTree {
@@ -1418,13 +1424,17 @@ mod tests {
         example.shuffle(&mut thread_rng());
 
         for i in 0..iterations {
-            println!("inserting {}", example[i]);
             assert!(map._stack.is_empty());
             assert!(map.insert(example[i], example[i]).is_none());
 
             for j in 0..i {
                 let wit = map.witness(&example[j], None);
-                assert_eq!(wit.reconstruct(), map.root_hash, "invalid witness");
+                assert_eq!(
+                    wit.reconstruct(),
+                    map.root_hash,
+                    "invalid witness {:?}",
+                    wit
+                );
             }
         }
 
@@ -1435,9 +1445,19 @@ mod tests {
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));
 
+            map.debug_print();
+            println!();
+            println!();
+
             for j in (i + 1)..iterations {
                 let wit = map.witness(&example[j], None);
-                assert_eq!(wit.reconstruct(), map.root_hash, "invalid witness");
+                assert_eq!(
+                    wit.reconstruct(),
+                    map.root_hash,
+                    "invalid witness of {}: {:?}",
+                    example[j],
+                    wit
+                );
             }
         }
 

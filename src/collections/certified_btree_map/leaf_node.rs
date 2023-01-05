@@ -414,8 +414,13 @@ where
             }
 
             lh = if let Some(is) = indexed_subtree {
+                k = self.read_key(index);
+
                 fork(lh, labeled(k.to_vec(), is))
             } else {
+                k = self.read_key(index);
+                v = V::from_fixed_size_bytes(&self.read_value(index));
+
                 fork(lh, labeled(k.to_vec(), v.witness((), None)))
             };
 
@@ -480,6 +485,49 @@ mod tests {
     use crate::collections::certified_btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
     use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
+
+    use crate::utils::certification::{leaf, leaf_hash, AsHashTree, Hash, HashTree};
+
+    #[test]
+    fn crypto_works_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut node = LeafBTreeNode::<u64, u64>::create();
+
+        node.push_key(&1u64.to_le_bytes(), 0);
+        node.push_value(&1u64.to_le_bytes(), 0);
+
+        node.push_key(&2u64.to_le_bytes(), 1);
+        node.push_value(&2u64.to_le_bytes(), 1);
+
+        node.write_len(2);
+
+        let root_hash = node.root_hash();
+
+        let w = node.witness(0, None);
+        assert_eq!(w.reconstruct(), root_hash, "witness 0 failed {:?}", w);
+
+        let w = node.witness(1, None);
+        assert_eq!(w.reconstruct(), root_hash, "witness 1 failed {:?}", w);
+
+        node.push_key(&3u64.to_le_bytes(), 2);
+        node.push_value(&3u64.to_le_bytes(), 2);
+
+        node.write_len(3);
+
+        let root_hash = node.root_hash();
+
+        let w = node.witness(0, None);
+        assert_eq!(w.reconstruct(), root_hash, "witness 0 failed {:?}", w);
+
+        let w = node.witness(1, None);
+        assert_eq!(w.reconstruct(), root_hash, "witness 1 failed {:?}", w);
+
+        let w = node.witness(2, None);
+        assert_eq!(w.reconstruct(), root_hash, "witness 2 failed {:?}", w);
+    }
 
     #[test]
     fn works_fine() {

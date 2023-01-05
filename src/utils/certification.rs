@@ -127,3 +127,44 @@ pub trait AsHashTree<I = ()> {
     /// Creates a HashTree witnessing the value indexed by index of type I.
     fn witness(&self, index: I, indexed_subtree: Option<HashTree>) -> HashTree;
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::certification::{
+        fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned,
+    };
+
+    #[test]
+    fn test() {
+        let k1 = 1u64;
+        let v1 = 10u64;
+
+        let k2 = 2u64;
+        let v2 = 20u64;
+
+        let wit = fork(
+            pruned(labeled_hash(
+                &k1.to_le_bytes(),
+                &leaf_hash(&v1.to_le_bytes()),
+            )),
+            labeled(k2.to_le_bytes().to_vec(), leaf(v2.to_le_bytes().to_vec())),
+        );
+
+        let root_hash = fork_hash(
+            &labeled_hash(&k1.to_le_bytes(), &leaf_hash(&v1.to_le_bytes())),
+            &labeled_hash(&k2.to_le_bytes(), &leaf_hash(&v2.to_le_bytes())),
+        );
+
+        assert_eq!(wit.reconstruct(), root_hash);
+
+        let wit = fork(
+            labeled(k1.to_le_bytes().to_vec(), leaf(v1.to_le_bytes().to_vec())),
+            pruned(labeled_hash(
+                &k2.to_le_bytes(),
+                &leaf_hash(&v2.to_le_bytes()),
+            )),
+        );
+
+        assert_eq!(wit.reconstruct(), root_hash);
+    }
+}
