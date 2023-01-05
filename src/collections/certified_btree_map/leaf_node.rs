@@ -388,32 +388,46 @@ where
         let mut k = self.read_key(0);
         let mut v = V::from_fixed_size_bytes(&self.read_value(0));
 
-        let mut lh = if index == 0 {
-            if let Some(is) = indexed_subtree {
-                labeled(k.to_vec(), is)   
+        if index == 0 {
+            let mut lh = if let Some(is) = indexed_subtree {
+                labeled(k.to_vec(), is)
             } else {
                 labeled(k.to_vec(), v.witness((), None))
-            }
-        } else {
-            pruned(labeled_hash(&k, &v.root_hash()))
-        };
-
-        for i in 1..len {
-            k = self.read_key(i);
-            v = V::from_fixed_size_bytes(&self.read_value(i));
-
-            lh = if index == i {
-                if let Some(is) = indexed_subtree {
-                    fork(lh, labeled(k.to_vec(), is))
-                } else {
-                    fork(lh, labeled(k.to_vec(), v.witness((), None)))
-                }
-            } else {
-                fork(lh, pruned(labeled_hash(&k, &v.root_hash())))
             };
-        }
 
-        lh
+            for i in 1..len {
+                k = self.read_key(i);
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(lh, pruned(labeled_hash(&k, &v.root_hash())));
+            }
+
+            lh
+        } else {
+            let mut lh = pruned(labeled_hash(&k, &v.root_hash()));
+
+            for i in 1..index {
+                k = self.read_key(i);
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(lh, pruned(labeled_hash(&k, &v.root_hash())));
+            }
+
+            lh = if let Some(is) = indexed_subtree {
+                fork(lh, labeled(k.to_vec(), is))
+            } else {
+                fork(lh, labeled(k.to_vec(), v.witness((), None)))
+            };
+
+            for i in (index + 1)..len {
+                k = self.read_key(i);
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(lh, pruned(labeled_hash(&k, &v.root_hash())));
+            }
+
+            lh
+        }
     }
 }
 

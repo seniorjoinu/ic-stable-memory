@@ -448,21 +448,29 @@ where
         debug_assert!(indexed_subtree.is_some());
 
         let len = self.read_len();
-        let mut lh = if index == 0 {
-            unsafe { indexed_subtree.unwrap_unchecked() }
+        if index == 0 {
+            let mut lh = unsafe { indexed_subtree.unwrap_unchecked() };
+
+            for i in 1..len {
+                lh = fork(lh, pruned(self.read_child_hash(i)));
+            }
+
+            lh
         } else {
-            pruned(self.read_child_hash(0))
-        };
+            let mut lh = pruned(self.read_child_hash(0));
 
-        for i in 1..len {
-            lh = if index == i {
-                fork(lh, unsafe { indexed_subtree.unwrap_unchecked() })
-            } else {
-                fork(lh, pruned(self.read_child_hash(i)))
-            };
+            for i in 1..index {
+                lh = fork(lh, pruned(self.read_child_hash(i)));
+            }
+
+            lh = fork(lh, unsafe { indexed_subtree.unwrap_unchecked() });
+
+            for i in (index + 1)..len {
+                lh = fork(lh, pruned(self.read_child_hash(i)));
+            }
+
+            lh
         }
-
-        lh
     }
 }
 
