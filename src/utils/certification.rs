@@ -1,3 +1,7 @@
+use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::collections::btree_map::internal_node::InternalBTreeNode;
+use crate::collections::btree_map::BTreeNode;
+use crate::primitive::StableAllocated;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -119,6 +123,11 @@ fn domain_sep(s: &str) -> sha2::Sha256 {
     h
 }
 
+pub trait AsHashableBytes {
+    fn as_hashable_bytes(&self) -> Vec<u8>;
+    fn from_hashable_bytes(bytes: Vec<u8>) -> Self;
+}
+
 pub trait AsHashTree<I = ()> {
     /// Returns the root hash of the tree without constructing it.
     /// Must be equivalent to `HashTree::reconstruct()`.
@@ -126,6 +135,171 @@ pub trait AsHashTree<I = ()> {
 
     /// Creates a HashTree witnessing the value indexed by index of type I.
     fn witness(&self, index: I, indexed_subtree: Option<HashTree>) -> HashTree;
+}
+
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+    AsHashTree<usize> for LeafBTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    fn root_hash(&self) -> Hash {
+        let len = self.read_len();
+
+        let mut k = K::from_fixed_size_bytes(&self.read_key(0));
+        let mut v = V::from_fixed_size_bytes(&self.read_value(0));
+
+        let mut lh = labeled_hash(&k.as_hashable_bytes(), &leaf_hash(&v.as_hashable_bytes()));
+
+        for i in 1..len {
+            k = K::from_fixed_size_bytes(&self.read_key(i));
+            v = V::from_fixed_size_bytes(&self.read_value(i));
+
+            lh = fork_hash(
+                &lh,
+                &labeled_hash(&k.as_hashable_bytes(), &leaf_hash(&v.as_hashable_bytes())),
+            );
+        }
+
+        lh
+    }
+
+    fn witness(&self, index: usize, indexed_subtree: Option<HashTree>) -> HashTree {
+        let len = self.read_len();
+        debug_assert!(index < len);
+
+        let mut k = K::from_fixed_size_bytes(&self.read_key(0));
+        let mut v = V::from_fixed_size_bytes(&self.read_value(0));
+
+        if index == 0 {
+            let mut lh = if let Some(is) = indexed_subtree {
+                labeled(k.as_hashable_bytes(), is)
+            } else {
+                labeled(k.as_hashable_bytes(), leaf(v.as_hashable_bytes()))
+            };
+
+            for i in 1..len {
+                k = K::from_fixed_size_bytes(&self.read_key(i));
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(
+                    lh,
+                    pruned(labeled_hash(
+                        &k.as_hashable_bytes(),
+                        &leaf_hash(&v.as_hashable_bytes()),
+                    )),
+                );
+            }
+
+            lh
+        } else {
+            let mut lh = pruned(labeled_hash(
+                &k.as_hashable_bytes(),
+                &leaf_hash(&v.as_hashable_bytes()),
+            ));
+
+            for i in 1..index {
+                k = K::from_fixed_size_bytes(&self.read_key(i));
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(
+                    lh,
+                    pruned(labeled_hash(
+                        &k.as_hashable_bytes(),
+                        &leaf_hash(&v.as_hashable_bytes()),
+                    )),
+                );
+            }
+
+            lh = if let Some(is) = indexed_subtree {
+                k = K::from_fixed_size_bytes(&self.read_key(index));
+
+                fork(lh, labeled(k.as_hashable_bytes(), is))
+            } else {
+                k = K::from_fixed_size_bytes(&self.read_key(index));
+                v = V::from_fixed_size_bytes(&self.read_value(index));
+
+                fork(
+                    lh,
+                    labeled(k.as_hashable_bytes(), leaf(v.as_hashable_bytes())),
+                )
+            };
+
+            for i in (index + 1)..len {
+                k = K::from_fixed_size_bytes(&self.read_key(i));
+                v = V::from_fixed_size_bytes(&self.read_value(i));
+
+                lh = fork(
+                    lh,
+                    pruned(labeled_hash(
+                        &k.as_hashable_bytes(),
+                        &leaf_hash(&v.as_hashable_bytes()),
+                    )),
+                );
+            }
+
+            lh
+        }
+    }
+}
+
+impl<K: StableAllocated + Ord + AsHashableBytes> AsHashTree<usize> for InternalBTreeNode<K>
+    where
+        [(); K::SIZE]: Sized,
+{
+    fn root_hash(&self) -> Hash {
+        let len = self.read_len() + 1;
+        let mut lh = self.read_child_hash(0, true);
+
+        for i in 1..len {
+            lh = fork_hash(&lh, &self.read_child_hash(i, true));
+        }
+
+        lh
+    }
+
+    fn witness(&self, index: usize, indexed_subtree: Option<HashTree>) -> HashTree {
+        debug_assert!(indexed_subtree.is_some());
+
+        let len = self.read_len() + 1;
+        if index == 0 {
+            let mut lh = unsafe { indexed_subtree.unwrap_unchecked() };
+
+            for i in 1..len {
+                lh = fork(lh, pruned(self.read_child_hash(i, true)));
+            }
+
+            lh
+        } else {
+            let mut lh = pruned(self.read_child_hash(0, true));
+
+            for i in 1..index {
+                lh = fork(lh, pruned(self.read_child_hash(i, true)));
+            }
+
+            lh = fork(lh, unsafe { indexed_subtree.unwrap_unchecked() });
+
+            for i in (index + 1)..len {
+                lh = fork(lh, pruned(self.read_child_hash(i, true)));
+            }
+
+            lh
+        }
+    }
+}
+
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+BTreeNode<K, V>
+    where
+        [(); K::SIZE]: Sized,
+        [(); V::SIZE]: Sized,
+{
+    pub(crate) fn root_hash(&self) -> Hash {
+        match &self {
+            Self::Internal(i) => i.root_hash(),
+            Self::Leaf(l) => l.root_hash(),
+        }
+    }
 }
 
 #[cfg(test)]

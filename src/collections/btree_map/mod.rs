@@ -18,15 +18,15 @@ pub const NODE_TYPE_INTERNAL: u8 = 127;
 pub const NODE_TYPE_LEAF: u8 = 255;
 pub const NODE_TYPE_OFFSET: usize = 0;
 
-mod internal_node;
+pub(crate) mod internal_node;
 pub mod iter;
-mod leaf_node;
+pub(crate) mod leaf_node;
 
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
 pub struct SBTreeMap<K, V> {
-    root: Option<BTreeNode<K, V>>,
-    len: u64,
+    pub(crate) root: Option<BTreeNode<K, V>>,
+    pub(crate) len: u64,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
 }
@@ -111,6 +111,7 @@ where
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
             &ptr.as_fixed_size_bytes(),
+            None,
         );
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
@@ -192,7 +193,7 @@ where
 
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
-        SBTreeMapIter::<K, V>::new(self)
+        SBTreeMapIter::<K, V>::new(&self.root, self.len)
     }
 
     #[inline]
@@ -320,7 +321,7 @@ where
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
-        let (mut right, mid) = internal_node.split_max_len(&mut self._buf);
+        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, false);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
@@ -520,7 +521,17 @@ where
         child_ptr: &PtrRaw,
     ) {
         if i_idx != CAPACITY {
-            rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, None, &mut self._buf);
+            rs.steal_from_left(
+                rs_len,
+                node,
+                CAPACITY,
+                p,
+                p_idx,
+                None,
+                None,
+                &mut self._buf,
+                false,
+            );
 
             node.insert_key(i_idx, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
@@ -530,7 +541,17 @@ where
         }
 
         let last = Some((key, child_ptr));
-        rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, last, &mut self._buf);
+        rs.steal_from_left(
+            rs_len,
+            node,
+            CAPACITY,
+            p,
+            p_idx,
+            last,
+            None,
+            &mut self._buf,
+            false,
+        );
         rs.write_len(rs_len + 1);
     }
 
@@ -546,7 +567,17 @@ where
         child_ptr: &PtrRaw,
     ) {
         if i_idx != 0 {
-            ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, None, &mut self._buf);
+            ls.steal_from_right(
+                ls_len,
+                node,
+                CAPACITY,
+                p,
+                p_idx - 1,
+                None,
+                None,
+                &mut self._buf,
+                false,
+            );
 
             node.insert_key(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx, child_ptr, CAPACITY, &mut self._buf);
@@ -556,7 +587,17 @@ where
         }
 
         let first = Some((key, child_ptr));
-        ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, first, &mut self._buf);
+        ls.steal_from_right(
+            ls_len,
+            node,
+            CAPACITY,
+            p,
+            p_idx - 1,
+            first,
+            None,
+            &mut self._buf,
+            false,
+        );
         ls.write_len(ls_len + 1);
     }
 
@@ -932,7 +973,9 @@ where
             &mut parent,
             parent_idx,
             None,
+            None,
             &mut self._buf,
+            false,
         );
         right_sibling.write_len(right_sibling_len - 1);
         node.remove_key(idx_to_remove, B, &mut self._buf);
@@ -959,7 +1002,9 @@ where
             &mut parent,
             parent_idx - 1,
             None,
+            None,
             &mut self._buf,
+            false,
         );
         left_sibling.write_len(left_sibling_len - 1);
         node.remove_key(idx_to_remove + 1, B, &mut self._buf);
@@ -978,7 +1023,7 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx);
-        node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
+        node.merge_min_len(&mid_element, right_sibling, &mut self._buf, false);
         node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
         node.write_len(CAPACITY - 1);
@@ -994,7 +1039,7 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx - 1);
-        left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
+        left_sibling.merge_min_len(&mid_element, node, &mut self._buf, false);
         left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
         left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
         left_sibling.write_len(CAPACITY - 1);
@@ -1195,13 +1240,13 @@ pub trait IBTreeNode {
     unsafe fn copy(&self) -> Self;
 }
 
-enum BTreeNode<K, V> {
+pub(crate) enum BTreeNode<K, V> {
     Internal(InternalBTreeNode<K>),
     Leaf(LeafBTreeNode<K, V>),
 }
 
 impl<K, V> BTreeNode<K, V> {
-    fn from_ptr(ptr: u64) -> Self {
+    pub(crate) fn from_ptr(ptr: u64) -> Self {
         let node_type: u8 = SSlice::_as_fixed_size_bytes_read(ptr, NODE_TYPE_OFFSET);
 
         unsafe {
@@ -1213,14 +1258,14 @@ impl<K, V> BTreeNode<K, V> {
         }
     }
 
-    fn as_ptr(&self) -> u64 {
+    pub(crate) fn as_ptr(&self) -> u64 {
         match &self {
             Self::Internal(i) => i.as_ptr(),
             Self::Leaf(l) => l.as_ptr(),
         }
     }
 
-    unsafe fn copy(&self) -> Self {
+    pub(crate) unsafe fn copy(&self) -> Self {
         match &self {
             Self::Internal(i) => Self::Internal(i.copy()),
             Self::Leaf(l) => Self::Leaf(l.copy()),

@@ -1,31 +1,19 @@
-use crate::collections::certified_btree_map::internal_node::{InternalBTreeNode, PtrRaw};
-use crate::collections::certified_btree_map::iter::SBTreeMapIter;
-use crate::collections::certified_btree_map::leaf_node::LeafBTreeNode;
+use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
+use crate::collections::btree_map::iter::SBTreeMapIter;
+use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::collections::btree_map::{
+    BTreeNode, IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, MIN_LEN_AFTER_SPLIT,
+};
+use crate::isoprint;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
-use crate::utils::certification::{AsHashTree, Hash, HashTree, EMPTY_HASH};
+use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{isoprint, SSlice};
 use std::fmt::Debug;
-
-pub const B: usize = 8;
-pub const CAPACITY: usize = 2 * B - 1;
-pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
-
-pub const CHILDREN_CAPACITY: usize = 2 * B;
-pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
-
-pub const NODE_TYPE_INTERNAL: u8 = 127;
-pub const NODE_TYPE_LEAF: u8 = 255;
-pub const NODE_TYPE_OFFSET: usize = 0;
-
-mod internal_node;
-pub mod iter;
-mod leaf_node;
 
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
-pub struct SBTreeMap<K, V> {
+pub struct SCertifiedBTreeMap<K, V> {
     root: Option<BTreeNode<K, V>>,
     len: u64,
     root_hash: Hash,
@@ -33,7 +21,8 @@ pub struct SBTreeMap<K, V> {
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated + AsHashTree> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+    SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -51,7 +40,7 @@ where
 
     fn recalculate_root_hash(&mut self, mut last_node_hash: Hash) {
         while let Some((mut parent, _, parent_idx)) = self._stack.pop() {
-            parent.write_child_hash(parent_idx, &last_node_hash);
+            parent.write_child_hash(parent_idx, &last_node_hash, true);
             last_node_hash = parent.root_hash();
         }
         self.root_hash = last_node_hash;
@@ -102,7 +91,7 @@ where
         let mut right_hash = right_leaf.root_hash();
 
         while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
-            parent.write_child_hash(idx, &left_hash);
+            parent.write_child_hash(idx, &left_hash, true);
 
             if let Some((right, _k)) = self.insert_internal(
                 &mut parent,
@@ -128,9 +117,8 @@ where
         let new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
-            &node.root_hash(),
             &ptr.as_fixed_size_bytes(),
-            &right_hash,
+            Some((&node.root_hash(), &right_hash)),
         );
         self.root_hash = new_root.root_hash();
         self.root = Some(BTreeNode::Internal(new_root));
@@ -214,7 +202,7 @@ where
 
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
-        SBTreeMapIter::<K, V>::new(self)
+        SBTreeMapIter::<K, V>::new(&self.root, self.len)
     }
 
     #[inline]
@@ -333,7 +321,7 @@ where
         if len < CAPACITY {
             internal_node.insert_key(idx, &key, len, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, len + 1, &mut self._buf);
-            internal_node.insert_child_hash(idx + 1, &child_hash, len + 1, &mut self._buf);
+            internal_node.insert_child_hash(idx + 1, &child_hash, len + 1, &mut self._buf, true);
 
             internal_node.write_len(len + 1);
             return None;
@@ -344,19 +332,19 @@ where
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
-        let (mut right, mid) = internal_node.split_max_len(&mut self._buf);
+        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, true);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, B, &mut self._buf);
-            internal_node.insert_child_hash(idx + 1, &child_hash, B, &mut self._buf);
+            internal_node.insert_child_hash(idx + 1, &child_hash, B, &mut self._buf, true);
 
             internal_node.write_len(B);
             right.write_len(MIN_LEN_AFTER_SPLIT);
         } else {
             right.insert_key(idx - B, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             right.insert_child_ptr(idx - B + 1, &child_ptr, B, &mut self._buf);
-            right.insert_child_hash(idx - B + 1, &child_hash, B, &mut self._buf);
+            right.insert_child_hash(idx - B + 1, &child_hash, B, &mut self._buf, true);
 
             internal_node.write_len(MIN_LEN_AFTER_SPLIT);
             right.write_len(B);
@@ -395,8 +383,8 @@ where
                     key,
                     value,
                 );
-                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
-                parent.write_child_hash(parent_idx, &leaf_node.root_hash());
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &leaf_node.root_hash(), true);
 
                 return true;
             }
@@ -418,8 +406,8 @@ where
                     key,
                     value,
                 );
-                parent.write_child_hash(parent_idx, &leaf_node.root_hash());
-                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+                parent.write_child_hash(parent_idx, &leaf_node.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                 return true;
             }
@@ -511,8 +499,8 @@ where
                     child_ptr,
                     child_hash,
                 );
-                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
-                parent.write_child_hash(parent_idx, &internal_node.root_hash());
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &internal_node.root_hash(), true);
 
                 return true;
             }
@@ -535,8 +523,8 @@ where
                     child_ptr,
                     child_hash,
                 );
-                parent.write_child_hash(parent_idx, &internal_node.root_hash());
-                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+                parent.write_child_hash(parent_idx, &internal_node.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                 return true;
             }
@@ -558,19 +546,39 @@ where
         child_hash: &Hash,
     ) {
         if i_idx != CAPACITY {
-            rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, None, &mut self._buf);
+            rs.steal_from_left(
+                rs_len,
+                node,
+                CAPACITY,
+                p,
+                p_idx,
+                None,
+                None,
+                &mut self._buf,
+                true,
+            );
             rs.write_len(rs_len + 1);
 
             node.insert_key(i_idx, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
-            node.insert_child_hash(i_idx + 1, child_hash, CAPACITY, &mut self._buf);
+            node.insert_child_hash(i_idx + 1, child_hash, CAPACITY, &mut self._buf, true);
 
             return;
         }
 
-        let last = Some((key, child_ptr, child_hash));
+        let last = Some((key, child_ptr));
         rs.write_len(rs_len + 1);
-        rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, last, &mut self._buf);
+        rs.steal_from_left(
+            rs_len,
+            node,
+            CAPACITY,
+            p,
+            p_idx,
+            last,
+            Some(child_hash),
+            &mut self._buf,
+            true,
+        );
     }
 
     fn pass_to_left_sibling_internal(
@@ -586,18 +594,38 @@ where
         child_hash: &Hash,
     ) {
         if i_idx != 0 {
-            ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, None, &mut self._buf);
+            ls.steal_from_right(
+                ls_len,
+                node,
+                CAPACITY,
+                p,
+                p_idx - 1,
+                None,
+                None,
+                &mut self._buf,
+                true,
+            );
 
             node.insert_key(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx, child_ptr, CAPACITY, &mut self._buf);
-            node.insert_child_hash(i_idx, child_hash, CAPACITY, &mut self._buf);
+            node.insert_child_hash(i_idx, child_hash, CAPACITY, &mut self._buf, true);
 
             ls.write_len(ls_len + 1);
             return;
         }
 
-        let first = Some((key, child_ptr, child_hash));
-        ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, first, &mut self._buf);
+        let first = Some((key, child_ptr));
+        ls.steal_from_right(
+            ls_len,
+            node,
+            CAPACITY,
+            p,
+            p_idx - 1,
+            first,
+            Some(child_hash),
+            &mut self._buf,
+            true,
+        );
         ls.write_len(ls_len + 1);
     }
 
@@ -628,8 +656,8 @@ where
                 // idx + 1, because after the rotation the leaf has one more key added before
                 let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
 
-                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
-                parent.write_child_hash(parent_idx, &leaf.root_hash());
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
 
                 self._stack.pop();
                 self.recalculate_root_hash(parent.root_hash());
@@ -656,8 +684,8 @@ where
                     // just idx, because after rotation leaf has one more key added to the end
                     let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
-                    parent.write_child_hash(parent_idx, &leaf.root_hash());
-                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+                    parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                     self._stack.pop();
                     self.recalculate_root_hash(parent.root_hash());
@@ -672,7 +700,7 @@ where
                     found_internal_node,
                 );
 
-                parent.write_child_hash(parent_idx, &leaf.root_hash());
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
                 self.handle_stack_after_merge(true, leaf);
 
                 return result;
@@ -680,7 +708,7 @@ where
 
             let result = self.merge_with_left_sibling_leaf(leaf, &mut left_sibling, idx);
 
-            parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
+            parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
             self.handle_stack_after_merge(false, left_sibling);
 
             return result;
@@ -705,8 +733,8 @@ where
                 // just idx, because after rotation leaf has one more key added to the end
                 let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
-                parent.write_child_hash(parent_idx, &leaf.root_hash());
-                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                 self._stack.pop();
                 self.recalculate_root_hash(parent.root_hash());
@@ -721,7 +749,7 @@ where
                 found_internal_node,
             );
 
-            parent.write_child_hash(parent_idx, &leaf.root_hash());
+            parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
             self.handle_stack_after_merge(true, leaf);
 
             return result;
@@ -837,7 +865,7 @@ where
             if node_len > MIN_LEN_AFTER_SPLIT {
                 node.remove_key(idx_to_remove, node_len, &mut self._buf);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
-                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf, true);
                 node.write_len(node_len - 1);
 
                 self.recalculate_root_hash(node.root_hash());
@@ -861,7 +889,7 @@ where
                 // otherwise simply remove and return
                 node.remove_key(idx_to_remove, node_len, &mut self._buf);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
-                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf, true);
                 node.write_len(node_len - 1);
 
                 self.root_hash = node.root_hash();
@@ -889,8 +917,8 @@ where
                         &mut parent,
                         parent_idx,
                     );
-                    parent.write_child_hash(parent_idx, &node.root_hash());
-                    parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
+                    parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
 
                     self._stack.pop();
                     self.recalculate_root_hash(parent.root_hash());
@@ -915,8 +943,8 @@ where
                             &mut parent,
                             parent_idx,
                         );
-                        parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
-                        parent.write_child_hash(parent_idx, &node.root_hash());
+                        parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
+                        parent.write_child_hash(parent_idx, &node.root_hash(), true);
 
                         self._stack.pop();
                         self.recalculate_root_hash(parent.root_hash());
@@ -934,7 +962,7 @@ where
                         parent_idx,
                     );
 
-                    parent.write_child_hash(parent_idx, &node.root_hash());
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
 
                     merged_right = true;
                     prev_node = BTreeNode::Internal(node);
@@ -952,7 +980,7 @@ where
                     parent_idx,
                 );
 
-                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash());
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
 
                 merged_right = false;
                 prev_node = BTreeNode::Internal(left_sibling);
@@ -977,8 +1005,8 @@ where
                         &mut parent,
                         parent_idx,
                     );
-                    parent.write_child_hash(parent_idx, &node.root_hash());
-                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash());
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
+                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                     self._stack.pop();
                     self.recalculate_root_hash(parent.root_hash());
@@ -996,7 +1024,7 @@ where
                     parent_idx,
                 );
 
-                parent.write_child_hash(parent_idx, &node.root_hash());
+                parent.write_child_hash(parent_idx, &node.root_hash(), true);
 
                 merged_right = true;
                 prev_node = BTreeNode::Internal(node);
@@ -1024,12 +1052,14 @@ where
             parent,
             parent_idx,
             None,
+            None,
             &mut self._buf,
+            true,
         );
         right_sibling.write_len(right_sibling_len - 1);
         node.remove_key(idx_to_remove, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
-        node.remove_child_hash(child_idx_to_remove, B + 1, &mut self._buf);
+        node.remove_child_hash(child_idx_to_remove, B + 1, &mut self._buf, true);
     }
 
     fn steal_from_left_sibling_internal(
@@ -1050,12 +1080,14 @@ where
             parent,
             parent_idx - 1,
             None,
+            None,
             &mut self._buf,
+            true,
         );
         left_sibling.write_len(left_sibling_len - 1);
         node.remove_key(idx_to_remove + 1, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
-        node.remove_child_hash(child_idx_to_remove + 1, B + 1, &mut self._buf);
+        node.remove_child_hash(child_idx_to_remove + 1, B + 1, &mut self._buf, true);
     }
 
     fn merge_with_right_sibling_internal(
@@ -1068,10 +1100,10 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx);
-        node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
+        node.merge_min_len(&mid_element, right_sibling, &mut self._buf, true);
         node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
-        node.remove_child_hash(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
+        node.remove_child_hash(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf, true);
         node.write_len(CAPACITY - 1);
     }
 
@@ -1085,10 +1117,15 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx - 1);
-        left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
+        left_sibling.merge_min_len(&mid_element, node, &mut self._buf, true);
         left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
         left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
-        left_sibling.remove_child_hash(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
+        left_sibling.remove_child_hash(
+            child_idx_to_remove + B,
+            CHILDREN_CAPACITY,
+            &mut self._buf,
+            true,
+        );
         left_sibling.write_len(CAPACITY - 1);
     }
 
@@ -1109,7 +1146,8 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated + AsHashTree> AsHashTree<&K> for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+    AsHashTree<&K> for SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1161,7 +1199,7 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1224,7 +1262,8 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated + AsHashTree> Default for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes> Default
+    for SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1234,11 +1273,11 @@ where
     }
 }
 
-impl<K, V> FixedSize for SBTreeMap<K, V> {
+impl<K, V> FixedSize for SCertifiedBTreeMap<K, V> {
     const SIZE: usize = u64::SIZE * 2 + Hash::SIZE;
 }
 
-impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
+impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
 
@@ -1281,7 +1320,7 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1337,74 +1376,24 @@ where
     }
 }
 
-pub trait IBTreeNode {
-    unsafe fn from_ptr(ptr: u64) -> Self;
-    fn as_ptr(&self) -> u64;
-    unsafe fn copy(&self) -> Self;
-}
-
-enum BTreeNode<K, V> {
-    Internal(InternalBTreeNode<K>),
-    Leaf(LeafBTreeNode<K, V>),
-}
-
-impl<K, V> BTreeNode<K, V> {
-    fn from_ptr(ptr: u64) -> Self {
-        let node_type: u8 = SSlice::_as_fixed_size_bytes_read(ptr, NODE_TYPE_OFFSET);
-
-        unsafe {
-            match node_type {
-                NODE_TYPE_INTERNAL => Self::Internal(InternalBTreeNode::<K>::from_ptr(ptr)),
-                NODE_TYPE_LEAF => Self::Leaf(LeafBTreeNode::<K, V>::from_ptr(ptr)),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn as_ptr(&self) -> u64 {
-        match &self {
-            Self::Internal(i) => i.as_ptr(),
-            Self::Leaf(l) => l.as_ptr(),
-        }
-    }
-
-    unsafe fn copy(&self) -> Self {
-        match &self {
-            Self::Internal(i) => Self::Internal(i.copy()),
-            Self::Leaf(l) => Self::Leaf(l.copy()),
-        }
-    }
-}
-
-impl<K: StableAllocated + Ord, V: StableAllocated + AsHashTree> BTreeNode<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
-    fn root_hash(&self) -> Hash {
-        match &self {
-            Self::Internal(i) => i.root_hash(),
-            Self::Leaf(l) => l.root_hash(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::collections::certified_btree_map::SBTreeMap;
-    use crate::utils::certification::{leaf, leaf_hash, AsHashTree, Hash, HashTree};
+    use crate::collections::certified_btree_map::SCertifiedBTreeMap;
+    use crate::utils::certification::{
+        leaf, leaf_hash, AsHashTree, AsHashableBytes, Hash, HashTree,
+    };
     use crate::{init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     use sha2::{Digest, Sha256};
 
-    impl AsHashTree for u64 {
-        fn root_hash(&self) -> Hash {
-            leaf_hash(&self.to_le_bytes())
+    impl AsHashableBytes for u64 {
+        fn as_hashable_bytes(&self) -> Vec<u8> {
+            self.to_le_bytes().to_vec()
         }
 
-        fn witness(&self, _: (), _: Option<HashTree>) -> HashTree {
-            leaf(self.to_le_bytes().to_vec())
+        fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
+            u64::from_le_bytes(bytes.try_into().unwrap())
         }
     }
 
@@ -1415,7 +1404,7 @@ mod tests {
         init_allocator(0);
 
         let iterations = 1000;
-        let mut map = SBTreeMap::<u64, u64>::default();
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
         let mut example = Vec::new();
         for i in 0..iterations {
@@ -1470,7 +1459,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::default();
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
         for i in 0..200 {
             map.insert(i, i);
