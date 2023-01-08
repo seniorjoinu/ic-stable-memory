@@ -24,24 +24,3 @@ pub fn isoprint(str: &str) {
 pub fn isoprint(str: &str) {
     println!("{}", str)
 }
-
-#[cfg(target_family = "wasm")]
-#[inline]
-pub fn _isotrap(str: &str) {
-    trap(str);
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[inline]
-pub fn _isotrap(str: &str) {
-    panic!("{}", str);
-}
-
-macro_rules! isotrap {
-    ($($exprs:expr),*) => {{
-        $crate::utils::_isotrap(format!($($exprs),*).as_str());
-        unreachable!("");
-    }};
-}
-
-pub(crate) use isotrap;

@@ -408,52 +408,37 @@ pub trait AsDynSizeBytes {
 
 #[cfg(test)]
 mod benches {
-    use crate::measure;
-    use std::hint::black_box;
-    use std::mem::MaybeUninit;
-
-    const count: u64 = 1_000_000_000;
+    use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+    use candid::{Int, Nat, Principal};
 
     #[test]
-    #[ignore]
-    fn init_vs_uninit() {
-        measure!("* initialized arr", count, {
-            for _ in 0..count {
-                let arr = black_box([0u8; 100]);
-            }
-        });
+    fn works_fine() {
+        assert_eq!(u64::_size(), 8);
+        assert_eq!(u64::_u8_vec_of_size().len(), 8);
+        assert_eq!(u64::_u8_arr_of_size().len(), 8);
 
-        measure!("uninitialized arr", count, {
-            for _ in 0..count {
-                let arr = black_box(unsafe { MaybeUninit::<[u8; 100]>::uninit().assume_init() });
-            }
-        });
-    }
-
-    #[test]
-    #[ignore]
-    fn reuse_or_create_new() {
-        measure!("reuse", count / 1000, {
-            let mut buf = [0u8; 1000];
-
-            for i in 0..(count / 1000) {
-                let e = (i % 256) as u8;
-
-                for j in 0..1000 {
-                    buf[j] = e;
-                }
-            }
-        });
-
-        measure!("* create new", count, {
-            for i in 0..(count / 1000) {
-                let mut buf = [0u8; 1000];
-                let e = (i % 256) as u8;
-
-                for j in 0..1000 {
-                    buf[j] = e;
-                }
-            }
-        });
+        assert_eq!(i8::from_fixed_size_bytes(&10i8.as_fixed_size_bytes()), 10);
+        assert_eq!(u8::from_fixed_size_bytes(&10u8.as_fixed_size_bytes()), 10);
+        assert!(bool::from_fixed_size_bytes(&true.as_fixed_size_bytes()));
+        let c = Some(10).as_fixed_size_bytes();
+        assert_eq!(Option::<u32>::from_fixed_size_bytes(&c), Some(10));
+        assert_eq!(
+            Option::<u32>::from_fixed_size_bytes(&Option::<u32>::as_fixed_size_bytes(&None)),
+            None
+        );
+        assert_eq!(
+            Principal::from_fixed_size_bytes(
+                &Principal::management_canister().as_fixed_size_bytes()
+            ),
+            Principal::management_canister()
+        );
+        assert_eq!(
+            Nat::from_fixed_size_bytes(&Nat::from(10).as_fixed_size_bytes()),
+            Nat::from(10)
+        );
+        assert_eq!(
+            Int::from_fixed_size_bytes(&Int::from(10).as_fixed_size_bytes()),
+            Int::from(10)
+        );
     }
 }

@@ -305,9 +305,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::utils::certification::{
-        fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned,
+        domain_sep, empty, fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned, Hash,
+        EMPTY_HASH,
     };
-    use candid::encode_one;
+    use serde_test::{assert_ser_tokens, assert_tokens, Token};
+    use sha2::Digest;
 
     #[test]
     fn test() {
@@ -341,5 +343,75 @@ mod tests {
         );
 
         assert_eq!(wit.reconstruct(), root_hash);
+    }
+
+    #[test]
+    fn works_fine() {
+        let e: Hash = domain_sep("ic-hashtree-empty").finalize().into();
+        assert_eq!(empty().reconstruct(), e);
+    }
+
+    const c: [u8; 10] = [0u8; 10];
+
+    #[test]
+    fn ser_works_fine() {
+        let w1 = empty();
+        let w2 = fork(empty(), empty());
+        let w3 = labeled(vec![0u8; 10], empty());
+        let w4 = leaf(vec![0u8; 10]);
+        let w5 = pruned(EMPTY_HASH);
+
+        assert_ser_tokens(
+            &w1,
+            &[Token::Seq { len: Some(1) }, Token::U8(0), Token::SeqEnd],
+        );
+
+        assert_ser_tokens(
+            &w2,
+            &[
+                Token::Seq { len: Some(3) },
+                Token::U8(1),
+                Token::Seq { len: Some(1) },
+                Token::U8(0),
+                Token::SeqEnd,
+                Token::Seq { len: Some(1) },
+                Token::U8(0),
+                Token::SeqEnd,
+                Token::SeqEnd,
+            ],
+        );
+
+        assert_ser_tokens(
+            &w3,
+            &[
+                Token::Seq { len: Some(3) },
+                Token::U8(2),
+                Token::Bytes(&c),
+                Token::Seq { len: Some(1) },
+                Token::U8(0),
+                Token::SeqEnd,
+                Token::SeqEnd,
+            ],
+        );
+
+        assert_ser_tokens(
+            &w4,
+            &[
+                Token::Seq { len: Some(2) },
+                Token::U8(3),
+                Token::Bytes(&c),
+                Token::SeqEnd,
+            ],
+        );
+
+        assert_ser_tokens(
+            &w5,
+            &[
+                Token::Seq { len: Some(2) },
+                Token::U8(4),
+                Token::Bytes(&EMPTY_HASH),
+                Token::SeqEnd,
+            ],
+        );
     }
 }

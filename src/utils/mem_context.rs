@@ -1,5 +1,6 @@
 use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 use std::cmp::min;
+use std::ptr::copy_nonoverlapping;
 
 pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
 

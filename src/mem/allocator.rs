@@ -1,6 +1,5 @@
 use crate::mem::free_block::FreeBlock;
 use crate::mem::s_slice::{Side, BLOCK_META_SIZE, BLOCK_MIN_TOTAL_SIZE, PTR_SIZE};
-use crate::utils::isotrap;
 use crate::utils::math::fast_log2;
 use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::SSlice;
@@ -176,15 +175,10 @@ impl StableMemoryAllocator {
     pub(crate) fn allocate(&mut self, size: usize) -> SSlice {
         let size = Self::pad_size(size);
 
-        // will be called only once during first ever allocate()
-        //self.handle_free_buffer();
-
         let free_membox = match self.pop_free_block(size) {
             Ok(m) => m,
-            Err(_) => isotrap!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size())
+            Err(_) => panic!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size())
         };
-
-        //self.handle_free_buffer();
 
         free_membox.to_allocated()
     }
