@@ -415,6 +415,7 @@ mod benches {
     const count: u64 = 1_000_000_000;
 
     #[test]
+    #[ignore]
     fn init_vs_uninit() {
         measure!("* initialized arr", count, {
             for _ in 0..count {
@@ -430,6 +431,7 @@ mod benches {
     }
 
     #[test]
+    #[ignore]
     fn reuse_or_create_new() {
         measure!("reuse", count / 1000, {
             let mut buf = [0u8; 1000];

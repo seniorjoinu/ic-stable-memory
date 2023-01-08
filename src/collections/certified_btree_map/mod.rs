@@ -1379,13 +1379,12 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
-    use crate::utils::certification::{
-        leaf, leaf_hash, AsHashTree, AsHashableBytes, Hash, HashTree,
-    };
-    use crate::{init_allocator, stable};
+    use crate::primitive::StableAllocated;
+    use crate::utils::certification::{AsHashTree, AsHashableBytes, HashTree};
+    use crate::utils::encoding::AsFixedSizeBytes;
+    use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
-    use sha2::{Digest, Sha256};
 
     impl AsHashableBytes for u64 {
         fn as_hashable_bytes(&self) -> Vec<u8> {
@@ -1424,19 +1423,36 @@ mod tests {
                     "invalid witness {:?}",
                     wit
                 );
+                assert!(
+                    map.contains_key(&example[j]),
+                    "don't contain {}",
+                    example[j]
+                );
+                assert_eq!(
+                    map.get_copy(&example[j]),
+                    Some(example[j]),
+                    "unable to get {}",
+                    example[j]
+                );
             }
         }
 
+        assert_eq!(map.len(), iterations as u64);
+        assert_eq!(map.is_empty(), false);
+
+        map.debug_print_stack();
+        map.debug_print();
+        println!();
+        println!();
+
+        assert_eq!(map.insert(0, 1).unwrap(), 0);
+        assert_eq!(map.insert(0, 0).unwrap(), 1);
+
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {
-            println!("removing {}", example[i]);
             assert!(map._stack.is_empty());
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));
-
-            map.debug_print();
-            println!();
-            println!();
 
             for j in (i + 1)..iterations {
                 let wit = map.witness(&example[j], None);
@@ -1446,6 +1462,17 @@ mod tests {
                     "invalid witness of {}: {:?}",
                     example[j],
                     wit
+                );
+                assert!(
+                    map.contains_key(&example[j]),
+                    "don't contain {}",
+                    example[j]
+                );
+                assert_eq!(
+                    map.get_copy(&example[j]),
+                    Some(example[j]),
+                    "unable to get {}",
+                    example[j]
                 );
             }
         }
@@ -1485,5 +1512,43 @@ mod tests {
         }
 
         assert_eq!(i, 0);
+    }
+
+    #[test]
+    fn stable_drop_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+
+        for i in 0..200 {
+            map.insert(i, i);
+        }
+
+        unsafe { map.stable_drop() };
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn encoding_works() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+
+        for i in 0..50 {
+            map.insert(i, i);
+        }
+
+        let bytes = map.as_fixed_size_bytes();
+        let map = SCertifiedBTreeMap::<u64, u64>::from_fixed_size_bytes(&bytes);
+
+        for i in 0..50 {
+            assert!(map.contains_key(&i));
+        }
+
+        unsafe { map.stable_drop() };
     }
 }

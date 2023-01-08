@@ -863,7 +863,7 @@ where
                     return;
                 }
 
-                if let Some(mut right_sibling) =
+                if let Some(right_sibling) =
                     parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
                 {
                     let right_sibling_len = right_sibling.read_len();
@@ -1276,7 +1276,8 @@ impl<K, V> BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::{init_allocator, stable};
+    use crate::primitive::StableAllocated;
+    use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
@@ -1296,14 +1297,9 @@ mod tests {
         example.shuffle(&mut thread_rng());
 
         for i in 0..iterations {
-            println!("inserting {}", example[i]);
             map.debug_print_stack();
             assert!(map._stack.is_empty());
             assert!(map.insert(example[i], example[i]).is_none());
-
-            map.debug_print();
-            println!();
-            println!();
 
             for j in 0..i {
                 assert!(
@@ -1320,17 +1316,17 @@ mod tests {
             }
         }
 
+        assert_eq!(map.insert(0, 1).unwrap(), 0);
+        assert_eq!(map.insert(0, 0).unwrap(), 1);
+
+        map.debug_print();
+
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {
-            println!("removing {}", example[i]);
             map.debug_print_stack();
             assert!(map._stack.is_empty());
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));
-
-            map.debug_print();
-            println!();
-            println!();
 
             for j in (i + 1)..iterations {
                 assert!(
@@ -1346,8 +1342,6 @@ mod tests {
                 );
             }
         }
-
-        map.debug_print();
     }
 
     #[test]
@@ -1382,5 +1376,21 @@ mod tests {
         }
 
         assert_eq!(i, 0);
+    }
+
+    #[test]
+    fn stable_drop_work_fine() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SBTreeMap::<u64, u64>::default();
+
+        for i in 0..200 {
+            map.insert(i, i);
+        }
+
+        unsafe { map.stable_drop() };
+        assert_eq!(get_allocated_size(), 0);
     }
 }

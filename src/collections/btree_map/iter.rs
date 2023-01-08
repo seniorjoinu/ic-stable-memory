@@ -139,3 +139,15 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::collections::btree_map::iter::SBTreeMapIter;
+
+    #[test]
+    fn test() {
+        let it = None;
+        let iter = SBTreeMapIter::<u64, u64>::new(&it, 10);
+        assert_eq!(iter.len(), 10);
+    }
+}

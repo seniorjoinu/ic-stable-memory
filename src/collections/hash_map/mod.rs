@@ -495,6 +495,8 @@ mod tests {
         assert!(map.contains_key(&2));
         assert!(!map.contains_key(&5));
 
+        map.debug_print();
+
         unsafe { map.stable_drop() };
 
         let mut map = SHashMap::default();

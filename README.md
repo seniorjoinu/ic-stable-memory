@@ -341,5 +341,6 @@ This is an emerging software, so any help is greatly appreciated.
 Feel free to propose PR's, architecture tips, bug reports or any other feedback.
 
 ## Test coverage check
-* `cargo install tarpaulin`
-* `cargo tarpaulin`
+* `cargo install grcov`
+* `rustup component add llvm-tools-preview`
+* `./coverage --test` (won't rebuild without `--test`)

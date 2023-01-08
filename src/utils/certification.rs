@@ -1,5 +1,5 @@
-use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
+use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::BTreeNode;
 use crate::primitive::StableAllocated;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
@@ -244,8 +244,8 @@ where
 }
 
 impl<K: StableAllocated + Ord + AsHashableBytes> AsHashTree<usize> for InternalBTreeNode<K>
-    where
-        [(); K::SIZE]: Sized,
+where
+    [(); K::SIZE]: Sized,
 {
     fn root_hash(&self) -> Hash {
         let len = self.read_len() + 1;
@@ -289,10 +289,10 @@ impl<K: StableAllocated + Ord + AsHashableBytes> AsHashTree<usize> for InternalB
 }
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
-BTreeNode<K, V>
-    where
-        [(); K::SIZE]: Sized,
-        [(); V::SIZE]: Sized,
+    BTreeNode<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
 {
     pub(crate) fn root_hash(&self) -> Hash {
         match &self {
@@ -307,6 +307,7 @@ mod tests {
     use crate::utils::certification::{
         fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned,
     };
+    use candid::encode_one;
 
     #[test]
     fn test() {
