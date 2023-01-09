@@ -3,7 +3,7 @@ THIS IS A EARLY SOFTWARE. DON'T USE IN PRODUCTION!
 ## CHECK FOR MEMORY LEAKS BEFORE RELEASING
 
 
-![test coverage 94.60%](https://badgen.net/badge/coverage/90.42%25/green)
+![test coverage 90.42%](https://badgen.net/badge/coverage/90.42%25/green)
 
 
 # IC Stable Memory
@@ -177,6 +177,10 @@ fn add_my_string(entry: String) {
 
 // TODO: API
 
+### SCertifiedBTreeMap
+[source code](./src/collections/certified_btree_map.rs)
+
+// TODO: API
 
 ## Benchmarks
 These benchmarks are run on my machine against testing environment, where I emulate stable memory with a huge vector.
@@ -214,50 +218,65 @@ Performance difference in real canister should be less significant because of re
 
 ### Hash map
 ```
-"Classic hash map insert" 100000 iterations: 96 ms
-"Stable hash map insert" 100000 iterations: 387 ms (x4 slower)
+"Classic hash map insert" 1000000 iterations: 1519 ms
+"Stable hash map insert" 1000000 iterations: 2689 ms (x1.7 slower)
 
-"Classic hash map search" 100000 iterations: 47 ms
-"Stable hash map search" 100000 iterations: 113 ms (x2.4 slower)
+"Classic hash map search" 1000000 iterations: 748 ms
+"Stable hash map search" 1000000 iterations: 1120 ms (x1.5 slower)
 
-"Classic hash map remove" 100000 iterations: 60 ms
-"Stable hash map remove" 100000 iterations: 99 ms (x1.6 slower)
+"Classic hash map remove" 1000000 iterations: 938 ms
+"Stable hash map remove" 1000000 iterations: 2095 ms (x2.2 slower)
 ```
 
 ### Hash set
 ```
-"Classic hash set insert" 100000 iterations: 79 ms
-"Stable hash set insert" 100000 iterations: 394 ms (x4.9 slower)
+"Classic hash set insert" 1000000 iterations: 1214 ms
+"Stable hash set insert" 1000000 iterations: 3210 ms (x2.6 slower)
 
-"Classic hash set search" 100000 iterations: 54 ms
-"Stable hash set search" 100000 iterations: 97 ms (x1.8 slower)
+"Classic hash set search" 1000000 iterations: 701 ms
+"Stable hash set search" 1000000 iterations: 823 ms (x1.3 slower)
 
-"Classic hash set remove" 100000 iterations: 56 ms
-"Stable hash set remove" 100000 iterations: 99 ms (x1.7 slower)
+"Classic hash set remove" 1000000 iterations: 924 ms
+"Stable hash set remove" 1000000 iterations: 1933 ms (x2.0 slower)
 ```
 
 ### BTree map
 ```
-"Classic btree map insert" 100000 iterations: 267 ms
-"Stable btree map insert" 100000 iterations: 17050 ms (x63 slower)
+"Classic btree map insert" 1000000 iterations: 3413 ms
+"Stable btree map insert" 1000000 iterations: 7848 ms (x2.3 slower)
 
-"Classic btree map search" 100000 iterations: 138 ms
-"Stable btree map search" 100000 iterations: 566 ms (x4.1 slower)
+"Classic btree map search" 1000000 iterations: 2053 ms
+"Stable btree map search" 1000000 iterations: 7128 ms (x3.4 slower)
 
-"Classic btree map remove" 100000 iterations: 147 ms
-"Stable btree map remove" 100000 iterations: 1349 ms (x9.1 slower)
+"Classic btree map remove" 1000000 iterations: 2216 ms
+"Stable btree map remove" 1000000 iterations: 7986 ms (x3.6 slower)
 ```
 
 ### BTree set
 ```
-"Classic btree set insert" 100000 iterations: 312 ms
-"Stable btree set insert" 100000 iterations: 1771 ms (x5.6 slower)
+"Classic btree set insert" 1000000 iterations: 3654 ms
+"Stable btree set insert" 1000000 iterations: 9015 ms (x2.5 slower)
 
-"Classic btree set search" 100000 iterations: 170 ms
-"Stable btree set search" 100000 iterations: 600 ms (x3.5 slower)
+"Classic btree set search" 1000000 iterations: 2160 ms
+"Stable btree set search" 1000000 iterations: 5111 ms (x2.3 slower)
 
-"Classic btree set remove" 100000 iterations: 134 ms
-"Stable btree set remove" 100000 iterations: 1317 ms (x9.8 slower)
+"Classic btree set remove" 1000000 iterations: 2012 ms
+"Stable btree set remove" 1000000 iterations: 7850 ms (x3.9 slower)
+```
+
+### Certified BTree map
+```
+"RBTree map insert" 10000 iterations: 10101 ms
+"Stable certified btree map insert" 10000 iterations: 13798 ms (x1.3 slower)
+
+"RBTree map search" 10000 iterations: 4 ms
+"Stable certified btree map search" 10000 iterations: 34 ms (x8.5 slower)
+
+"RBTree map witness" 10000 iterations: 4072 ms
+"Stable certified btree map witness" 10000 iterations: 3184 ms (x1.2 faster)
+
+"RBTree map remove" 10000 iterations: 12327 ms
+"Stable certified btree map remove" 10000 iterations: 7915 ms (x1.5 faster)
 ```
 
 ## Performance counter canister

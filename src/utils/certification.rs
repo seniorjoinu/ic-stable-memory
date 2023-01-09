@@ -128,6 +128,16 @@ pub trait AsHashableBytes {
     fn from_hashable_bytes(bytes: Vec<u8>) -> Self;
 }
 
+impl AsHashableBytes for Hash {
+    fn as_hashable_bytes(&self) -> Vec<u8> {
+        self.to_vec()
+    }
+
+    fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
+        bytes.try_into().unwrap()
+    }
+}
+
 pub trait AsHashTree<I = ()> {
     /// Returns the root hash of the tree without constructing it.
     /// Must be equivalent to `HashTree::reconstruct()`.

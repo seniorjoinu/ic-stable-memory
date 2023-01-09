@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod binary_heap_benchmark {
     use crate::collections::binary_heap::SBinaryHeap;
-    use crate::primitive::s_box::SBox;
-    use crate::utils::encoding::AsDynSizeBytes;
     use crate::{init_allocator, measure, stable};
+    use rand::seq::SliceRandom;
+    use rand::thread_rng;
     use std::collections::BinaryHeap;
 
     const ITERATIONS: usize = 1_000_000;
@@ -11,12 +11,18 @@ mod binary_heap_benchmark {
     #[test]
     #[ignore]
     fn body_direct() {
+        let mut example = Vec::new();
+        for i in 0..ITERATIONS {
+            example.push(i);
+        }
+        example.shuffle(&mut thread_rng());
+
         {
             let mut classic_binary_heap = BinaryHeap::new();
 
             measure!("Classic binary heap push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    classic_binary_heap.push(i);
+                    classic_binary_heap.push(example[i]);
                 }
             });
 
@@ -42,7 +48,7 @@ mod binary_heap_benchmark {
 
             measure!("Stable binary heap push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_binary_heap.push(i);
+                    stable_binary_heap.push(example[i]);
                 }
             });
 

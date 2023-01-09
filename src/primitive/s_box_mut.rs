@@ -1,5 +1,6 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
+use crate::utils::certification::AsHashableBytes;
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, reallocate};
 use std::cmp::Ordering;
@@ -29,6 +30,11 @@ impl<T> SBoxMut<T> {
     #[inline]
     pub fn get(&self) -> &T {
         &self.inner
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.inner
     }
 }
 
@@ -175,6 +181,16 @@ impl<T: AsDynSizeBytes> StableAllocated for SBoxMut<T> {
     }
 }
 
+impl<T: AsHashableBytes> AsHashableBytes for SBoxMut<T> {
+    fn as_hashable_bytes(&self) -> Vec<u8> {
+        self.inner.as_hashable_bytes()
+    }
+
+    fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
+        SBoxMut::<T>::new(T::from_hashable_bytes(bytes))
+    }
+}
+
 impl<T: PartialEq> PartialEq for SBoxMut<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -240,6 +256,7 @@ mod tests {
     use std::cmp::Ordering;
     use std::io::Write;
     use std::mem::size_of;
+    use std::ops::DerefMut;
 
     impl AsDynSizeBytes for i32 {
         fn as_dyn_size_bytes(&self) -> Vec<u8> {
@@ -281,7 +298,7 @@ mod tests {
 
         sbox.move_to_stable();
 
-        *sbox.get_mut() = 100;
+        *sbox.get_mut().deref_mut() = 100;
         assert_eq!(*sbox, 100);
         assert_eq!(*sbox.get_mut(), 100);
         assert_eq!(sbox.get_cloned(), 100);

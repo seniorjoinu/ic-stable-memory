@@ -124,6 +124,11 @@ where
     }
 
     #[inline]
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    #[inline]
     pub fn iter(&self) -> SBinaryHeapIter<T> {
         SBinaryHeapIter::new(self)
     }

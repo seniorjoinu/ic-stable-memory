@@ -6,6 +6,7 @@ use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{isoprint, SSlice};
 use std::fmt::Debug;
+use std::mem;
 
 pub const B: usize = 8;
 pub const CAPACITY: usize = 2 * B - 1;
@@ -204,6 +205,13 @@ where
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        let old = mem::replace(self, Self::new());
+
+        unsafe { old.stable_drop() };
     }
 
     // WARNING: return_early == true will return nonsense leaf node and idx

@@ -10,6 +10,7 @@ use crate::primitive::StableAllocated;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use std::fmt::Debug;
+use std::mem;
 
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
@@ -213,6 +214,13 @@ where
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        let old = mem::replace(self, Self::new());
+
+        unsafe { old.stable_drop() };
     }
 
     // WARNING: return_early == true will return nonsense leaf node and idx
