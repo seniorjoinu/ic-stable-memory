@@ -9,7 +9,7 @@ pub struct SBTreeSetIter<'a, T> {
 impl<'a, T> SBTreeSetIter<'a, T> {
     pub fn new(set: &'a SBTreeSet<T>) -> Self {
         Self {
-            iter: SBTreeMapIter::new(&set.map),
+            iter: SBTreeMapIter::new(&set.map.root, set.map.len),
         }
     }
 }

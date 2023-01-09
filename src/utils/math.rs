@@ -42,3 +42,14 @@ pub fn fast_log2(value: usize) -> u32 {
         fast_log2_64(value as u64) as u32
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::math::{fast_log2_32, fast_log2_64};
+
+    #[test]
+    fn works_fine() {
+        assert_eq!(fast_log2_32(65), 6);
+        assert_eq!(fast_log2_64(65), 6);
+    }
+}

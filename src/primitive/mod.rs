@@ -1,4 +1,5 @@
 use crate::utils::encoding::AsFixedSizeBytes;
+use candid::{Int, Nat, Principal};
 
 pub mod s_box;
 pub mod s_box_mut;
@@ -57,3 +58,36 @@ impl_for_primitive!([u8; 512]);
 impl_for_primitive!([u8; 1024]);
 impl_for_primitive!([u8; 2048]);
 impl_for_primitive!([u8; 4096]);
+
+impl StableAllocated for Principal {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
+}
+
+impl StableAllocated for Nat {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
+}
+
+impl StableAllocated for Int {
+    #[inline]
+    fn move_to_stable(&mut self) {}
+
+    #[inline]
+    fn remove_from_stable(&mut self) {}
+
+    #[inline]
+    unsafe fn stable_drop(self) {}
+}

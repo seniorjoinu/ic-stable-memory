@@ -1,24 +1,35 @@
+use crate::collections::btree_map::IBTreeNode;
 use crate::collections::btree_map::{
-    IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
+    B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
+use crate::utils::certification::{
+    fork, fork_hash, pruned, AsHashTree, AsHashableBytes, Hash, HashTree,
+};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, isoprint, SSlice};
+use crate::{allocate, deallocate, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+
+pub type PtrRaw = [u8; u64::SIZE];
 
 // LAYOUT:
 // node_type: u8
 // len: usize
 // children: [u64; CHILDREN_CAPACITY]
+// children_hashes: [Hash; CHILDREN_CAPACITY], ONLY IF has_hashes == true
 // keys: [K; CAPACITY]
 
 const LEN_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 const CHILDREN_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 const KEYS_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
+
+const fn children_hashes_offset<K: FixedSize>() -> usize {
+    KEYS_OFFSET + K::SIZE * CAPACITY
+}
 
 pub struct InternalBTreeNode<K> {
     ptr: u64,
@@ -30,12 +41,16 @@ where
     [(); K::SIZE]: Sized,
 {
     #[inline]
-    const fn calc_byte_size() -> usize {
-        KEYS_OFFSET + K::SIZE * CAPACITY
+    const fn calc_byte_size(has_hashes: bool) -> usize {
+        if has_hashes {
+            children_hashes_offset::<K>() + Hash::SIZE * CHILDREN_CAPACITY
+        } else {
+            children_hashes_offset::<K>()
+        }
     }
 
-    pub fn create_empty() -> Self {
-        let slice = allocate(Self::calc_byte_size());
+    pub fn create_empty(has_hashes: bool) -> Self {
+        let slice = allocate(Self::calc_byte_size(has_hashes));
         let mut it = Self {
             ptr: slice.get_ptr(),
             _marker_k: PhantomData::default(),
@@ -47,8 +62,13 @@ where
         it
     }
 
-    pub fn create(key: &[u8; K::SIZE], lcp: &[u8; u64::SIZE], rcp: &[u8; u64::SIZE]) -> Self {
-        let slice = allocate(Self::calc_byte_size());
+    pub fn create(
+        key: &[u8; K::SIZE],
+        lcp: &PtrRaw,
+        rcp: &PtrRaw,
+        hashes: Option<(&Hash, &Hash)>,
+    ) -> Self {
+        let slice = allocate(Self::calc_byte_size(hashes.is_some()));
         let mut it = Self {
             ptr: slice.get_ptr(),
             _marker_k: PhantomData::default(),
@@ -58,8 +78,14 @@ where
         it.init_node_type();
 
         it.write_key(0, key);
+
         it.write_child_ptr(0, lcp);
         it.write_child_ptr(1, rcp);
+
+        if let Some((lch, rch)) = hashes {
+            it.write_child_hash(0, lch, true);
+            it.write_child_hash(1, rch, true);
+        }
 
         it
     }
@@ -71,10 +97,6 @@ where
     }
 
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
-        if len == 0 {
-            return Err(0);
-        }
-
         let mut min = 0;
         let mut max = len;
         let mut mid = (max - min) / 2;
@@ -122,20 +144,31 @@ where
         left_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        left_insert_last_element: Option<(&[u8; K::SIZE], &[u8; u64::SIZE])>,
+        left_insert_last_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        left_insert_last_hash: Option<&Hash>,
         buf: &mut Vec<u8>,
+        has_hashes: bool,
     ) {
         let pk = parent.read_key(parent_idx);
 
         if let Some((k, c)) = left_insert_last_element {
             parent.write_key(parent_idx, k);
             self.insert_child_ptr(0, c, self_len + 1, buf);
+
+            if has_hashes {
+                self.insert_child_hash(0, left_insert_last_hash.unwrap(), self_len + 1, buf, true);
+            }
         } else {
             let lsk = left_sibling.read_key(left_sibling_len - 1);
-            let lsc = left_sibling.read_child_ptr(left_sibling_len);
-
             parent.write_key(parent_idx, &lsk);
+
+            let lsc = left_sibling.read_child_ptr(left_sibling_len);
             self.insert_child_ptr(0, &lsc, self_len + 1, buf);
+
+            if has_hashes {
+                let lsh = left_sibling.read_child_hash(left_sibling_len, true);
+                self.insert_child_hash(0, &lsh, self_len + 1, buf, true);
+            }
         };
 
         self.insert_key(0, &pk, self_len, buf);
@@ -148,8 +181,10 @@ where
         right_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        right_insert_first_element: Option<(&[u8; K::SIZE], &[u8; u64::SIZE])>,
+        right_insert_first_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        right_insert_first_hash: Option<&Hash>,
         buf: &mut Vec<u8>,
+        has_hashes: bool,
     ) {
         let pk = parent.read_key(parent_idx);
 
@@ -159,15 +194,27 @@ where
 
             parent.write_key(parent_idx, k);
 
+            if has_hashes {
+                let rsh = right_sibling.read_child_hash(0, true);
+                right_sibling.write_child_hash(0, right_insert_first_hash.unwrap(), true);
+                self.push_child_hash(&rsh, self_len + 1, true);
+            }
+
             rsc
         } else {
             let rsk = right_sibling.read_key(0);
-            let rsc = right_sibling.read_child_ptr(0);
-
             right_sibling.remove_key(0, right_sibling_len, buf);
+
+            let rsc = right_sibling.read_child_ptr(0);
             right_sibling.remove_child_ptr(0, right_sibling_len + 1, buf);
 
             parent.write_key(parent_idx, &rsk);
+
+            if has_hashes {
+                let rsh = right_sibling.read_child_hash(0, true);
+                right_sibling.remove_child_hash(0, right_sibling_len + 1, buf, true);
+                self.push_child_hash(&rsh, self_len + 1, true);
+            }
 
             rsc
         };
@@ -176,14 +223,23 @@ where
         self.push_child_ptr(&rsc, self_len + 1);
     }
 
-    pub fn split_max_len(&mut self, buf: &mut Vec<u8>) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
-        let mut right = InternalBTreeNode::<K>::create_empty();
+    pub fn split_max_len(
+        &mut self,
+        buf: &mut Vec<u8>,
+        has_hashes: bool,
+    ) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
+        let mut right = InternalBTreeNode::<K>::create_empty(has_hashes);
 
         self.read_keys_to_buf(B, MIN_LEN_AFTER_SPLIT, buf);
         right.write_keys_from_buf(0, buf);
 
         self.read_child_ptrs_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
         right.write_child_ptrs_from_buf(0, buf);
+
+        if has_hashes {
+            self.read_child_hashes_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf, true);
+            right.write_child_hashes_from_buf(0, buf, true);
+        }
 
         (right, self.read_key(MIN_LEN_AFTER_SPLIT))
     }
@@ -193,6 +249,7 @@ where
         mid: &[u8; K::SIZE],
         right: InternalBTreeNode<K>,
         buf: &mut Vec<u8>,
+        has_hashes: bool,
     ) {
         self.push_key(mid, MIN_LEN_AFTER_SPLIT);
 
@@ -201,6 +258,11 @@ where
 
         right.read_child_ptrs_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
         self.write_child_ptrs_from_buf(B, buf);
+
+        if has_hashes {
+            right.read_child_hashes_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf, true);
+            self.write_child_hashes_from_buf(B, buf, true);
+        }
 
         right.destroy();
     }
@@ -232,14 +294,14 @@ where
     }
 
     #[inline]
-    pub fn push_child_ptr(&mut self, ptr: &[u8; u64::SIZE], children_len: usize) {
+    pub fn push_child_ptr(&mut self, ptr: &PtrRaw, children_len: usize) {
         self.write_child_ptr(children_len, ptr);
     }
 
     pub fn insert_child_ptr(
         &mut self,
         idx: usize,
-        ptr: &[u8; u64::SIZE],
+        ptr: &PtrRaw,
         children_len: usize,
         buf: &mut Vec<u8>,
     ) {
@@ -261,6 +323,51 @@ where
 
         self.read_child_ptrs_to_buf(idx + 1, children_len - idx - 1, buf);
         self.write_child_ptrs_from_buf(idx, buf);
+    }
+
+    #[inline]
+    pub fn push_child_hash(&mut self, hash: &Hash, children_len: usize, has_hashes: bool) {
+        debug_assert!(has_hashes);
+
+        self.write_child_hash(children_len, hash, has_hashes);
+    }
+
+    pub fn insert_child_hash(
+        &mut self,
+        idx: usize,
+        hash: &Hash,
+        children_len: usize,
+        buf: &mut Vec<u8>,
+        has_hashes: bool,
+    ) {
+        debug_assert!(has_hashes);
+
+        if idx == children_len {
+            self.push_child_hash(hash, children_len, has_hashes);
+            return;
+        }
+
+        self.read_child_hashes_to_buf(idx, children_len - idx, buf, has_hashes);
+        self.write_child_hashes_from_buf(idx + 1, buf, has_hashes);
+
+        self.write_child_hash(idx, hash, has_hashes);
+    }
+
+    pub fn remove_child_hash(
+        &mut self,
+        idx: usize,
+        children_len: usize,
+        buf: &mut Vec<u8>,
+        has_hashes: bool,
+    ) {
+        debug_assert!(has_hashes);
+
+        if idx == children_len - 1 {
+            return;
+        }
+
+        self.read_child_hashes_to_buf(idx + 1, children_len - idx - 1, buf, has_hashes);
+        self.write_child_hashes_from_buf(idx, buf, has_hashes);
     }
 
     pub fn read_left_sibling<T: IBTreeNode>(&self, idx: usize) -> Option<T> {
@@ -295,7 +402,7 @@ where
     }
 
     #[inline]
-    pub fn read_child_ptr(&self, idx: usize) -> [u8; u64::SIZE] {
+    pub fn read_child_ptr(&self, idx: usize) -> PtrRaw {
         SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE)
     }
 
@@ -316,13 +423,60 @@ where
     }
 
     #[inline]
-    pub fn write_child_ptr(&mut self, idx: usize, ptr: &[u8; u64::SIZE]) {
+    pub fn write_child_ptr(&mut self, idx: usize, ptr: &PtrRaw) {
         SSlice::_write_bytes(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE, ptr);
     }
 
     #[inline]
     fn write_child_ptrs_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
         SSlice::_write_bytes(self.ptr, CHILDREN_OFFSET + from_idx * u64::SIZE, buf);
+    }
+
+    #[inline]
+    pub fn read_child_hash(&self, idx: usize, has_hashes: bool) -> Hash {
+        debug_assert!(has_hashes);
+
+        SSlice::_read_const_u8_array_of_size::<Hash>(
+            self.ptr,
+            children_hashes_offset::<K>() + idx * Hash::SIZE,
+        )
+    }
+
+    #[inline]
+    fn read_child_hashes_to_buf(
+        &self,
+        from_idx: usize,
+        len: usize,
+        buf: &mut Vec<u8>,
+        has_hashes: bool,
+    ) {
+        debug_assert!(has_hashes);
+        buf.resize(len * Hash::SIZE, 0);
+        SSlice::_read_bytes(
+            self.ptr,
+            children_hashes_offset::<K>() + from_idx * Hash::SIZE,
+            buf,
+        );
+    }
+
+    #[inline]
+    pub fn write_child_hash(&mut self, idx: usize, hash: &Hash, has_hashes: bool) {
+        debug_assert!(has_hashes);
+        SSlice::_write_bytes(
+            self.ptr,
+            children_hashes_offset::<K>() + idx * Hash::SIZE,
+            hash,
+        );
+    }
+
+    #[inline]
+    fn write_child_hashes_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>, has_hashes: bool) {
+        debug_assert!(has_hashes);
+        SSlice::_write_bytes(
+            self.ptr,
+            children_hashes_offset::<K>() + from_idx * Hash::SIZE,
+            buf,
+        );
     }
 
     #[inline]
@@ -383,7 +537,7 @@ where
             "*({})]",
             u64::from_fixed_size_bytes(&self.read_child_ptr(self.read_len()))
         );
-        
+
         result
     }
 }
@@ -403,7 +557,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut node = InternalBTreeNode::<u64>::create_empty();
+        let mut node = InternalBTreeNode::<u64>::create_empty(false);
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
@@ -438,7 +592,7 @@ mod tests {
         println!("{}", node.to_string());
         println!();
 
-        let (mut right, mid) = node.split_max_len(&mut buf);
+        let (mut right, mid) = node.split_max_len(&mut buf, false);
 
         node.write_len(MIN_LEN_AFTER_SPLIT);
         right.write_len(MIN_LEN_AFTER_SPLIT);
@@ -472,7 +626,7 @@ mod tests {
         let c = right.read_child_ptr(CHILDREN_MIN_LEN_AFTER_SPLIT - 1);
         assert_eq!(c, 1u64.as_fixed_size_bytes());
 
-        node.merge_min_len(&mid, right, &mut buf);
+        node.merge_min_len(&mid, right, &mut buf, false);
 
         node.write_len(CAPACITY);
         assert_eq!(node.read_len(), CAPACITY);

@@ -1,38 +1,29 @@
 use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::collections::btree_map::{
+    BTreeNode, IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, MIN_LEN_AFTER_SPLIT,
+};
+use crate::isoprint;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
+use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{isoprint, SSlice};
 use std::fmt::Debug;
 use std::mem;
 
-pub const B: usize = 8;
-pub const CAPACITY: usize = 2 * B - 1;
-pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
-
-pub const CHILDREN_CAPACITY: usize = 2 * B;
-pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
-
-pub const NODE_TYPE_INTERNAL: u8 = 127;
-pub const NODE_TYPE_LEAF: u8 = 255;
-pub const NODE_TYPE_OFFSET: usize = 0;
-
-pub(crate) mod internal_node;
-pub mod iter;
-pub(crate) mod leaf_node;
-
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
-pub struct SBTreeMap<K, V> {
-    pub(crate) root: Option<BTreeNode<K, V>>,
-    pub(crate) len: u64,
+pub struct SCertifiedBTreeMap<K, V> {
+    root: Option<BTreeNode<K, V>>,
+    len: u64,
+    root_hash: Hash,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+    SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -42,9 +33,18 @@ where
         Self {
             root: None,
             len: 0,
+            root_hash: EMPTY_HASH,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
+    }
+
+    fn recalculate_root_hash(&mut self, mut last_node_hash: Hash) {
+        while let Some((mut parent, _, parent_idx)) = self._stack.pop() {
+            parent.write_child_hash(parent_idx, &last_node_hash, true);
+            last_node_hash = parent.root_hash();
+        }
+        self.root_hash = last_node_hash;
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
@@ -70,7 +70,7 @@ where
 
         let right_leaf = match self.insert_leaf(&mut leaf, key, value) {
             Ok(v) => {
-                self._stack.clear();
+                self.recalculate_root_hash(leaf.root_hash());
 
                 return Some(v);
             }
@@ -78,7 +78,7 @@ where
                 if let Some(right_leaf) = right_leaf_opt {
                     right_leaf
                 } else {
-                    self._stack.clear();
+                    self.recalculate_root_hash(leaf.root_hash());
                     self.len += 1;
 
                     return None;
@@ -88,21 +88,28 @@ where
 
         let mut key_to_index = right_leaf.read_key(0);
         let mut ptr = right_leaf.as_ptr();
+        let mut left_hash = leaf.root_hash();
+        let mut right_hash = right_leaf.root_hash();
 
         while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
+            parent.write_child_hash(idx, &left_hash, true);
+
             if let Some((right, _k)) = self.insert_internal(
                 &mut parent,
                 parent_len,
                 idx,
                 key_to_index,
                 ptr.as_fixed_size_bytes(),
+                right_hash,
             ) {
                 key_to_index = _k;
                 ptr = right.as_ptr();
+                left_hash = parent.root_hash();
+                right_hash = right.root_hash();
                 node = BTreeNode::Internal(parent);
             } else {
+                self.recalculate_root_hash(parent.root_hash());
                 self.len += 1;
-                self._stack.clear();
 
                 return None;
             }
@@ -112,8 +119,9 @@ where
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
             &ptr.as_fixed_size_bytes(),
-            None,
+            Some((&node.root_hash(), &right_hash)),
         );
+        self.root_hash = new_root.root_hash();
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
 
@@ -154,14 +162,14 @@ where
 
         // if possible to simply remove the key without violating - return early
         if leaf_len > MIN_LEN_AFTER_SPLIT {
-            self._stack.clear();
-
             let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
 
             if let Some((mut fin, i)) = found_internal_node {
                 fin.write_key(i, &leaf.read_key(0));
             }
+
+            self.recalculate_root_hash(leaf.root_hash());
 
             return Some(v);
         };
@@ -172,6 +180,7 @@ where
         if stack_top_frame.is_none() {
             let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
+            self.root_hash = leaf.root_hash();
 
             return Some(v);
         }
@@ -315,31 +324,35 @@ where
         idx: usize,
         key: [u8; K::SIZE],
         child_ptr: PtrRaw,
+        child_hash: Hash,
     ) -> Option<(InternalBTreeNode<K>, [u8; K::SIZE])> {
         if len < CAPACITY {
             internal_node.insert_key(idx, &key, len, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, len + 1, &mut self._buf);
+            internal_node.insert_child_hash(idx + 1, &child_hash, len + 1, &mut self._buf, true);
 
             internal_node.write_len(len + 1);
             return None;
         }
 
-        if self.pass_elem_to_sibling_internal(internal_node, idx, &key, &child_ptr) {
+        if self.pass_elem_to_sibling_internal(internal_node, idx, &key, &child_ptr, &child_hash) {
             return None;
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
-        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, false);
+        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, true);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, B, &mut self._buf);
+            internal_node.insert_child_hash(idx + 1, &child_hash, B, &mut self._buf, true);
 
             internal_node.write_len(B);
             right.write_len(MIN_LEN_AFTER_SPLIT);
         } else {
             right.insert_key(idx - B, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             right.insert_child_ptr(idx - B + 1, &child_ptr, B, &mut self._buf);
+            right.insert_child_hash(idx - B + 1, &child_hash, B, &mut self._buf, true);
 
             internal_node.write_len(MIN_LEN_AFTER_SPLIT);
             right.write_len(B);
@@ -378,6 +391,8 @@ where
                     key,
                     value,
                 );
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &leaf_node.root_hash(), true);
 
                 return true;
             }
@@ -399,6 +414,8 @@ where
                     key,
                     value,
                 );
+                parent.write_child_hash(parent_idx, &leaf_node.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                 return true;
             }
@@ -465,6 +482,7 @@ where
         idx: usize,
         key: &[u8; K::SIZE],
         child_ptr: &PtrRaw,
+        child_hash: &Hash,
     ) -> bool {
         let stack_top_frame = self.peek_stack();
         if stack_top_frame.is_none() {
@@ -487,7 +505,10 @@ where
                     idx,
                     key,
                     child_ptr,
+                    child_hash,
                 );
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &internal_node.root_hash(), true);
 
                 return true;
             }
@@ -508,7 +529,10 @@ where
                     idx,
                     key,
                     child_ptr,
+                    child_hash,
                 );
+                parent.write_child_hash(parent_idx, &internal_node.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
 
                 return true;
             }
@@ -527,6 +551,7 @@ where
         i_idx: usize,
         key: &[u8; K::SIZE],
         child_ptr: &PtrRaw,
+        child_hash: &Hash,
     ) {
         if i_idx != CAPACITY {
             rs.steal_from_left(
@@ -538,17 +563,19 @@ where
                 None,
                 None,
                 &mut self._buf,
-                false,
+                true,
             );
+            rs.write_len(rs_len + 1);
 
             node.insert_key(i_idx, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
+            node.insert_child_hash(i_idx + 1, child_hash, CAPACITY, &mut self._buf, true);
 
-            rs.write_len(rs_len + 1);
             return;
         }
 
         let last = Some((key, child_ptr));
+        rs.write_len(rs_len + 1);
         rs.steal_from_left(
             rs_len,
             node,
@@ -556,11 +583,10 @@ where
             p,
             p_idx,
             last,
-            None,
+            Some(child_hash),
             &mut self._buf,
-            false,
+            true,
         );
-        rs.write_len(rs_len + 1);
     }
 
     fn pass_to_left_sibling_internal(
@@ -573,6 +599,7 @@ where
         i_idx: usize,
         key: &[u8; K::SIZE],
         child_ptr: &PtrRaw,
+        child_hash: &Hash,
     ) {
         if i_idx != 0 {
             ls.steal_from_right(
@@ -584,11 +611,12 @@ where
                 None,
                 None,
                 &mut self._buf,
-                false,
+                true,
             );
 
             node.insert_key(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx, child_ptr, CAPACITY, &mut self._buf);
+            node.insert_child_hash(i_idx, child_hash, CAPACITY, &mut self._buf, true);
 
             ls.write_len(ls_len + 1);
             return;
@@ -602,9 +630,9 @@ where
             p,
             p_idx - 1,
             first,
-            None,
+            Some(child_hash),
             &mut self._buf,
-            false,
+            true,
         );
         ls.write_len(ls_len + 1);
     }
@@ -636,6 +664,12 @@ where
                 // idx + 1, because after the rotation the leaf has one more key added before
                 let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
 
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+
+                self._stack.pop();
+                self.recalculate_root_hash(parent.root_hash());
+
                 return Some(v);
             }
 
@@ -658,18 +692,34 @@ where
                     // just idx, because after rotation leaf has one more key added to the end
                     let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
+                    parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
+
+                    self._stack.pop();
+                    self.recalculate_root_hash(parent.root_hash());
+
                     return Some(v);
                 }
 
-                return self.merge_with_right_sibling_leaf(
-                    leaf,
+                let result = self.merge_with_right_sibling_leaf(
+                    &mut leaf,
                     right_sibling,
                     idx,
                     found_internal_node,
                 );
+
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+                self.handle_stack_after_merge(true, leaf);
+
+                return result;
             }
 
-            return self.merge_with_left_sibling_leaf(leaf, left_sibling, idx);
+            let result = self.merge_with_left_sibling_leaf(leaf, &mut left_sibling, idx);
+
+            parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+            self.handle_stack_after_merge(false, left_sibling);
+
+            return result;
         }
 
         if let Some(mut right_sibling) =
@@ -691,15 +741,26 @@ where
                 // just idx, because after rotation leaf has one more key added to the end
                 let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
+                parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+                parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
+
+                self._stack.pop();
+                self.recalculate_root_hash(parent.root_hash());
+
                 return Some(v);
             }
 
-            return self.merge_with_right_sibling_leaf(
-                leaf,
+            let result = self.merge_with_right_sibling_leaf(
+                &mut leaf,
                 right_sibling,
                 idx,
                 found_internal_node,
             );
+
+            parent.write_child_hash(parent_idx, &leaf.root_hash(), true);
+            self.handle_stack_after_merge(true, leaf);
+
+            return result;
         }
 
         unreachable!();
@@ -707,7 +768,7 @@ where
 
     fn merge_with_right_sibling_leaf(
         &mut self,
-        mut leaf: LeafBTreeNode<K, V>,
+        leaf: &mut LeafBTreeNode<K, V>,
         right_sibling: LeafBTreeNode<K, V>,
         idx: usize,
         found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
@@ -723,15 +784,13 @@ where
             fin.write_key(i, &leaf.read_key(0));
         }
 
-        self.handle_stack_after_merge(true, leaf);
-
         Some(v)
     }
 
     fn merge_with_left_sibling_leaf(
         &mut self,
         leaf: LeafBTreeNode<K, V>,
-        mut left_sibling: LeafBTreeNode<K, V>,
+        left_sibling: &mut LeafBTreeNode<K, V>,
         idx: usize,
     ) -> Option<V> {
         // if there is no right sibling - merge with left
@@ -744,8 +803,6 @@ where
         // no reason to handle 'found_internal_node', because the key is
         // guaranteed to be in the nearest parent and left_sibling keys are all
         // continue to present
-
-        self.handle_stack_after_merge(false, left_sibling);
 
         Some(v)
     }
@@ -774,8 +831,6 @@ where
         if let Some((mut fin, i)) = found_internal_node {
             fin.write_key(i, &leaf.read_key(0));
         }
-
-        self._stack.clear();
     }
 
     fn steal_from_right_sibling_leaf(
@@ -802,8 +857,6 @@ where
         if let Some((mut fin, i)) = found_internal_node {
             fin.write_key(i, &leaf.read_key(0));
         }
-
-        self._stack.clear();
     }
 
     fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
@@ -820,9 +873,10 @@ where
             if node_len > MIN_LEN_AFTER_SPLIT {
                 node.remove_key(idx_to_remove, node_len, &mut self._buf);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf, true);
                 node.write_len(node_len - 1);
 
-                self._stack.clear();
+                self.recalculate_root_hash(node.root_hash());
 
                 return;
             }
@@ -834,6 +888,7 @@ where
                 // if the root has only one key, make child the new root
                 if node_len == 1 {
                     node.destroy();
+                    self.root_hash = prev_node.root_hash();
                     self.root = Some(prev_node);
 
                     return;
@@ -842,7 +897,10 @@ where
                 // otherwise simply remove and return
                 node.remove_key(idx_to_remove, node_len, &mut self._buf);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_child_hash(child_idx_to_remove, node_len + 1, &mut self._buf, true);
                 node.write_len(node_len - 1);
+
+                self.root_hash = node.root_hash();
 
                 return;
             }
@@ -858,20 +916,25 @@ where
                 // steal from left if it is possible
                 if left_sibling_len > MIN_LEN_AFTER_SPLIT {
                     self.steal_from_left_sibling_internal(
-                        node,
+                        &mut node,
                         node_len,
                         idx_to_remove,
                         child_idx_to_remove,
-                        left_sibling,
+                        &mut left_sibling,
                         left_sibling_len,
-                        parent,
+                        &mut parent,
                         parent_idx,
                     );
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
+                    parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+
+                    self._stack.pop();
+                    self.recalculate_root_hash(parent.root_hash());
 
                     return;
                 }
 
-                if let Some(right_sibling) =
+                if let Some(mut right_sibling) =
                     parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
                 {
                     let right_sibling_len = right_sibling.read_len();
@@ -879,15 +942,20 @@ where
                     // steal from right if it's possible
                     if right_sibling_len > MIN_LEN_AFTER_SPLIT {
                         self.steal_from_right_sibling_internal(
-                            node,
+                            &mut node,
                             node_len,
                             idx_to_remove,
                             child_idx_to_remove,
-                            right_sibling,
+                            &mut right_sibling,
                             right_sibling_len,
-                            parent,
+                            &mut parent,
                             parent_idx,
                         );
+                        parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
+                        parent.write_child_hash(parent_idx, &node.root_hash(), true);
+
+                        self._stack.pop();
+                        self.recalculate_root_hash(parent.root_hash());
 
                         return;
                     }
@@ -901,6 +969,8 @@ where
                         &mut parent,
                         parent_idx,
                     );
+
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
 
                     merged_right = true;
                     prev_node = BTreeNode::Internal(node);
@@ -918,13 +988,15 @@ where
                     parent_idx,
                 );
 
+                parent.write_child_hash(parent_idx - 1, &left_sibling.root_hash(), true);
+
                 merged_right = false;
                 prev_node = BTreeNode::Internal(left_sibling);
 
                 continue;
             }
 
-            if let Some(right_sibling) =
+            if let Some(mut right_sibling) =
                 parent.read_right_sibling::<InternalBTreeNode<K>>(parent_idx, parent_len)
             {
                 let right_sibling_len = right_sibling.read_len();
@@ -932,15 +1004,20 @@ where
                 // steal from right if it's possible
                 if right_sibling_len > MIN_LEN_AFTER_SPLIT {
                     self.steal_from_right_sibling_internal(
-                        node,
+                        &mut node,
                         node_len,
                         idx_to_remove,
                         child_idx_to_remove,
-                        right_sibling,
+                        &mut right_sibling,
                         right_sibling_len,
-                        parent,
+                        &mut parent,
                         parent_idx,
                     );
+                    parent.write_child_hash(parent_idx, &node.root_hash(), true);
+                    parent.write_child_hash(parent_idx + 1, &right_sibling.root_hash(), true);
+
+                    self._stack.pop();
+                    self.recalculate_root_hash(parent.root_hash());
 
                     return;
                 }
@@ -955,6 +1032,8 @@ where
                     parent_idx,
                 );
 
+                parent.write_child_hash(parent_idx, &node.root_hash(), true);
+
                 merged_right = true;
                 prev_node = BTreeNode::Internal(node);
 
@@ -965,60 +1044,58 @@ where
 
     fn steal_from_right_sibling_internal(
         &mut self,
-        mut node: InternalBTreeNode<K>,
+        node: &mut InternalBTreeNode<K>,
         node_len: usize,
         idx_to_remove: usize,
         child_idx_to_remove: usize,
-        mut right_sibling: InternalBTreeNode<K>,
+        right_sibling: &mut InternalBTreeNode<K>,
         right_sibling_len: usize,
-        mut parent: InternalBTreeNode<K>,
+        parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
     ) {
         node.steal_from_right(
             node_len,
-            &mut right_sibling,
+            right_sibling,
             right_sibling_len,
-            &mut parent,
+            parent,
             parent_idx,
             None,
             None,
             &mut self._buf,
-            false,
+            true,
         );
         right_sibling.write_len(right_sibling_len - 1);
         node.remove_key(idx_to_remove, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
-
-        self._stack.clear();
+        node.remove_child_hash(child_idx_to_remove, B + 1, &mut self._buf, true);
     }
 
     fn steal_from_left_sibling_internal(
         &mut self,
-        mut node: InternalBTreeNode<K>,
+        node: &mut InternalBTreeNode<K>,
         node_len: usize,
         idx_to_remove: usize,
         child_idx_to_remove: usize,
-        mut left_sibling: InternalBTreeNode<K>,
+        left_sibling: &mut InternalBTreeNode<K>,
         left_sibling_len: usize,
-        mut parent: InternalBTreeNode<K>,
+        parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
     ) {
         node.steal_from_left(
             node_len,
-            &mut left_sibling,
+            left_sibling,
             left_sibling_len,
-            &mut parent,
+            parent,
             parent_idx - 1,
             None,
             None,
             &mut self._buf,
-            false,
+            true,
         );
         left_sibling.write_len(left_sibling_len - 1);
         node.remove_key(idx_to_remove + 1, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
-
-        self._stack.clear();
+        node.remove_child_hash(child_idx_to_remove + 1, B + 1, &mut self._buf, true);
     }
 
     fn merge_with_right_sibling_internal(
@@ -1031,9 +1108,10 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx);
-        node.merge_min_len(&mid_element, right_sibling, &mut self._buf, false);
+        node.merge_min_len(&mid_element, right_sibling, &mut self._buf, true);
         node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
+        node.remove_child_hash(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf, true);
         node.write_len(CAPACITY - 1);
     }
 
@@ -1047,9 +1125,15 @@ where
         parent_idx: usize,
     ) {
         let mid_element = parent.read_key(parent_idx - 1);
-        left_sibling.merge_min_len(&mid_element, node, &mut self._buf, false);
+        left_sibling.merge_min_len(&mid_element, node, &mut self._buf, true);
         left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
         left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
+        left_sibling.remove_child_hash(
+            child_idx_to_remove + B,
+            CHILDREN_CAPACITY,
+            &mut self._buf,
+            true,
+        );
         left_sibling.write_len(CAPACITY - 1);
     }
 
@@ -1070,7 +1154,60 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
+    AsHashTree<&K> for SCertifiedBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    fn root_hash(&self) -> Hash {
+        self.root_hash
+    }
+
+    fn witness(&self, index: &K, indexed_subtree: Option<HashTree>) -> HashTree {
+        let mut node = if let Some(root) = self.root.as_ref() {
+            unsafe { root.copy() }
+        } else {
+            return HashTree::Empty;
+        };
+
+        let mut stack = Vec::new();
+
+        let (leaf, idx) = loop {
+            match node {
+                BTreeNode::Internal(internal_node) => {
+                    let node_len = internal_node.read_len();
+                    let child_idx = match internal_node.binary_search(index, node_len) {
+                        Ok(idx) => idx + 1,
+                        Err(idx) => idx,
+                    };
+
+                    let child_ptr =
+                        u64::from_fixed_size_bytes(&internal_node.read_child_ptr(child_idx));
+
+                    stack.push((internal_node, child_idx));
+
+                    node = BTreeNode::from_ptr(child_ptr);
+                }
+                BTreeNode::Leaf(leaf_node) => {
+                    match leaf_node.binary_search(index, leaf_node.read_len()) {
+                        Ok(idx) => break (leaf_node, idx),
+                        _ => return HashTree::Empty,
+                    }
+                }
+            }
+        };
+
+        let mut witness = leaf.witness(idx, indexed_subtree);
+        while let Some((parent, parent_idx)) = stack.pop() {
+            witness = parent.witness(parent_idx, Some(witness));
+        }
+
+        witness
+    }
+}
+
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1133,7 +1270,8 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes> Default
+    for SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1143,11 +1281,11 @@ where
     }
 }
 
-impl<K, V> FixedSize for SBTreeMap<K, V> {
-    const SIZE: usize = u64::SIZE * 2;
+impl<K, V> FixedSize for SCertifiedBTreeMap<K, V> {
+    const SIZE: usize = u64::SIZE * 2 + Hash::SIZE;
 }
 
-impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
+impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
 
@@ -1158,7 +1296,8 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
         };
 
         buf[..u64::SIZE].copy_from_slice(&ptr);
-        buf[u64::SIZE..].copy_from_slice(&self.len.as_fixed_size_bytes());
+        buf[u64::SIZE..(u64::SIZE * 2)].copy_from_slice(&self.len.as_fixed_size_bytes());
+        buf[(u64::SIZE * 2)..].copy_from_slice(&self.root_hash);
 
         buf
     }
@@ -1166,9 +1305,11 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
     fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
         let mut ptr_buf = [0u8; u64::SIZE];
         let mut len_buf = [0u8; u64::SIZE];
+        let mut root_hash = EMPTY_HASH;
 
         ptr_buf.copy_from_slice(&buf[..u64::SIZE]);
-        len_buf.copy_from_slice(&buf[u64::SIZE..]);
+        len_buf.copy_from_slice(&buf[u64::SIZE..(u64::SIZE * 2)]);
+        root_hash.copy_from_slice(&buf[(u64::SIZE * 2)..]);
 
         let ptr = u64::from_fixed_size_bytes(&ptr_buf);
         let len = u64::from_fixed_size_bytes(&len_buf);
@@ -1180,13 +1321,14 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
                 Some(BTreeNode::from_ptr(ptr))
             },
             len,
+            root_hash,
             _buf: Vec::default(),
             _stack: Vec::default(),
         }
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V>
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SCertifiedBTreeMap<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
@@ -1242,52 +1384,25 @@ where
     }
 }
 
-pub trait IBTreeNode {
-    unsafe fn from_ptr(ptr: u64) -> Self;
-    fn as_ptr(&self) -> u64;
-    unsafe fn copy(&self) -> Self;
-}
-
-pub(crate) enum BTreeNode<K, V> {
-    Internal(InternalBTreeNode<K>),
-    Leaf(LeafBTreeNode<K, V>),
-}
-
-impl<K, V> BTreeNode<K, V> {
-    pub(crate) fn from_ptr(ptr: u64) -> Self {
-        let node_type: u8 = SSlice::_as_fixed_size_bytes_read(ptr, NODE_TYPE_OFFSET);
-
-        unsafe {
-            match node_type {
-                NODE_TYPE_INTERNAL => Self::Internal(InternalBTreeNode::<K>::from_ptr(ptr)),
-                NODE_TYPE_LEAF => Self::Leaf(LeafBTreeNode::<K, V>::from_ptr(ptr)),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    pub(crate) fn as_ptr(&self) -> u64 {
-        match &self {
-            Self::Internal(i) => i.as_ptr(),
-            Self::Leaf(l) => l.as_ptr(),
-        }
-    }
-
-    pub(crate) unsafe fn copy(&self) -> Self {
-        match &self {
-            Self::Internal(i) => Self::Internal(i.copy()),
-            Self::Leaf(l) => Self::Leaf(l.copy()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::collections::btree_map::SBTreeMap;
+    use crate::collections::certified_btree_map::SCertifiedBTreeMap;
     use crate::primitive::StableAllocated;
+    use crate::utils::certification::{AsHashTree, AsHashableBytes, HashTree};
+    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+
+    impl AsHashableBytes for u64 {
+        fn as_hashable_bytes(&self) -> Vec<u8> {
+            self.to_le_bytes().to_vec()
+        }
+
+        fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
+            u64::from_le_bytes(bytes.try_into().unwrap())
+        }
+    }
 
     #[test]
     fn random_works_fine() {
@@ -1296,7 +1411,7 @@ mod tests {
         init_allocator(0);
 
         let iterations = 1000;
-        let mut map = SBTreeMap::<u64, u64>::default();
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
         let mut example = Vec::new();
         for i in 0..iterations {
@@ -1305,11 +1420,17 @@ mod tests {
         example.shuffle(&mut thread_rng());
 
         for i in 0..iterations {
-            map.debug_print_stack();
             assert!(map._stack.is_empty());
             assert!(map.insert(example[i], example[i]).is_none());
 
             for j in 0..i {
+                let wit = map.witness(&example[j], None);
+                assert_eq!(
+                    wit.reconstruct(),
+                    map.root_hash,
+                    "invalid witness {:?}",
+                    wit
+                );
                 assert!(
                     map.contains_key(&example[j]),
                     "don't contain {}",
@@ -1324,19 +1445,32 @@ mod tests {
             }
         }
 
+        assert_eq!(map.len(), iterations as u64);
+        assert_eq!(map.is_empty(), false);
+
+        map.debug_print_stack();
+        map.debug_print();
+        println!();
+        println!();
+
         assert_eq!(map.insert(0, 1).unwrap(), 0);
         assert_eq!(map.insert(0, 0).unwrap(), 1);
 
-        map.debug_print();
-
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {
-            map.debug_print_stack();
             assert!(map._stack.is_empty());
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));
 
             for j in (i + 1)..iterations {
+                let wit = map.witness(&example[j], None);
+                assert_eq!(
+                    wit.reconstruct(),
+                    map.root_hash,
+                    "invalid witness of {}: {:?}",
+                    example[j],
+                    wit
+                );
                 assert!(
                     map.contains_key(&example[j]),
                     "don't contain {}",
@@ -1350,6 +1484,8 @@ mod tests {
                 );
             }
         }
+
+        map.debug_print();
     }
 
     #[test]
@@ -1358,7 +1494,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::default();
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
         for i in 0..200 {
             map.insert(i, i);
@@ -1392,7 +1528,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut map = SBTreeMap::<u64, u64>::default();
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
         for i in 0..200 {
             map.insert(i, i);
@@ -1400,5 +1536,27 @@ mod tests {
 
         unsafe { map.stable_drop() };
         assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn encoding_works() {
+        stable::clear();
+        stable::grow(1).unwrap();
+        init_allocator(0);
+
+        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+
+        for i in 0..50 {
+            map.insert(i, i);
+        }
+
+        let bytes = map.as_fixed_size_bytes();
+        let map = SCertifiedBTreeMap::<u64, u64>::from_fixed_size_bytes(&bytes);
+
+        for i in 0..50 {
+            assert!(map.contains_key(&i));
+        }
+
+        unsafe { map.stable_drop() };
     }
 }

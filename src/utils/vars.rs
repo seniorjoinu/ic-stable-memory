@@ -60,13 +60,13 @@ fn format_name(name: &[u8]) -> [u8; 128] {
 }
 
 pub fn set_var<T: AsDynSizeBytes>(name: &[u8], value: T) {
-    let name = format_name(name);
-    let mut val_box = SBox::new(value);
-
-    val_box.move_to_stable();
-    let val_box_ptr = val_box.as_ptr();
-
     if let Some(m) = &mut *VARS.borrow_mut() {
+        let name = format_name(name);
+        let mut val_box = SBox::new(value);
+
+        val_box.move_to_stable();
+        let val_box_ptr = val_box.as_ptr();
+
         if let Some(prev_val_box_ptr) = m.insert(name, val_box_ptr) {
             let mut prev_val_box = unsafe { SBox::<T>::from_ptr(prev_val_box_ptr) };
             prev_val_box.remove_from_stable();
@@ -107,7 +107,8 @@ pub fn remove_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
 #[cfg(test)]
 mod tests {
     use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
-    use crate::{s, s_remove, stable, stable_memory_init};
+    use crate::utils::vars::{get_var, remove_var, set_var};
+    use crate::{deinit_vars, init_vars, reinit_vars, s, s_remove, stable, stable_memory_init};
 
     type Var = Vec<u8>;
 
@@ -140,12 +141,57 @@ mod tests {
         stable_memory_init(true, 0);
 
         s! { Var = vec![1u8, 2, 3, 4] };
-        let v = s!(Var);
 
+        let v = s!(Var);
         assert_eq!(v, vec![1u8, 2, 3, 4]);
+
+        s! { Var = vec![4u8, 3, 2, 1] };
+
+        let v = s!(Var);
+        assert_eq!(v, vec![4u8, 3, 2, 1]);
 
         let v1 = s_remove!(Var);
 
         assert_eq!(v1, v);
+    }
+
+    #[test]
+    #[should_panic]
+    fn init_vars_should_panic_when_called_twice() {
+        stable_memory_init(true, 0);
+
+        init_vars();
+    }
+
+    #[test]
+    #[should_panic]
+    fn deinit_vars_should_panic_when_called_without_init() {
+        deinit_vars();
+    }
+
+    #[test]
+    #[should_panic]
+    fn reinit_vars_should_panic_when_called_twice() {
+        stable_memory_init(true, 0);
+
+        reinit_vars();
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_var_should_panic_when_vars_are_not_initted() {
+        set_var(b"abc", vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_var_should_panic_when_vars_are_not_initted() {
+        get_var::<Var>(b"abc");
+    }
+
+    #[test]
+    #[should_panic]
+    fn remove_var_should_panic_when_vars_are_not_initted() {
+        remove_var::<Var>(b"abc");
     }
 }

@@ -148,9 +148,10 @@ mod tests {
     use crate::mem::Anyway;
     use crate::{
         _debug_print_allocator, _get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate,
-        get_allocated_size, get_free_size, get_mem_metrics, reallocate, stable_memory_init,
-        stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        get_allocated_size, get_free_size, get_mem_metrics, init_allocator, reallocate,
+        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
     };
+    use crate::{deinit_allocator, reinit_allocator, stable, SSlice};
 
     #[test]
     fn basic_flow_works_fine() {
@@ -176,6 +177,76 @@ mod tests {
         assert!(m.free > 0);
         assert!(m.available > 0);
 
+        _debug_print_allocator();
+    }
+
+    #[test]
+    #[should_panic]
+    fn init_allocator_twice_should_panic() {
+        stable::grow(1).expect("Out of memory (stable_memory_init)");
+        init_allocator(0);
+        init_allocator(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn deinit_allocator_should_panic() {
+        deinit_allocator();
+    }
+
+    #[test]
+    #[should_panic]
+    fn reinit_allocator_twice_should_panic() {
+        stable::grow(1).expect("Out of memory (stable_memory_init)");
+        init_allocator(0);
+        reinit_allocator(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn allocate_without_allocator_should_panic() {
+        allocate(10);
+    }
+
+    #[test]
+    #[should_panic]
+    fn deallocate_without_allocator_should_panic() {
+        deallocate(SSlice::new(0, 10, false));
+    }
+
+    #[test]
+    #[should_panic]
+    fn reallocate_without_allocator_should_panic() {
+        reallocate(SSlice::new(0, 10, false), 20);
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_allocated_size_without_allocator_should_panic() {
+        get_allocated_size();
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_free_size_without_allocator_should_panic() {
+        get_free_size();
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_custom_data_without_allocator_should_panic() {
+        _get_custom_data_ptr(0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_custom_data_without_allocator_should_panic() {
+        _set_custom_data_ptr(0, 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn debug_print_without_allocator_should_panic() {
         _debug_print_allocator();
     }
 }

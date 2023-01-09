@@ -1,5 +1,6 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
+use crate::utils::certification::AsHashableBytes;
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate};
 use std::cmp::Ordering;
@@ -30,6 +31,11 @@ impl<T> SBox<T> {
     pub fn get(&self) -> &T {
         &self.inner
     }
+
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
 }
 
 impl<T: AsDynSizeBytes> SBox<T> {
@@ -56,13 +62,6 @@ impl<T: AsDynSizeBytes> SBox<T> {
         } else {
             unreachable!()
         }
-    }
-
-    #[inline]
-    pub fn into_inner(mut self) -> T {
-        self.remove_from_stable();
-
-        self.inner
     }
 }
 
@@ -107,6 +106,16 @@ impl<T: AsDynSizeBytes> StableAllocated for SBox<T> {
     #[inline]
     unsafe fn stable_drop(mut self) {
         self.remove_from_stable();
+    }
+}
+
+impl<T: AsHashableBytes> AsHashableBytes for SBox<T> {
+    fn as_hashable_bytes(&self) -> Vec<u8> {
+        self.inner.as_hashable_bytes()
+    }
+
+    fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
+        SBox::<T>::new(T::from_hashable_bytes(bytes))
     }
 }
 

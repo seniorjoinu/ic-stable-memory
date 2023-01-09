@@ -67,6 +67,11 @@ where
     pub fn iter(&self) -> SHashSetIter<T> {
         SHashSetIter::new(self)
     }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
 }
 
 impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T>

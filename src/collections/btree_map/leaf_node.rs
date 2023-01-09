@@ -391,7 +391,7 @@ where
         }
 
         result += "]";
-        
+
         result
     }
 }

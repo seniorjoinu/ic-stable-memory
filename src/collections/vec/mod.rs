@@ -206,6 +206,15 @@ where
         unsafe { other.stable_drop() };
     }
 
+    #[inline]
+    pub fn clear(&mut self) {
+        for i in 0..self.len {
+            let mut v = unsafe { self.get_copy(i).unwrap_unchecked() };
+            v.remove_from_stable();
+        }
+        self.len = 0;
+    }
+
     pub fn binary_search_by<FN>(&self, mut f: FN) -> Result<usize, usize>
     where
         FN: FnMut(T) -> Ordering,

@@ -208,6 +208,49 @@ where
         SHashMapIter::new(self)
     }
 
+    pub fn clear(&mut self) {
+        for i in 0..self.cap {
+            match self.read_key_at(i, true) {
+                HashMapKey::Empty => continue,
+                HashMapKey::Occupied(mut k) => {
+                    let mut v = self.read_val_at(i);
+
+                    k.remove_from_stable();
+                    v.remove_from_stable();
+
+                    self.write_key_at(i, HashMapKey::Empty);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.len = 0;
+    }
+
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&K, &V) -> bool,
+    {
+        for i in 0..self.cap {
+            match self.read_key_at(i, true) {
+                HashMapKey::Empty => continue,
+                HashMapKey::Occupied(mut k) => {
+                    let mut v = self.read_val_at(i);
+                    if f(&k, &v) {
+                        continue;
+                    }
+
+                    k.remove_from_stable();
+                    v.remove_from_stable();
+
+                    self.write_key_at(i, HashMapKey::Empty);
+                    self.len -= 1;
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
     fn find_inner_idx(&self, key: &K) -> Option<(usize, K)> {
         if self.is_empty() {
             return None;
@@ -494,6 +537,8 @@ mod tests {
 
         assert!(map.contains_key(&2));
         assert!(!map.contains_key(&5));
+
+        map.debug_print();
 
         unsafe { map.stable_drop() };
 

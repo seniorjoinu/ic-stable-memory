@@ -49,6 +49,11 @@ where
     pub fn iter(&self) -> SBTreeSetIter<T> {
         SBTreeSetIter::new(self)
     }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
 }
 
 impl<T: Ord + StableAllocated> Default for SBTreeSet<T>
