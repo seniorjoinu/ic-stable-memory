@@ -362,4 +362,4 @@ Feel free to propose PR's, architecture tips, bug reports or any other feedback.
 ## Test coverage check
 * `cargo install grcov`
 * `rustup component add llvm-tools-preview`
-* `./coverage --test` (won't rebuild without `--test`)
+* `./coverage.sh --test` (won't rebuild without `--test`)
