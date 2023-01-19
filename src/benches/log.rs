@@ -1,6 +1,6 @@
 #[cfg(test)]
-mod vec_benchmark {
-    use crate::collections::vec::SVec;
+mod log_benchmark {
+    use crate::collections::log::SLog;
     use crate::measure;
     use crate::{init_allocator, stable};
 
@@ -29,18 +29,6 @@ mod vec_benchmark {
                     classic_vec.pop().unwrap();
                 }
             });
-
-            measure!("Classic vec insert", ITERATIONS / 10, {
-                for i in 0..(ITERATIONS / 10) {
-                    classic_vec.insert(0, i as u64);
-                }
-            });
-
-            measure!("Classic vec remove", ITERATIONS / 10, {
-                for _ in 0..(ITERATIONS / 10) {
-                    classic_vec.remove(0);
-                }
-            });
         }
 
         {
@@ -48,35 +36,23 @@ mod vec_benchmark {
             stable::grow(1).unwrap();
             init_allocator(0);
 
-            let mut stable_vec = SVec::new();
+            let mut stable_log = SLog::new();
 
             measure!("Stable vec push", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_vec.push(i as u64);
+                    stable_log.push(i as u64);
                 }
             });
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_vec.get_copy(i).unwrap();
+                    stable_log.get_copy(i as u64).unwrap();
                 }
             });
 
             measure!("Stable vec pop", ITERATIONS, {
                 for _ in 0..ITERATIONS {
-                    stable_vec.pop().unwrap();
-                }
-            });
-
-            measure!("Stable vec insert", ITERATIONS / 10, {
-                for i in 0..(ITERATIONS / 10) {
-                    stable_vec.insert(0, i as u64);
-                }
-            });
-
-            measure!("Stable vec remove", ITERATIONS / 10, {
-                for _ in 0..(ITERATIONS / 10) {
-                    stable_vec.remove(0);
+                    stable_log.pop().unwrap();
                 }
             });
         }

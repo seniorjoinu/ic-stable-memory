@@ -49,8 +49,8 @@ impl<K, V> SHashMap<K, V> {
 
 impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V>
 where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
 {
     #[inline]
     pub fn new() -> Self {
@@ -287,7 +287,7 @@ where
             EMPTY => HashMapKey::Empty,
             OCCUPIED => {
                 if read_value {
-                    let k = SSlice::_as_fixed_size_bytes_read(self.table_ptr, offset + 1);
+                    let k = SSlice::_as_fixed_size_bytes_read::<K>(self.table_ptr, offset + 1);
 
                     HashMapKey::Occupied(k)
                 } else {
@@ -302,7 +302,7 @@ where
     pub(crate) fn read_val_at(&self, idx: usize) -> V {
         let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
 
-        SSlice::_as_fixed_size_bytes_read(self.table_ptr, offset)
+        SSlice::_as_fixed_size_bytes_read::<V>(self.table_ptr, offset)
     }
 
     fn write_key_at(&mut self, idx: usize, key: HashMapKey<K>) {
@@ -311,7 +311,7 @@ where
         let key_flag = match key {
             HashMapKey::Empty => [EMPTY],
             HashMapKey::Occupied(k) => {
-                SSlice::_as_fixed_size_bytes_write(self.table_ptr, offset + 1, k);
+                SSlice::_as_fixed_size_bytes_write::<K>(self.table_ptr, offset + 1, k);
 
                 [OCCUPIED]
             }
@@ -325,7 +325,7 @@ where
     fn write_val_at(&mut self, idx: usize, val: V) {
         let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
 
-        SSlice::_as_fixed_size_bytes_write(self.table_ptr, offset, val);
+        SSlice::_as_fixed_size_bytes_write::<V>(self.table_ptr, offset, val);
     }
 
     pub fn debug_print(&self) {
@@ -363,8 +363,8 @@ where
 
 impl<K: StableAllocated + Hash + Eq, V: StableAllocated> Default for SHashMap<K, V>
 where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
 {
     #[inline]
     fn default() -> Self {
@@ -424,8 +424,8 @@ impl<K, V> AsFixedSizeBytes for SHashMap<K, V> {
 
 impl<K: StableAllocated + Eq + Hash, V: StableAllocated> StableAllocated for SHashMap<K, V>
 where
-    [u8; K::SIZE]: Sized,
-    [u8; V::SIZE]: Sized,
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
 {
     #[inline]
     fn move_to_stable(&mut self) {}

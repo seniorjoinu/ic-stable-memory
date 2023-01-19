@@ -166,7 +166,7 @@ impl SSlice {
     where
         [(); T::SIZE]: Sized,
     {
-        Self::_as_fixed_size_bytes_read(self.ptr, offset)
+        Self::_as_fixed_size_bytes_read::<T>(self.ptr, offset)
     }
 
     #[inline]
@@ -174,7 +174,7 @@ impl SSlice {
     where
         [(); T::SIZE]: Sized,
     {
-        Self::_as_fixed_size_bytes_write(self.ptr, offset, it)
+        Self::_as_fixed_size_bytes_write::<T>(self.ptr, offset, it)
     }
 }
 

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod btree_map_benchmark {
+mod certified_btree_map_benchmark {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
     use crate::utils::certification::{AsHashTree as MyAsHashTree, AsHashableBytes};
     use crate::{init_allocator, measure, stable};

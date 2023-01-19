@@ -1255,7 +1255,7 @@ pub(crate) enum BTreeNode<K, V> {
 
 impl<K, V> BTreeNode<K, V> {
     pub(crate) fn from_ptr(ptr: u64) -> Self {
-        let node_type: u8 = SSlice::_as_fixed_size_bytes_read(ptr, NODE_TYPE_OFFSET);
+        let node_type: u8 = SSlice::_as_fixed_size_bytes_read::<u8>(ptr, NODE_TYPE_OFFSET);
 
         unsafe {
             match node_type {
