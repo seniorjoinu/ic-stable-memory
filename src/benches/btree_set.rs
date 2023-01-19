@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod btree_map_benchmark {
+mod btree_set_benchmark {
     use crate::collections::btree_set::SBTreeSet;
     use crate::{init_allocator, measure, stable};
     use rand::seq::SliceRandom;

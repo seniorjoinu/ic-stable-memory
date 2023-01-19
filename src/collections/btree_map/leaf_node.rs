@@ -339,17 +339,17 @@ where
 
     #[inline]
     pub fn write_len(&mut self, len: usize) {
-        SSlice::_as_fixed_size_bytes_write(self.ptr, LEN_OFFSET, len);
+        SSlice::_as_fixed_size_bytes_write::<usize>(self.ptr, LEN_OFFSET, len);
     }
 
     #[inline]
     pub fn read_len(&self) -> usize {
-        SSlice::_as_fixed_size_bytes_read(self.ptr, LEN_OFFSET)
+        SSlice::_as_fixed_size_bytes_read::<usize>(self.ptr, LEN_OFFSET)
     }
 
     #[inline]
     fn init_node_type(&mut self) {
-        SSlice::_as_fixed_size_bytes_write(self.ptr, NODE_TYPE_OFFSET, NODE_TYPE_LEAF);
+        SSlice::_as_fixed_size_bytes_write::<u8>(self.ptr, NODE_TYPE_OFFSET, NODE_TYPE_LEAF);
     }
 }
 

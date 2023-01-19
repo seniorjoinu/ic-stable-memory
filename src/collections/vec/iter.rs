@@ -9,7 +9,7 @@ pub struct SVecIter<'a, T> {
 }
 
 impl<'a, T: FixedSize> SVecIter<'a, T> {
-    pub fn new(svec: &'a SVec<T>) -> Self {
+    pub(crate) fn new(svec: &'a SVec<T>) -> Self {
         let offset = 0;
         let max_offset = svec.len() * T::SIZE;
 

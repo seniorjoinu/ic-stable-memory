@@ -6,6 +6,7 @@ mod btree_set;
 mod certified_map;
 mod hash_map;
 mod hash_set;
+mod log;
 mod vec;
 
 #[ignore]

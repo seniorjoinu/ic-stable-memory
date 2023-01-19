@@ -12,7 +12,7 @@ pub struct SHashSet<T> {
 
 impl<T: StableAllocated + Hash + Eq> SHashSet<T>
 where
-    [u8; T::SIZE]: Sized,
+    [(); T::SIZE]: Sized,
 {
     #[inline]
     pub fn new() -> Self {

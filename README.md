@@ -1,6 +1,7 @@
 THIS IS A EARLY SOFTWARE. DON'T USE IN PRODUCTION!
 
 ## CHECK FOR MEMORY LEAKS BEFORE RELEASING
+## DESCRIBE RUST VERSION BEFORE RELEASING
 
 
 ![test coverage 90.42%](https://badgen.net/badge/coverage/90.42%25/green)
@@ -204,6 +205,18 @@ Performance difference in real canister should be less significant because of re
 "Stable vec remove" 100000 iterations: 3739 ms (x3.1 slower)
 ```
 
+### Log
+```
+"Classic vec push" 1000000 iterations: 50 ms 
+"Stable vec push" 1000000 iterations: 248 ms (x5 slower)
+
+"Classic vec search" 1000000 iterations: 63 ms
+"Stable vec search" 1000000 iterations: 2372 ms 
+
+"Classic vec pop" 1000000 iterations: 52 ms
+"Stable vec pop" 1000000 iterations: 156 ms
+```
+
 ### Binary heap
 ```
 "Classic binary heap push" 1000000 iterations: 461 ms
@@ -362,4 +375,4 @@ Feel free to propose PR's, architecture tips, bug reports or any other feedback.
 ## Test coverage check
 * `cargo install grcov`
 * `rustup component add llvm-tools-preview`
-* `./coverage --test` (won't rebuild without `--test`)
+* `./coverage.sh --test` (won't rebuild without `--test`)
