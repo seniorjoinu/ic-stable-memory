@@ -4,11 +4,11 @@ use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::{
     BTreeNode, IBTreeNode, B, CAPACITY, CHILDREN_CAPACITY, MIN_LEN_AFTER_SPLIT,
 };
-use crate::isoprint;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::{deallocate_lazy, isoprint};
 use std::fmt::Debug;
 use std::mem;
 
@@ -115,12 +115,21 @@ where
             }
         }
 
-        let new_root = InternalBTreeNode::<K>::create(
+        let mut new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
             &ptr.as_fixed_size_bytes(),
             Some((&node.root_hash(), &right_hash)),
         );
+
+        new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
+
+        // set root as parent of old nodes
+        let root_ptr = new_root.as_ptr().as_fixed_size_bytes();
+        node.write_parent(&root_ptr);
+        let mut right = BTreeNode::<K, V>::from_ptr(ptr);
+        right.write_parent(&root_ptr);
+
         self.root_hash = new_root.root_hash();
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
@@ -185,7 +194,12 @@ where
             return Some(v);
         }
 
-        self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node)
+        let it =
+            self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node);
+
+        deallocate_lazy();
+
+        it
     }
 
     #[inline]
@@ -888,6 +902,7 @@ where
                 // if the root has only one key, make child the new root
                 if node_len == 1 {
                     node.destroy();
+                    prev_node.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
                     self.root_hash = prev_node.root_hash();
                     self.root = Some(prev_node);
 
@@ -1147,7 +1162,10 @@ where
         match &self.root {
             Some(r) => unsafe { r.copy() },
             None => {
-                self.root = Some(BTreeNode::<K, V>::Leaf(LeafBTreeNode::create()));
+                let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create());
+                new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
+
+                self.root = Some(new_root);
                 unsafe { self.root.as_ref().unwrap_unchecked().copy() }
             }
         }
@@ -1349,6 +1367,7 @@ where
 
         loop {
             if nodes.is_empty() {
+                deallocate_lazy();
                 return;
             }
 

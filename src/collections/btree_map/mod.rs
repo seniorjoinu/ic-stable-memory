@@ -4,7 +4,7 @@ use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{isoprint, SSlice};
+use crate::{deallocate_lazy, isoprint, SSlice};
 use std::fmt::Debug;
 use std::mem;
 
@@ -18,6 +18,7 @@ pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
 pub const NODE_TYPE_INTERNAL: u8 = 127;
 pub const NODE_TYPE_LEAF: u8 = 255;
 pub const NODE_TYPE_OFFSET: usize = 0;
+const PARENT_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 
 pub(crate) mod internal_node;
 pub mod iter;
@@ -108,12 +109,20 @@ where
             }
         }
 
-        let new_root = InternalBTreeNode::<K>::create(
+        let mut new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
             &ptr.as_fixed_size_bytes(),
             None,
         );
+        new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
+
+        // set root as parent of old nodes
+        let root_ptr = new_root.as_ptr().as_fixed_size_bytes();
+        node.write_parent(&root_ptr);
+        let mut right = BTreeNode::<K, V>::from_ptr(ptr);
+        right.write_parent(&root_ptr);
+
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
 
@@ -176,7 +185,12 @@ where
             return Some(v);
         }
 
-        self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node)
+        let it =
+            self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node);
+
+        deallocate_lazy();
+
+        it
     }
 
     #[inline]
@@ -834,6 +848,7 @@ where
                 // if the root has only one key, make child the new root
                 if node_len == 1 {
                     node.destroy();
+                    prev_node.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
                     self.root = Some(prev_node);
 
                     return;
@@ -1063,7 +1078,10 @@ where
         match &self.root {
             Some(r) => unsafe { r.copy() },
             None => {
-                self.root = Some(BTreeNode::<K, V>::Leaf(LeafBTreeNode::create()));
+                let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create());
+                new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
+
+                self.root = Some(new_root);
                 unsafe { self.root.as_ref().unwrap_unchecked().copy() }
             }
         }
@@ -1207,6 +1225,8 @@ where
 
         loop {
             if nodes.is_empty() {
+                deallocate_lazy();
+
                 return;
             }
 
@@ -1246,6 +1266,8 @@ pub trait IBTreeNode {
     unsafe fn from_ptr(ptr: u64) -> Self;
     fn as_ptr(&self) -> u64;
     unsafe fn copy(&self) -> Self;
+    fn read_parent(&self) -> [u8; u64::SIZE];
+    fn write_parent(&mut self, parent: &[u8; u64::SIZE]);
 }
 
 pub(crate) enum BTreeNode<K, V> {
@@ -1267,16 +1289,23 @@ impl<K, V> BTreeNode<K, V> {
     }
 
     pub(crate) fn as_ptr(&self) -> u64 {
-        match &self {
+        match self {
             Self::Internal(i) => i.as_ptr(),
             Self::Leaf(l) => l.as_ptr(),
         }
     }
 
     pub(crate) unsafe fn copy(&self) -> Self {
-        match &self {
+        match self {
             Self::Internal(i) => Self::Internal(i.copy()),
             Self::Leaf(l) => Self::Leaf(l.copy()),
+        }
+    }
+
+    pub(crate) fn write_parent(&mut self, parent: &[u8; u64::SIZE]) {
+        match self {
+            Self::Internal(i) => i.write_parent(parent),
+            Self::Leaf(l) => l.write_parent(parent),
         }
     }
 }
@@ -1331,7 +1360,6 @@ mod tests {
 
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {
-            map.debug_print_stack();
             assert!(map._stack.is_empty());
 
             assert_eq!(map.remove(&example[i]), Some(example[i]));

@@ -22,6 +22,7 @@ use crate::utils::{isoprint, MemMetrics};
 #[thread_local]
 static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);
 
+#[inline]
 pub fn init_allocator(offset: u64) {
     if STABLE_MEMORY_ALLOCATOR.borrow().is_none() {
         let allocator = unsafe { StableMemoryAllocator::init(offset) };
@@ -32,6 +33,7 @@ pub fn init_allocator(offset: u64) {
     }
 }
 
+#[inline]
 pub fn deinit_allocator() {
     if let Some(alloc) = STABLE_MEMORY_ALLOCATOR.take() {
         alloc.store();
@@ -40,6 +42,7 @@ pub fn deinit_allocator() {
     }
 }
 
+#[inline]
 pub fn reinit_allocator(offset: u64) {
     if STABLE_MEMORY_ALLOCATOR.borrow().is_none() {
         let allocator = unsafe { StableMemoryAllocator::reinit(offset) };
@@ -50,6 +53,7 @@ pub fn reinit_allocator(offset: u64) {
     }
 }
 
+#[inline]
 pub fn allocate(size: usize) -> SSlice {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.allocate(size)
@@ -58,6 +62,7 @@ pub fn allocate(size: usize) -> SSlice {
     }
 }
 
+#[inline]
 pub fn deallocate(slice: SSlice) {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.deallocate(slice)
@@ -66,6 +71,25 @@ pub fn deallocate(slice: SSlice) {
     }
 }
 
+#[inline]
+pub fn mark_for_lazy_deallocation(ptr: u64) {
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.mark_for_lazy_deallocation(ptr)
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
+}
+
+#[inline]
+pub fn deallocate_lazy() {
+    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
+        alloc.deallocate_lazy();
+    } else {
+        unreachable!("StableMemoryAllocator is not initialized");
+    }
+}
+
+#[inline]
 pub fn reallocate(slice: SSlice, new_size: usize) -> Result<SSlice, SSlice> {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.reallocate(slice, new_size)
@@ -74,6 +98,7 @@ pub fn reallocate(slice: SSlice, new_size: usize) -> Result<SSlice, SSlice> {
     }
 }
 
+#[inline]
 pub fn get_allocated_size() -> u64 {
     if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
         alloc.get_allocated_size()
@@ -82,6 +107,7 @@ pub fn get_allocated_size() -> u64 {
     }
 }
 
+#[inline]
 pub fn get_free_size() -> u64 {
     if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
         alloc.get_free_size()
@@ -90,6 +116,7 @@ pub fn get_free_size() -> u64 {
     }
 }
 
+#[inline]
 pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.set_custom_data_ptr(idx, data_ptr)
@@ -98,6 +125,7 @@ pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
     }
 }
 
+#[inline]
 pub fn _get_custom_data_ptr(idx: usize) -> u64 {
     if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
         alloc.get_custom_data_ptr(idx)
@@ -106,6 +134,7 @@ pub fn _get_custom_data_ptr(idx: usize) -> u64 {
     }
 }
 
+#[inline]
 pub fn get_mem_metrics() -> MemMetrics {
     MemMetrics {
         available: stable::size_pages() * PAGE_SIZE_BYTES as u64,
@@ -114,6 +143,7 @@ pub fn get_mem_metrics() -> MemMetrics {
     }
 }
 
+#[inline]
 pub fn _debug_print_allocator() {
     if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         isoprint(format!("{:?}", alloc).as_str());
@@ -122,6 +152,7 @@ pub fn _debug_print_allocator() {
     }
 }
 
+#[inline]
 pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
     if should_grow {
         stable::grow(1).expect("Out of memory (stable_memory_init)");
@@ -131,11 +162,13 @@ pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
     init_vars();
 }
 
+#[inline]
 pub fn stable_memory_pre_upgrade() {
     deinit_vars();
     deinit_allocator();
 }
 
+#[inline]
 pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
     reinit_allocator(allocator_pointer);
     reinit_vars();

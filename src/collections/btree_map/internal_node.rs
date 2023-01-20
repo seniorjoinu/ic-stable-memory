@@ -1,13 +1,13 @@
-use crate::collections::btree_map::IBTreeNode;
+use crate::collections::btree_map::{BTreeNode, IBTreeNode};
 use crate::collections::btree_map::{
     B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
-    NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
+    NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET, PARENT_OFFSET,
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::{fork_hash, pruned, AsHashTree, AsHashableBytes, Hash, HashTree};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, mark_for_lazy_deallocation, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -16,12 +16,13 @@ pub type PtrRaw = [u8; u64::SIZE];
 
 // LAYOUT:
 // node_type: u8
+// parent: u64
 // len: usize
 // children: [u64; CHILDREN_CAPACITY]
 // children_hashes: [Hash; CHILDREN_CAPACITY], ONLY IF has_hashes == true
 // keys: [K; CAPACITY]
 
-const LEN_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
+const LEN_OFFSET: usize = PARENT_OFFSET + u64::SIZE;
 const CHILDREN_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 const KEYS_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
 
@@ -90,8 +91,7 @@ where
 
     #[inline]
     pub fn destroy(self) {
-        let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
-        deallocate(slice);
+        mark_for_lazy_deallocation(self.ptr);
     }
 
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
@@ -232,7 +232,22 @@ where
         right.write_keys_from_buf(0, buf);
 
         self.read_child_ptrs_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+
+        // change parent of right's new children to right
+        let right_ptr_buf = right.ptr.as_fixed_size_bytes();
+
+        for i in 0..CHILDREN_MIN_LEN_AFTER_SPLIT {
+            let mut ptr_buf = u64::_u8_arr_of_size();
+            ptr_buf.copy_from_slice(&buf[(i * u64::SIZE)..((i + 1) * u64::SIZE)]);
+
+            let ptr = u64::from_fixed_size_bytes(&ptr_buf);
+            let mut child = BTreeNode::<u64, u64>::from_ptr(ptr);
+
+            child.write_parent(&right_ptr_buf);
+        }
+
         right.write_child_ptrs_from_buf(0, buf);
+        right.write_parent(&self.read_parent());
 
         if has_hashes {
             self.read_child_hashes_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf, true);
@@ -255,6 +270,20 @@ where
         self.write_keys_from_buf(B, buf);
 
         right.read_child_ptrs_to_buf(0, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
+
+        // change parent of right's children to self
+        let self_ptr_buf = self.ptr.as_fixed_size_bytes();
+
+        for i in 0..CHILDREN_MIN_LEN_AFTER_SPLIT {
+            let mut ptr_buf = u64::_u8_arr_of_size();
+            ptr_buf.copy_from_slice(&buf[(i * u64::SIZE)..((i + 1) * u64::SIZE)]);
+
+            let ptr = u64::from_fixed_size_bytes(&ptr_buf);
+            let mut child = BTreeNode::<u64, u64>::from_ptr(ptr);
+
+            child.write_parent(&self_ptr_buf);
+        }
+
         self.write_child_ptrs_from_buf(B, buf);
 
         if has_hashes {
@@ -510,6 +539,16 @@ impl<K> IBTreeNode for InternalBTreeNode<K> {
     #[inline]
     unsafe fn copy(&self) -> Self {
         Self::from_ptr(self.ptr)
+    }
+
+    #[inline]
+    fn read_parent(&self) -> [u8; u64::SIZE] {
+        SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, PARENT_OFFSET)
+    }
+
+    #[inline]
+    fn write_parent(&mut self, parent: &[u8; u64::SIZE]) {
+        SSlice::_write_bytes(self.ptr, PARENT_OFFSET, parent)
     }
 }
 
