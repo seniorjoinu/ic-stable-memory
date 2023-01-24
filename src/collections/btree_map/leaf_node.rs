@@ -4,6 +4,7 @@ use crate::collections::btree_map::{
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
+use crate::utils::certification::Hash;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, isoprint, mark_for_lazy_deallocation, SSlice};
 use std::cmp::Ordering;
@@ -17,6 +18,7 @@ use std::marker::PhantomData;
 // len: usize,
 // keys: [K; CAPACITY]
 // values: [V; CAPACITY]
+// root_hash: Hash -- only when certified == true
 
 const PREV_OFFSET: usize = PARENT_OFFSET + u64::SIZE;
 const NEXT_OFFSET: usize = PREV_OFFSET + u64::SIZE;
@@ -25,6 +27,9 @@ const KEYS_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 
 const fn values_offset<K: FixedSize>() -> usize {
     KEYS_OFFSET + K::SIZE * CAPACITY
+}
+const fn root_hash_offset<K: FixedSize, V: FixedSize>() -> usize {
+    values_offset::<K>() + V::SIZE * CAPACITY
 }
 
 pub struct LeafBTreeNode<K, V> {
@@ -39,12 +44,18 @@ where
     [(); V::SIZE]: Sized,
 {
     #[inline]
-    const fn calc_size() -> usize {
-        values_offset::<K>() + V::SIZE * CAPACITY
+    const fn calc_size(certified: bool) -> usize {
+        let mut size = root_hash_offset::<K, V>();
+
+        if certified {
+            size += Hash::SIZE;
+        }
+
+        size
     }
 
-    pub fn create() -> Self {
-        let slice = allocate(Self::calc_size());
+    pub fn create(certified: bool) -> Self {
+        let slice = allocate(Self::calc_size(certified));
         let mut it = unsafe { Self::from_ptr(slice.get_ptr()) };
 
         it.init_node_type();
@@ -163,8 +174,13 @@ where
     }
 
     #[allow(clippy::explicit_counter_loop)]
-    pub fn split_max_len(&mut self, right_biased: bool, buf: &mut Vec<u8>) -> Self {
-        let mut right = Self::create();
+    pub fn split_max_len(
+        &mut self,
+        right_biased: bool,
+        buf: &mut Vec<u8>,
+        certified: bool,
+    ) -> Self {
+        let mut right = Self::create(certified);
 
         let min_idx = if right_biased { MIN_LEN_AFTER_SPLIT } else { B };
 
@@ -277,6 +293,14 @@ where
     }
 
     #[inline]
+    pub fn read_entry(&self, idx: usize) -> (K, V) {
+        (
+            K::from_fixed_size_bytes(&self.read_key(idx)), 
+            V::from_fixed_size_bytes(&self.read_value(idx))
+        )
+    }
+    
+    #[inline]
     pub fn write_key(&mut self, idx: usize, key: &[u8; K::SIZE]) {
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key);
     }
@@ -336,6 +360,19 @@ where
     #[inline]
     pub fn read_next(&self) -> [u8; u64::SIZE] {
         SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, NEXT_OFFSET)
+    }
+
+    #[inline]
+    pub fn write_root_hash(&mut self, root_hash: &Hash, certified: bool) {
+        debug_assert!(certified);
+        SSlice::_write_bytes(self.ptr, root_hash_offset::<K, V>(), root_hash);
+    }
+
+    #[inline]
+    pub fn read_root_hash(&self, certified: bool) -> Hash {
+        debug_assert!(certified);
+
+        SSlice::_read_const_u8_array_of_size::<Hash>(self.ptr, root_hash_offset::<K, V>())
     }
 
     #[inline]
@@ -420,7 +457,7 @@ mod tests {
         stable::grow(1).unwrap();
         init_allocator(0);
 
-        let mut node = LeafBTreeNode::<u64, u64>::create();
+        let mut node = LeafBTreeNode::<u64, u64>::create(false);
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
@@ -468,7 +505,7 @@ mod tests {
             node.insert_value(i, &v, CAPACITY - 1, &mut buf);
         }
 
-        let right = node.split_max_len(true, &mut buf);
+        let right = node.split_max_len(true, &mut buf, false);
 
         for i in 0..MIN_LEN_AFTER_SPLIT {
             let k = node.read_key(i);

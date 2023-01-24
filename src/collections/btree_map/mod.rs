@@ -29,8 +29,107 @@ pub(crate) mod leaf_node;
 pub struct SBTreeMap<K, V> {
     pub(crate) root: Option<BTreeNode<K, V>>,
     pub(crate) len: u64,
+    pub(crate) certified: bool,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
+}
+
+pub(crate) enum LeveledList {
+    None,
+    Some((Vec<Vec<u64>>, usize)),
+}
+
+impl LeveledList {
+    pub(crate) fn new() -> Self {
+        Self::Some((vec![Vec::new()], 0))
+    }
+
+    fn insert_root(&mut self, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                let root = vec![ptr];
+                v.insert(0, root);
+                *max_level += 1;
+            }
+        }
+    }
+
+    fn remove_root(&mut self) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                v.remove(0);
+                *max_level -= 1;
+            }
+        }
+    }
+
+    fn push(&mut self, level: usize, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                if level.gt(max_level) {
+                    *max_level = level;
+                }
+
+                match v[level].binary_search(&ptr) {
+                    Ok(_) => {}
+                    Err(idx) => v[level].insert(idx, ptr),
+                };
+            }
+        }
+    }
+
+    fn remove(&mut self, level: usize, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, _)) => {
+                if let Ok(idx) = v[level].binary_search(&ptr) {
+                    v[level].remove(idx);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<u64> {
+        match self {
+            LeveledList::None => unreachable!(),
+            LeveledList::Some((v, max_level)) => {
+                let mut ptr = v[*max_level].pop();
+
+                while ptr.is_none() {
+                    if *max_level == 0 {
+                        return None;
+                    }
+
+                    *max_level -= 1;
+
+                    ptr = v[*max_level].pop();
+                }
+
+                ptr
+            }
+        }
+    }
+
+    pub(crate) fn debug_print(&self) {
+        match self {
+            LeveledList::None => isoprint("LeveledList [Dummy]"),
+            LeveledList::Some((v, max_level)) => {
+                let mut str = String::from("LeveledList [");
+                for i in 0..(*max_level + 1) {
+                    str += format!("{} - ({:?})", i, v[i]).as_str();
+                    if i < *max_level {
+                        str += ", ";
+                    }
+                }
+                str += "]";
+
+                isoprint(&str);
+            }
+        }
+    }
 }
 
 impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
@@ -43,12 +142,58 @@ where
         Self {
             root: None,
             len: 0,
+            certified: false,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
     }
 
+    #[inline]
+    pub(crate) fn new_certified() -> Self {
+        Self {
+            root: None,
+            len: 0,
+            certified: true,
+            _stack: Vec::default(),
+            _buf: Vec::default(),
+        }
+    }
+
+    #[inline]
+    fn clear_stack(&mut self, modified: &mut LeveledList) {
+        match modified {
+            LeveledList::None => {
+                self._stack.clear();
+            }
+            LeveledList::Some(_) => {
+                while let Some((p, _, _)) = self._stack.pop() {
+                    modified.push(self.current_depth(), p.as_ptr());
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn current_depth(&self) -> usize {
+        self._stack.len()
+    }
+
+    #[inline]
+    fn push_stack(&mut self, node: InternalBTreeNode<K>, len: usize, child_idx: usize) {
+        self._stack.push((node, len, child_idx));
+    }
+
+    #[inline]
+    fn pop_stack(&mut self) -> Option<(InternalBTreeNode<K>, usize, usize)> {
+        self._stack.pop()
+    }
+
+    #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self._insert(key, value, &mut LeveledList::None)
+    }
+
+    pub(crate) fn _insert(&mut self, key: K, value: V, modified: &mut LeveledList) -> Option<V> {
         let mut node = self.get_or_create_root();
 
         let mut leaf = loop {
@@ -61,7 +206,7 @@ where
                     };
 
                     let child_ptr = internal_node.read_child_ptr(child_idx);
-                    self._stack.push((internal_node, node_len, child_idx));
+                    self.push_stack(internal_node, node_len, child_idx);
 
                     node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
                 }
@@ -69,9 +214,9 @@ where
             }
         };
 
-        let right_leaf = match self.insert_leaf(&mut leaf, key, value) {
+        let right_leaf = match self.insert_leaf(&mut leaf, key, value, modified) {
             Ok(v) => {
-                self._stack.clear();
+                self.clear_stack(modified);
 
                 return Some(v);
             }
@@ -79,7 +224,7 @@ where
                 if let Some(right_leaf) = right_leaf_opt {
                     right_leaf
                 } else {
-                    self._stack.clear();
+                    self.clear_stack(modified);
                     self.len += 1;
 
                     return None;
@@ -90,30 +235,33 @@ where
         let mut key_to_index = right_leaf.read_key(0);
         let mut ptr = right_leaf.as_ptr();
 
-        while let Some((mut parent, parent_len, idx)) = self._stack.pop() {
+        while let Some((mut parent, parent_len, idx)) = self.pop_stack() {
             if let Some((right, _k)) = self.insert_internal(
                 &mut parent,
                 parent_len,
                 idx,
                 key_to_index,
                 ptr.as_fixed_size_bytes(),
+                modified,
             ) {
                 key_to_index = _k;
                 ptr = right.as_ptr();
                 node = BTreeNode::Internal(parent);
             } else {
+                self.clear_stack(modified);
                 self.len += 1;
-                self._stack.clear();
 
                 return None;
             }
         }
 
+        // stack is empty now
+
         let mut new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
             &node.as_ptr().as_fixed_size_bytes(),
             &ptr.as_fixed_size_bytes(),
-            None,
+            self.certified,
         );
         new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
 
@@ -123,13 +271,20 @@ where
         let mut right = BTreeNode::<K, V>::from_ptr(ptr);
         right.write_parent(&root_ptr);
 
+        modified.insert_root(new_root.as_ptr());
+
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
 
         None
     }
 
+    #[inline]
     pub fn remove(&mut self, key: &K) -> Option<V> {
+        self._remove(key, &mut LeveledList::None)
+    }
+
+    pub(crate) fn _remove(&mut self, key: &K, modified: &mut LeveledList) -> Option<V> {
         let mut node = self.get_or_create_root();
         let mut found_internal_node = None;
 
@@ -148,7 +303,7 @@ where
                     };
 
                     let child_ptr = internal_node.read_child_ptr(child_idx);
-                    self._stack.push((internal_node, node_len, child_idx));
+                    self.push_stack(internal_node, node_len, child_idx);
 
                     node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
                 }
@@ -163,14 +318,15 @@ where
 
         // if possible to simply remove the key without violating - return early
         if leaf_len > MIN_LEN_AFTER_SPLIT {
-            self._stack.clear();
-
             let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
 
             if let Some((mut fin, i)) = found_internal_node {
                 fin.write_key(i, &leaf.read_key(0));
             }
+
+            modified.push(self.current_depth(), leaf.as_ptr());
+            self.clear_stack(modified);
 
             return Some(v);
         };
@@ -182,11 +338,18 @@ where
             let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
 
+            modified.push(0, leaf.as_ptr());
+
             return Some(v);
         }
 
-        let it =
-            self.steal_from_sibling_leaf_or_merge(stack_top_frame, leaf, idx, found_internal_node);
+        let it = self.steal_from_sibling_leaf_or_merge(
+            stack_top_frame,
+            leaf,
+            idx,
+            found_internal_node,
+            modified,
+        );
 
         deallocate_lazy();
 
@@ -228,9 +391,13 @@ where
         unsafe { old.stable_drop() };
     }
 
+    pub(crate) fn get_root(&self) -> Option<BTreeNode<K, V>> {
+        unsafe { self.root.as_ref().map(|it| it.copy()) }
+    }
+
     // WARNING: return_early == true will return nonsense leaf node and idx
     fn lookup(&self, key: &K, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)> {
-        let mut node = unsafe { self.root.as_ref()?.copy() };
+        let mut node = self.get_root()?;
         loop {
             match node {
                 BTreeNode::Internal(internal_node) => {
@@ -265,6 +432,7 @@ where
         leaf_node: &mut LeafBTreeNode<K, V>,
         mut key: K,
         mut value: V,
+        modified: &mut LeveledList,
     ) -> Result<V, Option<LeafBTreeNode<K, V>>> {
         let leaf_node_len = leaf_node.read_len();
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
@@ -275,6 +443,8 @@ where
                 value.move_to_stable();
 
                 leaf_node.write_value(existing_idx, &value.as_fixed_size_bytes());
+
+                modified.push(self.current_depth(), leaf_node.as_ptr());
 
                 return Ok(prev_value);
             }
@@ -293,23 +463,26 @@ where
             leaf_node.insert_value(insert_idx, &v, leaf_node_len, &mut self._buf);
 
             leaf_node.write_len(leaf_node_len + 1);
+
+            modified.push(self.current_depth(), leaf_node.as_ptr());
+
             return Err(None);
         }
 
         // try passing an element to a neighbor, to make room for a new one
-        if self.pass_elem_to_sibling_leaf(leaf_node, &k, &v, insert_idx) {
+        if self.pass_elem_to_sibling_leaf(leaf_node, &k, &v, insert_idx, modified) {
             return Err(None);
         }
 
         // split the leaf and insert so both leaves now have length of B
         let mut right = if insert_idx < B {
-            let right = leaf_node.split_max_len(true, &mut self._buf);
+            let right = leaf_node.split_max_len(true, &mut self._buf, self.certified);
             leaf_node.insert_key(insert_idx, &k, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             leaf_node.insert_value(insert_idx, &v, MIN_LEN_AFTER_SPLIT, &mut self._buf);
 
             right
         } else {
-            let mut right = leaf_node.split_max_len(false, &mut self._buf);
+            let mut right = leaf_node.split_max_len(false, &mut self._buf, self.certified);
             right.insert_key(insert_idx - B, &k, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             right.insert_value(insert_idx - B, &v, MIN_LEN_AFTER_SPLIT, &mut self._buf);
 
@@ -318,6 +491,9 @@ where
 
         leaf_node.write_len(B);
         right.write_len(B);
+
+        modified.push(self.current_depth(), leaf_node.as_ptr());
+        modified.push(self.current_depth(), right.as_ptr());
 
         Err(Some(right))
     }
@@ -329,21 +505,25 @@ where
         idx: usize,
         key: [u8; K::SIZE],
         child_ptr: PtrRaw,
+        modified: &mut LeveledList,
     ) -> Option<(InternalBTreeNode<K>, [u8; K::SIZE])> {
         if len < CAPACITY {
             internal_node.insert_key(idx, &key, len, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, len + 1, &mut self._buf);
 
             internal_node.write_len(len + 1);
+
+            modified.push(self.current_depth(), internal_node.as_ptr());
+
             return None;
         }
 
-        if self.pass_elem_to_sibling_internal(internal_node, idx, &key, &child_ptr) {
+        if self.pass_elem_to_sibling_internal(internal_node, idx, &key, &child_ptr, modified) {
             return None;
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
-        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, false);
+        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, self.certified);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
@@ -359,6 +539,9 @@ where
             right.write_len(B);
         }
 
+        modified.push(self.current_depth(), internal_node.as_ptr());
+        modified.push(self.current_depth(), right.as_ptr());
+
         Some((right, mid))
     }
 
@@ -368,6 +551,7 @@ where
         key: &[u8; K::SIZE],
         value: &[u8; V::SIZE],
         insert_idx: usize,
+        modified: &mut LeveledList,
     ) -> bool {
         let stack_top_frame = self.peek_stack();
         if stack_top_frame.is_none() {
@@ -393,6 +577,9 @@ where
                     value,
                 );
 
+                modified.push(self.current_depth(), leaf_node.as_ptr());
+                modified.push(self.current_depth(), left_sibling.as_ptr());
+
                 return true;
             }
         }
@@ -413,6 +600,9 @@ where
                     key,
                     value,
                 );
+
+                modified.push(self.current_depth(), leaf_node.as_ptr());
+                modified.push(self.current_depth(), right_sibling.as_ptr());
 
                 return true;
             }
@@ -479,6 +669,7 @@ where
         idx: usize,
         key: &[u8; K::SIZE],
         child_ptr: &PtrRaw,
+        modified: &mut LeveledList,
     ) -> bool {
         let stack_top_frame = self.peek_stack();
         if stack_top_frame.is_none() {
@@ -503,6 +694,9 @@ where
                     child_ptr,
                 );
 
+                modified.push(self.current_depth(), internal_node.as_ptr());
+                modified.push(self.current_depth(), left_sibling.as_ptr());
+
                 return true;
             }
         }
@@ -524,6 +718,9 @@ where
                     child_ptr,
                 );
 
+                modified.push(self.current_depth(), internal_node.as_ptr());
+                modified.push(self.current_depth(), right_sibling.as_ptr());
+
                 return true;
             }
         }
@@ -543,17 +740,7 @@ where
         child_ptr: &PtrRaw,
     ) {
         if i_idx != CAPACITY {
-            rs.steal_from_left(
-                rs_len,
-                node,
-                CAPACITY,
-                p,
-                p_idx,
-                None,
-                None,
-                &mut self._buf,
-                false,
-            );
+            rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, None, &mut self._buf);
 
             node.insert_key(i_idx, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
@@ -563,17 +750,7 @@ where
         }
 
         let last = Some((key, child_ptr));
-        rs.steal_from_left(
-            rs_len,
-            node,
-            CAPACITY,
-            p,
-            p_idx,
-            last,
-            None,
-            &mut self._buf,
-            false,
-        );
+        rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, last, &mut self._buf);
         rs.write_len(rs_len + 1);
     }
 
@@ -589,17 +766,7 @@ where
         child_ptr: &PtrRaw,
     ) {
         if i_idx != 0 {
-            ls.steal_from_right(
-                ls_len,
-                node,
-                CAPACITY,
-                p,
-                p_idx - 1,
-                None,
-                None,
-                &mut self._buf,
-                false,
-            );
+            ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, None, &mut self._buf);
 
             node.insert_key(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
             node.insert_child_ptr(i_idx, child_ptr, CAPACITY, &mut self._buf);
@@ -609,17 +776,7 @@ where
         }
 
         let first = Some((key, child_ptr));
-        ls.steal_from_right(
-            ls_len,
-            node,
-            CAPACITY,
-            p,
-            p_idx - 1,
-            first,
-            None,
-            &mut self._buf,
-            false,
-        );
+        ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, first, &mut self._buf);
         ls.write_len(ls_len + 1);
     }
 
@@ -629,6 +786,7 @@ where
         mut leaf: LeafBTreeNode<K, V>,
         idx: usize,
         found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+        modified: &mut LeveledList,
     ) -> Option<V> {
         let (mut parent, parent_len, parent_idx) = unsafe { stack_top_frame.unwrap_unchecked() };
 
@@ -649,6 +807,10 @@ where
 
                 // idx + 1, because after the rotation the leaf has one more key added before
                 let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
+
+                modified.push(self.current_depth(), leaf.as_ptr());
+                modified.push(self.current_depth(), left_sibling.as_ptr());
+                self.clear_stack(modified);
 
                 return Some(v);
             }
@@ -672,6 +834,10 @@ where
                     // just idx, because after rotation leaf has one more key added to the end
                     let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
+                    modified.push(self.current_depth(), leaf.as_ptr());
+                    modified.push(self.current_depth(), right_sibling.as_ptr());
+                    self.clear_stack(modified);
+
                     return Some(v);
                 }
 
@@ -680,10 +846,11 @@ where
                     right_sibling,
                     idx,
                     found_internal_node,
+                    modified,
                 );
             }
 
-            return self.merge_with_left_sibling_leaf(leaf, left_sibling, idx);
+            return self.merge_with_left_sibling_leaf(leaf, left_sibling, idx, modified);
         }
 
         if let Some(mut right_sibling) =
@@ -705,6 +872,10 @@ where
                 // just idx, because after rotation leaf has one more key added to the end
                 let v = leaf.remove_by_idx(idx, B, &mut self._buf);
 
+                modified.push(self.current_depth(), leaf.as_ptr());
+                modified.push(self.current_depth(), right_sibling.as_ptr());
+                self.clear_stack(modified);
+
                 return Some(v);
             }
 
@@ -713,6 +884,7 @@ where
                 right_sibling,
                 idx,
                 found_internal_node,
+                modified,
             );
         }
 
@@ -725,7 +897,11 @@ where
         right_sibling: LeafBTreeNode<K, V>,
         idx: usize,
         found_internal_node: Option<(InternalBTreeNode<K>, usize)>,
+        modified: &mut LeveledList,
     ) -> Option<V> {
+        modified.remove(self.current_depth(), right_sibling.as_ptr());
+        modified.push(self.current_depth(), leaf.as_ptr());
+
         // otherwise merge with right
         leaf.merge_min_len(right_sibling, &mut self._buf);
 
@@ -737,7 +913,7 @@ where
             fin.write_key(i, &leaf.read_key(0));
         }
 
-        self.handle_stack_after_merge(true, leaf);
+        self.handle_stack_after_merge(true, leaf, modified);
 
         Some(v)
     }
@@ -747,7 +923,11 @@ where
         leaf: LeafBTreeNode<K, V>,
         mut left_sibling: LeafBTreeNode<K, V>,
         idx: usize,
+        modified: &mut LeveledList,
     ) -> Option<V> {
+        modified.remove(self.current_depth(), leaf.as_ptr());
+        modified.push(self.current_depth(), left_sibling.as_ptr());
+
         // if there is no right sibling - merge with left
         left_sibling.merge_min_len(leaf, &mut self._buf);
         // idx + MIN_LEN_AFTER_SPLIT, because all keys of leaf are added to the
@@ -759,7 +939,7 @@ where
         // guaranteed to be in the nearest parent and left_sibling keys are all
         // continue to present
 
-        self.handle_stack_after_merge(false, left_sibling);
+        self.handle_stack_after_merge(false, left_sibling, modified);
 
         Some(v)
     }
@@ -788,8 +968,6 @@ where
         if let Some((mut fin, i)) = found_internal_node {
             fin.write_key(i, &leaf.read_key(0));
         }
-
-        self._stack.clear();
     }
 
     fn steal_from_right_sibling_leaf(
@@ -816,14 +994,17 @@ where
         if let Some((mut fin, i)) = found_internal_node {
             fin.write_key(i, &leaf.read_key(0));
         }
-
-        self._stack.clear();
     }
 
-    fn handle_stack_after_merge(&mut self, mut merged_right: bool, leaf: LeafBTreeNode<K, V>) {
+    fn handle_stack_after_merge(
+        &mut self,
+        mut merged_right: bool,
+        leaf: LeafBTreeNode<K, V>,
+        modified: &mut LeveledList,
+    ) {
         let mut prev_node = BTreeNode::Leaf(leaf);
 
-        while let Some((mut node, node_len, remove_idx)) = self._stack.pop() {
+        while let Some((mut node, node_len, remove_idx)) = self.pop_stack() {
             let (idx_to_remove, child_idx_to_remove) = if merged_right {
                 (remove_idx, remove_idx + 1)
             } else {
@@ -836,7 +1017,8 @@ where
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
                 node.write_len(node_len - 1);
 
-                self._stack.clear();
+                modified.push(self.current_depth(), node.as_ptr());
+                self.clear_stack(modified);
 
                 return;
             }
@@ -847,6 +1029,8 @@ where
             if stack_top_frame.is_none() {
                 // if the root has only one key, make child the new root
                 if node_len == 1 {
+                    modified.remove_root();
+
                     node.destroy();
                     prev_node.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
                     self.root = Some(prev_node);
@@ -858,6 +1042,8 @@ where
                 node.remove_key(idx_to_remove, node_len, &mut self._buf);
                 node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
                 node.write_len(node_len - 1);
+
+                modified.push(self.current_depth(), node.as_ptr());
 
                 return;
             }
@@ -872,6 +1058,9 @@ where
 
                 // steal from left if it is possible
                 if left_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    modified.push(self.current_depth(), node.as_ptr());
+                    modified.push(self.current_depth(), left_sibling.as_ptr());
+
                     self.steal_from_left_sibling_internal(
                         node,
                         node_len,
@@ -883,6 +1072,8 @@ where
                         parent_idx,
                     );
 
+                    self.clear_stack(modified);
+
                     return;
                 }
 
@@ -893,6 +1084,9 @@ where
 
                     // steal from right if it's possible
                     if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                        modified.push(self.current_depth(), node.as_ptr());
+                        modified.push(self.current_depth(), right_sibling.as_ptr());
+
                         self.steal_from_right_sibling_internal(
                             node,
                             node_len,
@@ -903,6 +1097,8 @@ where
                             parent,
                             parent_idx,
                         );
+
+                        self.clear_stack(modified);
 
                         return;
                     }
@@ -915,6 +1111,7 @@ where
                         right_sibling,
                         &mut parent,
                         parent_idx,
+                        modified,
                     );
 
                     merged_right = true;
@@ -931,6 +1128,7 @@ where
                     &mut left_sibling,
                     &mut parent,
                     parent_idx,
+                    modified,
                 );
 
                 merged_right = false;
@@ -946,6 +1144,9 @@ where
 
                 // steal from right if it's possible
                 if right_sibling_len > MIN_LEN_AFTER_SPLIT {
+                    modified.push(self.current_depth(), node.as_ptr());
+                    modified.push(self.current_depth(), right_sibling.as_ptr());
+
                     self.steal_from_right_sibling_internal(
                         node,
                         node_len,
@@ -956,6 +1157,8 @@ where
                         parent,
                         parent_idx,
                     );
+
+                    self.clear_stack(modified);
 
                     return;
                 }
@@ -968,6 +1171,7 @@ where
                     right_sibling,
                     &mut parent,
                     parent_idx,
+                    modified,
                 );
 
                 merged_right = true;
@@ -996,15 +1200,11 @@ where
             &mut parent,
             parent_idx,
             None,
-            None,
             &mut self._buf,
-            false,
         );
         right_sibling.write_len(right_sibling_len - 1);
         node.remove_key(idx_to_remove, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
-
-        self._stack.clear();
     }
 
     fn steal_from_left_sibling_internal(
@@ -1025,15 +1225,11 @@ where
             &mut parent,
             parent_idx - 1,
             None,
-            None,
             &mut self._buf,
-            false,
         );
         left_sibling.write_len(left_sibling_len - 1);
         node.remove_key(idx_to_remove + 1, B, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
-
-        self._stack.clear();
     }
 
     fn merge_with_right_sibling_internal(
@@ -1044,9 +1240,13 @@ where
         right_sibling: InternalBTreeNode<K>,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
+        modified: &mut LeveledList,
     ) {
+        modified.remove(self.current_depth(), right_sibling.as_ptr());
+        modified.push(self.current_depth(), node.as_ptr());
+
         let mid_element = parent.read_key(parent_idx);
-        node.merge_min_len(&mid_element, right_sibling, &mut self._buf, false);
+        node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
         node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
         node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
         node.write_len(CAPACITY - 1);
@@ -1060,9 +1260,13 @@ where
         left_sibling: &mut InternalBTreeNode<K>,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
+        modified: &mut LeveledList,
     ) {
+        modified.remove(self.current_depth(), node.as_ptr());
+        modified.push(self.current_depth(), left_sibling.as_ptr());
+
         let mid_element = parent.read_key(parent_idx - 1);
-        left_sibling.merge_min_len(&mid_element, node, &mut self._buf, false);
+        left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
         left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
         left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
         left_sibling.write_len(CAPACITY - 1);
@@ -1078,7 +1282,7 @@ where
         match &self.root {
             Some(r) => unsafe { r.copy() },
             None => {
-                let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create());
+                let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified));
                 new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
 
                 self.root = Some(new_root);
@@ -1114,7 +1318,6 @@ where
 
         loop {
             Self::print_level(&level);
-            isoprint("");
 
             let mut new_level = Vec::new();
             for node in level {
@@ -1176,7 +1379,7 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
         };
 
         buf[..u64::SIZE].copy_from_slice(&ptr);
-        buf[u64::SIZE..].copy_from_slice(&self.len.as_fixed_size_bytes());
+        buf[u64::SIZE..(u64::SIZE * 2)].copy_from_slice(&self.len.as_fixed_size_bytes());
 
         buf
     }
@@ -1197,6 +1400,7 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
             } else {
                 Some(BTreeNode::from_ptr(ptr))
             },
+            certified: false,
             len,
             _buf: Vec::default(),
             _stack: Vec::default(),
@@ -1230,7 +1434,7 @@ where
                 return;
             }
 
-            for i in 0..nodes.len() {
+            for _ in 0..nodes.len() {
                 match unsafe { nodes.pop().unwrap_unchecked() } {
                     BTreeNode::Internal(internal) => {
                         for j in 0..(internal.read_len() + 1) {

@@ -185,10 +185,6 @@ impl<T: AsHashableBytes> AsHashableBytes for SBoxMut<T> {
     fn as_hashable_bytes(&self) -> Vec<u8> {
         self.inner.as_hashable_bytes()
     }
-
-    fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
-        SBoxMut::<T>::new(T::from_hashable_bytes(bytes))
-    }
 }
 
 impl<T: PartialEq> PartialEq for SBoxMut<T> {

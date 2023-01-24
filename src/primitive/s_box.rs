@@ -113,10 +113,6 @@ impl<T: AsHashableBytes> AsHashableBytes for SBox<T> {
     fn as_hashable_bytes(&self) -> Vec<u8> {
         self.inner.as_hashable_bytes()
     }
-
-    fn from_hashable_bytes(bytes: Vec<u8>) -> Self {
-        SBox::<T>::new(T::from_hashable_bytes(bytes))
-    }
 }
 
 impl<T> Deref for SBox<T> {
