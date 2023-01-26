@@ -211,15 +211,37 @@ pub trait AsHashableBytes {
 }
 
 impl AsHashableBytes for Hash {
+    #[inline]
     fn as_hashable_bytes(&self) -> Vec<u8> {
         self.to_vec()
     }
 }
 
-pub trait AsHashTree<I = ()> {
+impl AsHashableBytes for () {
+    #[inline]
+    fn as_hashable_bytes(&self) -> Vec<u8> {
+        Vec::new()
+    }
+}
+
+pub trait AsHashTree {
     /// Returns the root hash of the tree without constructing it.
     /// Must be equivalent to `HashTree::reconstruct()`.
     fn root_hash(&self) -> Hash;
+}
+
+impl AsHashTree for Hash {
+    #[inline]
+    fn root_hash(&self) -> Hash {
+        *self
+    }
+}
+
+impl AsHashTree for () {
+    #[inline]
+    fn root_hash(&self) -> Hash {
+        empty_hash()
+    }
 }
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>

@@ -1,6 +1,6 @@
 use crate::mem::s_slice::{SSlice, Side};
 use crate::primitive::StableAllocated;
-use crate::utils::certification::AsHashableBytes;
+use crate::utils::certification::{AsHashTree, AsHashableBytes};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, reallocate};
 use std::cmp::Ordering;
@@ -182,8 +182,16 @@ impl<T: AsDynSizeBytes> StableAllocated for SBoxMut<T> {
 }
 
 impl<T: AsHashableBytes> AsHashableBytes for SBoxMut<T> {
+    #[inline]
     fn as_hashable_bytes(&self) -> Vec<u8> {
         self.inner.as_hashable_bytes()
+    }
+}
+
+impl<T: AsHashTree> AsHashTree for SBoxMut<T> {
+    #[inline]
+    fn root_hash(&self) -> crate::utils::certification::Hash {
+        self.inner.root_hash()
     }
 }
 

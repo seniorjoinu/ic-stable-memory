@@ -4,7 +4,7 @@ use crate::primitive::StableAllocated;
 use crate::utils::certification::{
     empty_hash, leaf, AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH,
 };
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::fmt::Debug;
 
 pub struct SCertifiedBTreeMap<K, V> {
@@ -87,6 +87,24 @@ where
         self.inner.iter()
     }
 
+    #[inline]
+    pub fn first_copy(&self) -> Option<(K, V)> {
+        self.inner.first_copy()
+    }
+
+    #[inline]
+    pub fn last_copy(&self) -> Option<(K, V)> {
+        self.inner.last_copy()
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.frozen = false;
+        self.modified = LeveledList::new();
+
+        self.inner.clear();
+    }
+
     pub fn commit(&mut self) {
         if !self.frozen {
             return;
@@ -144,6 +162,17 @@ where
         match node {
             BTreeNode::Internal(n) => n.prove_range::<V>(from, to),
             BTreeNode::Leaf(n) => n.prove_range(from, to),
+        }
+    }
+
+    pub fn as_hash_tree(&self) -> HashTree {
+        let e1 = self.inner.first_copy();
+        let e2 = self.inner.last_copy();
+
+        match (e1, e2) {
+            (None, None) => HashTree::Empty,
+            (Some((k1, _)), Some((k2, _))) => self.prove_range(&k1, &k2),
+            _ => unreachable!(),
         }
     }
 

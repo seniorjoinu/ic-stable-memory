@@ -2,7 +2,7 @@ use crate::collections::log::iter::SLogIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::fmt::Debug;
 use std::marker::PhantomData;

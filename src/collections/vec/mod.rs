@@ -3,7 +3,7 @@ use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, reallocate};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -328,7 +328,7 @@ impl<T> FixedSize for SVec<T> {
     const SIZE: usize = u64::SIZE + usize::SIZE + usize::SIZE;
 }
 
-impl<T: StableAllocated> AsFixedSizeBytes for SVec<T> {
+impl<T> AsFixedSizeBytes for SVec<T> {
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];
         let (ptr_buf, rest_buf) = buf.split_at_mut(u64::SIZE);
@@ -372,7 +372,7 @@ where
     #[inline]
     fn remove_from_stable(&mut self) {}
 
-    unsafe fn stable_drop(mut self) {
+    unsafe fn stable_drop(self) {
         if self.ptr != EMPTY_PTR {
             for elem in self.iter() {
                 elem.stable_drop();

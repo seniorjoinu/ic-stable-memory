@@ -2,7 +2,7 @@ use crate::collections::hash_map::iter::SHashMapIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;

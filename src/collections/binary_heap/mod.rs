@@ -1,7 +1,7 @@
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
 use crate::collections::vec::SVec;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
@@ -155,7 +155,7 @@ impl<T> FixedSize for SBinaryHeap<T> {
     const SIZE: usize = SVec::<T>::SIZE;
 }
 
-impl<T: StableAllocated> AsFixedSizeBytes for SBinaryHeap<T> {
+impl<T> AsFixedSizeBytes for SBinaryHeap<T> {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         self.inner.as_fixed_size_bytes()

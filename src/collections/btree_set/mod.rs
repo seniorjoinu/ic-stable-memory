@@ -1,7 +1,7 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 
 pub mod iter;
 
@@ -69,7 +69,7 @@ impl<T> FixedSize for SBTreeSet<T> {
     const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
 }
 
-impl<T: AsFixedSizeBytes> AsFixedSizeBytes for SBTreeSet<T> {
+impl<T> AsFixedSizeBytes for SBTreeSet<T> {
     #[inline]
     fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
         let mut buf = [0u8; Self::SIZE];

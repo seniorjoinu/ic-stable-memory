@@ -406,6 +406,25 @@ pub trait AsDynSizeBytes {
     fn from_dyn_size_bytes(buf: &[u8]) -> Self;
 }
 
+#[cfg(feature = "default_dyn_size_encoding")]
+impl<T: AsFixedSizeBytes> AsDynSizeBytes for T
+where
+    [(); T::SIZE]: Sized,
+{
+    #[inline]
+    fn as_dyn_size_bytes(&self) -> Vec<u8> {
+        self.as_fixed_size_bytes().to_vec()
+    }
+
+    #[inline]
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+        let mut b = T::_u8_arr_of_size();
+        b.copy_from_slice(&buf[0..T::SIZE]);
+
+        Self::from_fixed_size_bytes(&b)
+    }
+}
+
 #[cfg(test)]
 mod benches {
     use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};

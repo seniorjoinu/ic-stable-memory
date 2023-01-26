@@ -3,7 +3,7 @@ use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{deallocate_lazy, isoprint, SSlice};
 use std::fmt::Debug;
 use std::mem;
@@ -382,6 +382,42 @@ where
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn first_copy(&self) -> Option<(K, V)> {
+        let mut node = self.get_root()?;
+
+        loop {
+            match node {
+                BTreeNode::Internal(n) => {
+                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr(0));
+                    node = BTreeNode::from_ptr(ptr);
+                }
+                BTreeNode::Leaf(n) => {
+                    return Some(n.read_entry(0));
+                }
+            }
+        }
+    }
+
+    pub fn last_copy(&self) -> Option<(K, V)> {
+        let mut node = self.get_root()?;
+
+        loop {
+            match node {
+                BTreeNode::Internal(n) => {
+                    let len = n.read_len();
+
+                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr(len));
+                    node = BTreeNode::from_ptr(ptr);
+                }
+                BTreeNode::Leaf(n) => {
+                    let len = n.read_len();
+
+                    return Some(n.read_entry(len - 1));
+                }
+            }
+        }
     }
 
     #[inline]

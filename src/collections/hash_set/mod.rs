@@ -1,7 +1,7 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
+use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::hash::Hash;
 
 pub mod iter;
