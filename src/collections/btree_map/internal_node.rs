@@ -403,7 +403,7 @@ where
     [(); K::SIZE]: Sized,
 {
     #[inline]
-    pub fn read_child_root_hash<V: StableAllocated + AsHashableBytes>(
+    pub fn read_child_root_hash<V: StableAllocated + AsHashTree>(
         &self,
         idx: usize,
         certified: bool,

@@ -6,18 +6,39 @@ use crate::utils::encoding::AsFixedSizeBytes;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
+use std::mem;
 
 pub type Hash = [u8; 32];
 pub const EMPTY_HASH: Hash = [0u8; 32];
 
 /// Compatible with https://sdk.dfinity.org/docs/interface-spec/index.html#_certificate
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum HashTree {
     Empty,
     Fork(Box<(HashTree, HashTree)>),
     Labeled(Vec<u8>, Box<HashTree>),
     Leaf(Vec<u8>),
     Pruned(Hash),
+}
+
+pub fn traverse_hashtree<Fn: FnMut(&HashTree)>(tree: &HashTree, f: &mut Fn) {
+    f(tree);
+
+    match tree {
+        HashTree::Empty => {}
+        HashTree::Pruned(_) => {}
+        HashTree::Fork(x) => {
+            let a = &x.0;
+            let b = &x.1;
+
+            traverse_hashtree(a, f);
+            traverse_hashtree(b, f);
+        }
+        HashTree::Labeled(_, x) => {
+            traverse_hashtree(x, f);
+        }
+        HashTree::Leaf(_) => {}
+    }
 }
 
 pub fn empty() -> HashTree {
@@ -40,6 +61,62 @@ pub fn pruned(h: Hash) -> HashTree {
     HashTree::Pruned(h)
 }
 
+pub struct WitnessForker(HashTree);
+
+impl Default for WitnessForker {
+    fn default() -> Self {
+        Self(HashTree::Empty)
+    }
+}
+
+impl WitnessForker {
+    #[inline]
+    pub fn fork_with(&mut self, rh: HashTree) {
+        match &mut self.0 {
+            HashTree::Empty => {
+                self.0 = rh;
+            }
+            it => {
+                let lh = mem::replace(it, HashTree::Empty);
+                mem::replace(it, fork(lh, rh));
+            }
+        }
+    }
+
+    #[inline]
+    pub fn finish(self) -> HashTree {
+        self.0
+    }
+}
+
+pub struct HashForker(Hash);
+
+impl Default for HashForker {
+    fn default() -> Self {
+        Self(EMPTY_HASH)
+    }
+}
+
+impl HashForker {
+    #[inline]
+    pub fn fork_with(&mut self, rh: Hash) {
+        if self.0 == EMPTY_HASH {
+            self.0 = rh;
+        } else {
+            self.0 = fork_hash(&self.0, &rh);
+        }
+    }
+
+    #[inline]
+    pub fn finish(self) -> Hash {
+        if self.0 == EMPTY_HASH {
+            empty_hash()
+        } else {
+            self.0
+        }
+    }
+}
+
 pub fn fork_hash(l: &Hash, r: &Hash) -> Hash {
     let mut h = domain_sep("ic-hashtree-fork");
     h.update(&l[..]);
@@ -60,10 +137,14 @@ pub fn labeled_hash(label: &[u8], content_hash: &Hash) -> Hash {
     h.finalize().into()
 }
 
+pub fn empty_hash() -> Hash {
+    domain_sep("ic-hashtree-empty").finalize().into()
+}
+
 impl HashTree {
     pub fn reconstruct(&self) -> Hash {
         match self {
-            Self::Empty => domain_sep("ic-hashtree-empty").finalize().into(),
+            Self::Empty => empty_hash(),
             Self::Fork(f) => fork_hash(&f.0.reconstruct(), &f.1.reconstruct()),
             Self::Labeled(l, t) => {
                 let thash = t.reconstruct();
@@ -116,39 +197,13 @@ impl Serialize for HashTree {
     }
 }
 
-const FORK_DOMAIN: &str = "ic-hashtree-fork";
-static mut FORK_DOMAIN_SEP: Option<Sha256> = None;
-
-const LEAF_DOMAIN: &str = "ic-hashtree-leaf";
-static mut LEAF_DOMAIN_SEP: Option<Sha256> = None;
-
-const LABELED_DOMAIN: &str = "ic-hashtree-labeled";
-static mut LABELED_DOMAIN_SEP: Option<Sha256> = None;
-
-const EMPTY_DOMAIN: &str = "ic-hashtree-empty";
-static mut EMPTY_DOMAIN_SEP: Option<Sha256> = None;
-
 fn domain_sep(s: &str) -> Sha256 {
-    let sep = match s {
-        FORK_DOMAIN => unsafe { &mut FORK_DOMAIN_SEP },
-        LEAF_DOMAIN => unsafe { &mut LEAF_DOMAIN_SEP },
-        LABELED_DOMAIN => unsafe { &mut LABELED_DOMAIN_SEP },
-        EMPTY_DOMAIN => unsafe { &mut EMPTY_DOMAIN_SEP },
-        _ => unreachable!(),
-    };
+    let buf: [u8; 1] = [s.len() as u8];
+    let mut h = Sha256::new();
+    h.update(&buf[..]);
+    h.update(s.as_bytes());
 
-    if let Some(s) = sep {
-        s.clone()
-    } else {
-        let buf: [u8; 1] = [s.len() as u8];
-        let mut h = Sha256::new();
-        h.update(&buf[..]);
-        h.update(s.as_bytes());
-
-        *sep = Some(h.clone());
-
-        h
-    }
+    h
 }
 
 pub trait AsHashableBytes {
@@ -161,118 +216,30 @@ impl AsHashableBytes for Hash {
     }
 }
 
-pub trait AsHashTree<T, I = ()> {
+pub trait AsHashTree<I = ()> {
     /// Returns the root hash of the tree without constructing it.
     /// Must be equivalent to `HashTree::reconstruct()`.
     fn root_hash(&self) -> Hash;
-
-    fn witness_with<Fn: FnMut(&T) -> HashTree>(&self, index: I, f: Fn) -> HashTree;
-
-    fn commit(&mut self);
-
-    // Creates a HashTree witnessing all keys [from .. to] (values are pruned)
-    // If [from_opt] is None, it is considered as "from minimum stored key"
-    // If [to_opt] is None, it is considered as "to maximum stored key"
-    // Both [from] and [to] are clamped, if out of bounds
-    // If [from] is bigger than [to] or equal, panics
-    // fn range_witness(&self, from_opt: Option<I>, to_opt: Option<I>) -> HashTree;
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashableBytes>
-    AsHashTree<V, &K> for LeafBTreeNode<K, V>
+impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>
+    LeafBTreeNode<K, V>
 where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
-    fn commit(&mut self) {
+    pub(crate) fn commit(&mut self) {
         let len = self.read_len();
 
-        if len == 0 {
-            self.write_root_hash(&EMPTY_HASH, true);
-            return;
+        let mut hash = HashForker::default();
+
+        for i in 0..len {
+            let (k, v) = self.read_entry(i);
+
+            hash.fork_with(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()));
         }
 
-        let (mut k, mut v) = self.read_entry(0);
-
-        let mut lh = labeled_hash(&k.as_hashable_bytes(), &leaf_hash(&v.as_hashable_bytes()));
-
-        for i in 1..len {
-            (k, v) = self.read_entry(i);
-
-            lh = fork_hash(
-                &lh,
-                &labeled_hash(&k.as_hashable_bytes(), &leaf_hash(&v.as_hashable_bytes())),
-            );
-        }
-
-        self.write_root_hash(&lh, true);
-    }
-
-    #[inline]
-    fn root_hash(&self) -> Hash {
-        self.read_root_hash(true)
-    }
-
-    fn witness_with<Fn: FnMut(&V) -> HashTree>(&self, index: &K, mut f: Fn) -> HashTree {
-        let len = self.read_len();
-        if len == 0 {
-            return HashTree::Empty;
-        }
-
-        let index = match self.binary_search(index, len) {
-            Ok(idx) => idx,
-            Err(_) => return HashTree::Empty,
-        };
-
-        let (mut k, mut v) = self.read_entry(0);
-
-        let mut lh = if index == 0 {
-            labeled(k.as_hashable_bytes(), f(&v))
-        } else {
-            let mut lh = pruned(labeled_hash(&k.as_hashable_bytes(), &f(&v).reconstruct()));
-
-            for i in 1..index {
-                (k, v) = self.read_entry(i);
-                lh = fork(
-                    lh,
-                    pruned(labeled_hash(&k.as_hashable_bytes(), &f(&v).reconstruct())),
-                );
-            }
-
-            (k, v) = self.read_entry(index);
-            lh = fork(lh, labeled(k.as_hashable_bytes(), f(&v)));
-
-            lh
-        };
-
-        for i in (index + 1)..len {
-            (k, v) = self.read_entry(i);
-            lh = fork(
-                lh,
-                pruned(labeled_hash(&k.as_hashable_bytes(), &f(&v).reconstruct())),
-            );
-        }
-
-        lh
-    }
-}
-
-impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K>
-where
-    [(); K::SIZE]: Sized,
-{
-    pub(crate) fn commit<V: StableAllocated + AsHashableBytes>(&mut self)
-    where
-        [(); V::SIZE]: Sized,
-    {
-        let len = self.read_len() + 1;
-        let mut lh = self.read_child_root_hash::<V>(0, true);
-
-        for i in 1..len {
-            lh = fork_hash(&lh, &self.read_child_root_hash::<V>(i, true));
-        }
-
-        self.write_root_hash(&lh, true);
+        self.write_root_hash(&hash.finish(), true);
     }
 
     #[inline]
@@ -280,7 +247,250 @@ where
         self.read_root_hash(true)
     }
 
-    pub(crate) fn witness_with_replacement<V: StableAllocated + AsHashableBytes>(
+    pub(crate) fn prove_absence(&self, index: usize, len: usize) -> Result<HashTree, HashTree> {
+        let mut witness = WitnessForker::default();
+
+        let from = index as isize - 1;
+        let to = index;
+
+        for i in 0..len {
+            let (k, v) = self.read_entry(i);
+
+            // it is safe to cast from to usize, since i can never reach 2**31
+            let rh = if i == from as usize || i == to {
+                labeled(k.as_hashable_bytes(), pruned(v.root_hash()))
+            } else {
+                pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()))
+            };
+
+            witness.fork_with(rh);
+        }
+
+        if to == len && len != 0 {
+            Err(witness.finish())
+        } else {
+            Ok(witness.finish())
+        }
+    }
+
+    pub(crate) fn prove_range(&self, from: &K, to: &K) -> HashTree {
+        let len = self.read_len();
+
+        if len == 0 {
+            return HashTree::Empty;
+        }
+
+        let from_idx = match self.binary_search(from, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let to_idx = match self.binary_search(to, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..from_idx {
+            let (k, v) = self.read_entry(i);
+
+            witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
+        }
+
+        for i in from_idx..(to_idx + 1).min(len) {
+            let (k, v) = self.read_entry(i);
+
+            witness.fork_with(labeled(k.as_hashable_bytes(), pruned(v.root_hash())));
+        }
+
+        for i in (to_idx + 1)..len {
+            let (k, v) = self.read_entry(i);
+
+            witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
+        }
+
+        witness.finish()
+    }
+
+    pub(crate) fn witness_with<Fn: FnMut(&V) -> HashTree>(&self, index: &K, mut f: Fn) -> HashTree {
+        let len = self.read_len();
+
+        assert!(len > 0, "The key is NOT present!");
+
+        let index = match self.binary_search(index, len) {
+            Ok(idx) => idx,
+            Err(_) => panic!("The key is NOT present!"),
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..len {
+            let (k, v) = self.read_entry(i);
+
+            let rh = if i == index {
+                labeled(k.as_hashable_bytes(), f(&v))
+            } else {
+                pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()))
+            };
+
+            witness.fork_with(rh);
+        }
+
+        witness.finish()
+    }
+}
+
+impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K>
+where
+    [(); K::SIZE]: Sized,
+{
+    pub(crate) fn commit<V: StableAllocated + AsHashTree>(&mut self)
+    where
+        [(); V::SIZE]: Sized,
+    {
+        let len = self.read_len();
+        let mut hash = HashForker::default();
+
+        for i in 0..(len + 1) {
+            hash.fork_with(self.read_child_root_hash::<V>(i, true));
+        }
+
+        self.write_root_hash(&hash.finish(), true);
+    }
+
+    #[inline]
+    pub(crate) fn root_hash(&self) -> Hash {
+        self.read_root_hash(true)
+    }
+
+    pub(crate) fn prove_absence<V: StableAllocated + AsHashTree>(
+        &self,
+        key: &K,
+    ) -> Result<HashTree, HashTree>
+    where
+        [(); V::SIZE]: Sized,
+    {
+        let len = self.read_len();
+
+        debug_assert!(len > 0);
+
+        let index = match self.binary_search(key, len) {
+            Ok(_) => panic!("The key is present!"),
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        let mut i = 0;
+        loop {
+            if i == len + 1 {
+                break;
+            }
+
+            let mut ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i));
+            let mut child = BTreeNode::<K, V>::from_ptr(ptr);
+
+            let result = if i == index {
+                match child {
+                    BTreeNode::Internal(n) => n.prove_absence::<V>(key),
+                    BTreeNode::Leaf(n) => {
+                        let len = n.read_len();
+                        let idx = match n.binary_search(key, len) {
+                            Ok(_) => panic!("The key is present!"),
+                            Err(idx) => idx,
+                        };
+
+                        n.prove_absence(idx, len)
+                    }
+                }
+            } else {
+                match child {
+                    BTreeNode::Internal(n) => Ok(HashTree::Pruned(n.read_root_hash(true))),
+                    BTreeNode::Leaf(n) => Ok(HashTree::Pruned(n.read_root_hash(true))),
+                }
+            };
+
+            match result {
+                Ok(h) => {
+                    witness.fork_with(h);
+
+                    i += 1;
+                }
+                Err(h) => {
+                    witness.fork_with(h);
+
+                    if i == len {
+                        return Err(witness.finish());
+                    }
+
+                    // simply take from the next one
+                    ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i + 1));
+                    child = BTreeNode::<K, V>::from_ptr(ptr);
+
+                    let rh = match child {
+                        BTreeNode::Internal(n) => n.prove_absence::<V>(key),
+                        BTreeNode::Leaf(n) => {
+                            let len = n.read_len();
+                            n.prove_absence(0, len)
+                        }
+                    }
+                    .unwrap();
+
+                    witness.fork_with(rh);
+
+                    i += 2;
+                }
+            }
+        }
+
+        Ok(witness.finish())
+    }
+
+    pub(crate) fn prove_range<V: AsHashTree + StableAllocated>(&self, from: &K, to: &K) -> HashTree
+    where
+        [(); V::SIZE]: Sized,
+    {
+        let len = self.read_len();
+
+        debug_assert!(len > 0);
+
+        let from_idx = match self.binary_search(from, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let to_idx = match self.binary_search(to, len) {
+            Ok(idx) => idx + 1,
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..from_idx {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        for i in from_idx..(to_idx + 1).min(len + 1) {
+            let ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i));
+            let child = BTreeNode::<K, V>::from_ptr(ptr);
+
+            let rh = match child {
+                BTreeNode::Internal(n) => n.prove_range::<V>(from, to),
+                BTreeNode::Leaf(n) => n.prove_range(from, to),
+            };
+
+            witness.fork_with(rh);
+        }
+
+        for i in (to_idx + 1)..(len + 1) {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        witness.finish()
+    }
+
+    pub(crate) fn witness_with_replacement<V: StableAllocated + AsHashTree>(
         &self,
         index: usize,
         replace: HashTree,
@@ -289,25 +499,21 @@ where
     where
         [(); V::SIZE]: Sized,
     {
-        let mut lh = if index == 0 {
-            replace
-        } else {
-            let mut lh = pruned(self.read_child_root_hash::<V>(0, true));
+        debug_assert!(len > 0);
 
-            for i in 1..index {
-                lh = fork(lh, pruned(self.read_child_root_hash::<V>(i, true)));
-            }
+        let mut witness = WitnessForker::default();
 
-            lh = fork(lh, replace);
-
-            lh
-        };
-
-        for i in (index + 1)..(len + 1) {
-            lh = fork(lh, pruned(self.read_child_root_hash::<V>(i, true)));
+        for i in 0..index {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
         }
 
-        lh
+        witness.fork_with(replace);
+
+        for i in (index + 1)..(len + 1) {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        witness.finish()
     }
 }
 

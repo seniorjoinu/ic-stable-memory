@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod certified_btree_map_benchmark {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
-    use crate::utils::certification::{AsHashTree as MyAsHashTree, AsHashableBytes};
+    use crate::utils::certification::{leaf, AsHashTree as MyAsHashTree, AsHashableBytes};
     use crate::{init_allocator, measure, stable};
     use ic_certified_map::{leaf_hash, AsHashTree, Hash, HashTree, RbTree};
     use rand::seq::SliceRandom;
@@ -25,6 +25,12 @@ mod certified_btree_map_benchmark {
     impl AsHashableBytes for usize {
         fn as_hashable_bytes(&self) -> Vec<u8> {
             self.to_le_bytes().to_vec()
+        }
+    }
+
+    impl MyAsHashTree for usize {
+        fn root_hash(&self) -> crate::utils::certification::Hash {
+            leaf_hash(&self.as_hashable_bytes())
         }
     }
 
@@ -86,7 +92,8 @@ mod certified_btree_map_benchmark {
 
             measure!("Stable certified btree map witness", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_certified_btree_map.witness(&example[i]);
+                    stable_certified_btree_map
+                        .witness_with(&example[i], |it| leaf(it.as_hashable_bytes()));
                 }
             });
 
