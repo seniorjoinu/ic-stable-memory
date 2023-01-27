@@ -46,7 +46,7 @@ mod log_benchmark {
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_log.get_copy(i as u64).unwrap();
+                    stable_log.get(i as u64).unwrap();
                 }
             });
 

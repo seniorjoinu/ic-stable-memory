@@ -1,7 +1,9 @@
 use crate::collections::hash_map::iter::SHashMapIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
-use crate::primitive::StableAllocated;
+use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::hash::{Hash, Hasher};
@@ -172,10 +174,26 @@ where
     }
 
     #[inline]
-    pub fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
         let (i, _) = self.find_inner_idx(key)?;
 
         Some(self.read_val_at(i))
+    }
+
+    #[inline]
+    pub fn get(&self, key: &K) -> Option<SRef<'_, V>> {
+        let (i, _) = self.find_inner_idx(key)?;
+        let ptr = self.get_value_ptr(i);
+
+        Some(SRef::new(ptr))
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, key: &K) -> Option<SRefMut<'_, V>> {
+        let (i, _) = self.find_inner_idx(key)?;
+        let ptr = self.get_value_ptr(i);
+
+        Some(SRefMut::new(ptr))
     }
 
     #[inline]
@@ -275,6 +293,10 @@ where
                 _ => unreachable!(),
             };
         }
+    }
+
+    fn get_value_ptr(&self, idx: usize) -> u64 {
+        self.table_ptr + (values_offset::<K>(self.capacity()) + V::SIZE * idx) as u64
     }
 
     pub(crate) fn read_key_at(&self, idx: usize, read_value: bool) -> HashMapKey<K> {
@@ -432,6 +454,15 @@ where
 
     #[inline]
     fn remove_from_stable(&mut self) {}
+}
+
+impl<K: StableAllocated + Eq + Hash + StableDrop, V: StableAllocated + StableDrop> StableDrop
+    for SHashMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    type Output = ();
 
     unsafe fn stable_drop(self) {
         if self.table_ptr != EMPTY_PTR {
@@ -451,8 +482,8 @@ mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
-    use crate::primitive::StableAllocated;
-    use crate::utils::encoding::AsFixedSizeBytes;
+    use crate::primitive::StableDrop;
+    use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
     use crate::utils::mem_context::stable;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -483,34 +514,34 @@ mod tests {
         map.insert(k7, 7);
         map.insert(k8, 8);
 
-        assert_eq!(map.get_copy(&k1).unwrap(), 1);
-        assert_eq!(map.get_copy(&k2).unwrap(), 2);
-        assert_eq!(map.get_copy(&k3).unwrap(), 3);
-        assert_eq!(map.get_copy(&k4).unwrap(), 4);
-        assert_eq!(map.get_copy(&k5).unwrap(), 5);
-        assert_eq!(map.get_copy(&k6).unwrap(), 6);
-        assert_eq!(map.get_copy(&k7).unwrap(), 7);
-        assert_eq!(map.get_copy(&k8).unwrap(), 8);
+        assert_eq!(*map.get(&k1).unwrap().read(), 1);
+        assert_eq!(*map.get(&k2).unwrap().read(), 2);
+        assert_eq!(*map.get(&k3).unwrap().read(), 3);
+        assert_eq!(*map.get(&k4).unwrap().read(), 4);
+        assert_eq!(*map.get(&k5).unwrap().read(), 5);
+        assert_eq!(*map.get(&k6).unwrap().read(), 6);
+        assert_eq!(*map.get(&k7).unwrap().read(), 7);
+        assert_eq!(*map.get(&k8).unwrap().read(), 8);
 
-        assert!(map.get_copy(&9).is_none());
-        assert!(map.get_copy(&0).is_none());
+        assert!(map.get(&9).is_none());
+        assert!(map.get(&0).is_none());
 
         assert_eq!(map.remove(&k3).unwrap(), 3);
-        assert!(map.get_copy(&k3).is_none());
+        assert!(map.get(&k3).is_none());
 
         assert_eq!(map.remove(&k1).unwrap(), 1);
-        assert!(map.get_copy(&k1).is_none());
+        assert!(map.get(&k1).is_none());
 
         assert_eq!(map.remove(&k5).unwrap(), 5);
-        assert!(map.get_copy(&k5).is_none());
+        assert!(map.get(&k5).is_none());
 
         assert_eq!(map.remove(&k7).unwrap(), 7);
-        assert!(map.get_copy(&k7).is_none());
+        assert!(map.get(&k7).is_none());
 
-        assert_eq!(map.get_copy(&k2).unwrap(), 2);
-        assert_eq!(map.get_copy(&k4).unwrap(), 4);
-        assert_eq!(map.get_copy(&k6).unwrap(), 6);
-        assert_eq!(map.get_copy(&k8).unwrap(), 8);
+        assert_eq!(*map.get(&k2).unwrap().read(), 2);
+        assert_eq!(*map.get(&k4).unwrap().read(), 4);
+        assert_eq!(*map.get(&k6).unwrap().read(), 6);
+        assert_eq!(*map.get(&k8).unwrap().read(), 8);
 
         unsafe { map.stable_drop() };
     }
@@ -524,7 +555,7 @@ mod tests {
         let mut map = SHashMap::new_with_capacity(3);
 
         assert!(map.remove(&10).is_none());
-        assert!(map.get_copy(&10).is_none());
+        assert!(map.get(&10).is_none());
 
         let it = map.insert(1, 1);
         assert!(it.is_none());
@@ -548,7 +579,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(map.get_copy(&i).unwrap(), i);
+            assert_eq!(*map.get(&i).unwrap().read(), i);
         }
 
         for i in 0..100 {
@@ -666,6 +697,19 @@ mod tests {
         assert_eq!(c, 100);
     }
 
+    impl AsDynSizeBytes for i32 {
+        fn as_dyn_size_bytes(&self) -> Vec<u8> {
+            self.as_fixed_size_bytes().to_vec()
+        }
+
+        fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+            let mut b = i32::_u8_arr_of_size();
+            b.copy_from_slice(&buf[0..i32::SIZE]);
+
+            i32::from_fixed_size_bytes(&b)
+        }
+    }
+
     #[test]
     fn sboxes_work_fine() {
         stable::clear();
@@ -680,17 +724,13 @@ mod tests {
 
         unsafe { map.stable_drop() };
 
-        // TODO: this part doesn't work for some reason
-        // it seems like hashes calculate differently
-
-        /*
         println!("sbox mut");
         let mut map = SHashMap::new();
 
         for i in 0..100 {
-            map.insert(SBoxMut::new(i), i);
+            map.insert(SBox::new(i), i);
         }
 
-        unsafe { map.stable_drop() };*/
+        unsafe { map.stable_drop() };
     }
 }

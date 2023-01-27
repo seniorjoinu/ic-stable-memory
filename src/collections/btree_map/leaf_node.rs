@@ -1,6 +1,6 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::{
-    IBTreeNode, B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET, PARENT_OFFSET,
+    IBTreeNode, B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
@@ -13,14 +13,13 @@ use std::marker::PhantomData;
 
 // LAYOUT:
 // node_type: u8
-// parent: u64,
 // prev, next: u64
 // len: usize,
 // keys: [K; CAPACITY]
 // values: [V; CAPACITY]
 // root_hash: Hash -- only when certified == true
 
-const PREV_OFFSET: usize = PARENT_OFFSET + u64::SIZE;
+const PREV_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 const NEXT_OFFSET: usize = PREV_OFFSET + u64::SIZE;
 const LEN_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
 const KEYS_OFFSET: usize = LEN_OFFSET + usize::SIZE;
@@ -193,7 +192,6 @@ where
         let self_next = self.read_next();
         self.write_next(&right.ptr.as_fixed_size_bytes());
 
-        right.write_parent(&self.read_parent());
         right.write_prev(&self.ptr.as_fixed_size_bytes());
         right.write_next(&self_next);
 
@@ -295,11 +293,11 @@ where
     #[inline]
     pub fn read_entry(&self, idx: usize) -> (K, V) {
         (
-            K::from_fixed_size_bytes(&self.read_key(idx)), 
-            V::from_fixed_size_bytes(&self.read_value(idx))
+            K::from_fixed_size_bytes(&self.read_key(idx)),
+            V::from_fixed_size_bytes(&self.read_value(idx)),
         )
     }
-    
+
     #[inline]
     pub fn write_key(&mut self, idx: usize, key: &[u8; K::SIZE]) {
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key);
@@ -308,6 +306,11 @@ where
     #[inline]
     fn write_keys_from_buf(&self, from_idx: usize, buf: &Vec<u8>) {
         SSlice::_write_bytes(self.ptr, KEYS_OFFSET + from_idx * K::SIZE, buf);
+    }
+
+    #[inline]
+    pub fn get_key_ptr(&self, idx: usize) -> u64 {
+        self.ptr + (KEYS_OFFSET + idx * K::SIZE) as u64
     }
 
     #[inline]
@@ -329,6 +332,11 @@ where
     #[inline]
     fn write_values_from_buf(&self, from_idx: usize, buf: &Vec<u8>) {
         SSlice::_write_bytes(self.ptr, values_offset::<K>() + from_idx * V::SIZE, buf);
+    }
+
+    #[inline]
+    pub fn get_value_ptr(&self, idx: usize) -> u64 {
+        self.ptr + (values_offset::<K>() + idx * V::SIZE) as u64
     }
 
     #[inline]
@@ -409,16 +417,6 @@ impl<K, V> IBTreeNode for LeafBTreeNode<K, V> {
     #[inline]
     unsafe fn copy(&self) -> Self {
         Self::from_ptr(self.ptr)
-    }
-
-    #[inline]
-    fn write_parent(&mut self, parent: &[u8; u64::SIZE]) {
-        SSlice::_write_bytes(self.ptr, PARENT_OFFSET, parent);
-    }
-
-    #[inline]
-    fn read_parent(&self) -> [u8; u64::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, PARENT_OFFSET)
     }
 }
 

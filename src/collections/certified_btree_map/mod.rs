@@ -1,6 +1,8 @@
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::{BTreeNode, LeveledList, SBTreeMap};
-use crate::primitive::StableAllocated;
+use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::certification::{
     empty_hash, leaf, AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH,
 };
@@ -63,8 +65,18 @@ where
     }
 
     #[inline]
-    pub fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
         self.inner.get_copy(key)
+    }
+
+    #[inline]
+    pub fn get(&self, key: &K) -> Option<SRef<'_, V>> {
+        self.inner.get(key)
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, key: &K) -> Option<SRefMut<'_, V>> {
+        self.inner.get_mut(key)
     }
 
     #[inline]
@@ -88,21 +100,13 @@ where
     }
 
     #[inline]
-    pub fn first_copy(&self) -> Option<(K, V)> {
+    pub unsafe fn first_copy(&self) -> Option<(K, V)> {
         self.inner.first_copy()
     }
 
     #[inline]
-    pub fn last_copy(&self) -> Option<(K, V)> {
+    pub unsafe fn last_copy(&self) -> Option<(K, V)> {
         self.inner.last_copy()
-    }
-
-    #[inline]
-    pub fn clear(&mut self) {
-        self.frozen = false;
-        self.modified = LeveledList::new();
-
-        self.inner.clear();
     }
 
     pub fn commit(&mut self) {
@@ -166,8 +170,8 @@ where
     }
 
     pub fn as_hash_tree(&self) -> HashTree {
-        let e1 = self.inner.first_copy();
-        let e2 = self.inner.last_copy();
+        let e1 = unsafe { self.inner.first_copy() };
+        let e2 = unsafe { self.inner.last_copy() };
 
         match (e1, e2) {
             (None, None) => HashTree::Empty,
@@ -186,6 +190,21 @@ where
 
         let node = unsafe { root_opt.unwrap_unchecked() };
         witness_node(&node, index, f)
+    }
+}
+
+impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop>
+    SCertifiedBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    #[inline]
+    pub fn clear(&mut self) {
+        self.frozen = false;
+        self.modified = LeveledList::new();
+
+        self.inner.clear();
     }
 }
 
@@ -295,6 +314,15 @@ where
 
     #[inline]
     fn remove_from_stable(&mut self) {}
+}
+
+impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
+    for SCertifiedBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    type Output = ();
 
     unsafe fn stable_drop(self) {
         self.inner.stable_drop()

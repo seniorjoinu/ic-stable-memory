@@ -1,6 +1,6 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
-use crate::primitive::StableAllocated;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::hash::Hash;
 
@@ -114,6 +114,13 @@ where
     fn remove_from_stable(&mut self) {
         self.map.remove_from_stable()
     }
+}
+
+impl<T: StableAllocated + Eq + Hash + StableDrop> StableDrop for SHashSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    type Output = ();
 
     #[inline]
     unsafe fn stable_drop(self) {
@@ -124,7 +131,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_set::SHashSet;
-    use crate::primitive::StableAllocated;
+    use crate::primitive::{StableAllocated, StableDrop};
     use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 

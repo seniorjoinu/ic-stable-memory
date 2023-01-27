@@ -2,7 +2,9 @@ use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::mem::allocator::EMPTY_PTR;
-use crate::primitive::StableAllocated;
+use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{deallocate_lazy, isoprint, SSlice};
 use std::fmt::Debug;
@@ -18,7 +20,6 @@ pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
 pub const NODE_TYPE_INTERNAL: u8 = 127;
 pub const NODE_TYPE_LEAF: u8 = 255;
 pub const NODE_TYPE_OFFSET: usize = 0;
-const PARENT_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 
 pub(crate) mod internal_node;
 pub mod iter;
@@ -32,104 +33,6 @@ pub struct SBTreeMap<K, V> {
     pub(crate) certified: bool,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
-}
-
-pub(crate) enum LeveledList {
-    None,
-    Some((Vec<Vec<u64>>, usize)),
-}
-
-impl LeveledList {
-    pub(crate) fn new() -> Self {
-        Self::Some((vec![Vec::new()], 0))
-    }
-
-    fn insert_root(&mut self, ptr: u64) {
-        match self {
-            LeveledList::None => {}
-            LeveledList::Some((v, max_level)) => {
-                let root = vec![ptr];
-                v.insert(0, root);
-                *max_level += 1;
-            }
-        }
-    }
-
-    fn remove_root(&mut self) {
-        match self {
-            LeveledList::None => {}
-            LeveledList::Some((v, max_level)) => {
-                v.remove(0);
-                *max_level -= 1;
-            }
-        }
-    }
-
-    fn push(&mut self, level: usize, ptr: u64) {
-        match self {
-            LeveledList::None => {}
-            LeveledList::Some((v, max_level)) => {
-                if level.gt(max_level) {
-                    *max_level = level;
-                }
-
-                match v[level].binary_search(&ptr) {
-                    Ok(_) => {}
-                    Err(idx) => v[level].insert(idx, ptr),
-                };
-            }
-        }
-    }
-
-    fn remove(&mut self, level: usize, ptr: u64) {
-        match self {
-            LeveledList::None => {}
-            LeveledList::Some((v, _)) => {
-                if let Ok(idx) = v[level].binary_search(&ptr) {
-                    v[level].remove(idx);
-                }
-            }
-        }
-    }
-
-    pub(crate) fn pop(&mut self) -> Option<u64> {
-        match self {
-            LeveledList::None => unreachable!(),
-            LeveledList::Some((v, max_level)) => {
-                let mut ptr = v[*max_level].pop();
-
-                while ptr.is_none() {
-                    if *max_level == 0 {
-                        return None;
-                    }
-
-                    *max_level -= 1;
-
-                    ptr = v[*max_level].pop();
-                }
-
-                ptr
-            }
-        }
-    }
-
-    pub(crate) fn debug_print(&self) {
-        match self {
-            LeveledList::None => isoprint("LeveledList [Dummy]"),
-            LeveledList::Some((v, max_level)) => {
-                let mut str = String::from("LeveledList [");
-                for i in 0..(*max_level + 1) {
-                    str += format!("{} - ({:?})", i, v[i]).as_str();
-                    if i < *max_level {
-                        str += ", ";
-                    }
-                }
-                str += "]";
-
-                isoprint(&str);
-            }
-        }
-    }
 }
 
 impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
@@ -157,35 +60,6 @@ where
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
-    }
-
-    #[inline]
-    fn clear_stack(&mut self, modified: &mut LeveledList) {
-        match modified {
-            LeveledList::None => {
-                self._stack.clear();
-            }
-            LeveledList::Some(_) => {
-                while let Some((p, _, _)) = self._stack.pop() {
-                    modified.push(self.current_depth(), p.as_ptr());
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn current_depth(&self) -> usize {
-        self._stack.len()
-    }
-
-    #[inline]
-    fn push_stack(&mut self, node: InternalBTreeNode<K>, len: usize, child_idx: usize) {
-        self._stack.push((node, len, child_idx));
-    }
-
-    #[inline]
-    fn pop_stack(&mut self) -> Option<(InternalBTreeNode<K>, usize, usize)> {
-        self._stack.pop()
     }
 
     #[inline]
@@ -263,13 +137,6 @@ where
             &ptr.as_fixed_size_bytes(),
             self.certified,
         );
-        new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
-
-        // set root as parent of old nodes
-        let root_ptr = new_root.as_ptr().as_fixed_size_bytes();
-        node.write_parent(&root_ptr);
-        let mut right = BTreeNode::<K, V>::from_ptr(ptr);
-        right.write_parent(&root_ptr);
 
         modified.insert_root(new_root.as_ptr());
 
@@ -356,12 +223,27 @@ where
         it
     }
 
-    #[inline]
-    pub fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
         let (leaf_node, idx) = self.lookup(key, false)?;
         let v = V::from_fixed_size_bytes(&leaf_node.read_value(idx));
 
         Some(v)
+    }
+
+    #[inline]
+    pub fn get<'a>(&'a self, key: &K) -> Option<SRef<'a, V>> {
+        let (leaf_node, idx) = self.lookup(key, false)?;
+        let ptr = leaf_node.get_value_ptr(idx);
+
+        Some(SRef::new(ptr))
+    }
+
+    #[inline]
+    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<SRefMut<'a, V>> {
+        let (leaf_node, idx) = self.lookup(key, false)?;
+        let ptr = leaf_node.get_value_ptr(idx);
+
+        Some(SRefMut::new(ptr))
     }
 
     #[inline]
@@ -384,7 +266,7 @@ where
         self.len() == 0
     }
 
-    pub fn first_copy(&self) -> Option<(K, V)> {
+    pub unsafe fn first_copy(&self) -> Option<(K, V)> {
         let mut node = self.get_root()?;
 
         loop {
@@ -400,7 +282,7 @@ where
         }
     }
 
-    pub fn last_copy(&self) -> Option<(K, V)> {
+    pub unsafe fn last_copy(&self) -> Option<(K, V)> {
         let mut node = self.get_root()?;
 
         loop {
@@ -421,10 +303,32 @@ where
     }
 
     #[inline]
-    pub fn clear(&mut self) {
-        let old = mem::replace(self, Self::new());
+    fn clear_stack(&mut self, modified: &mut LeveledList) {
+        match modified {
+            LeveledList::None => {
+                self._stack.clear();
+            }
+            LeveledList::Some(_) => {
+                while let Some((p, _, _)) = self._stack.pop() {
+                    modified.push(self.current_depth(), p.as_ptr());
+                }
+            }
+        }
+    }
 
-        unsafe { old.stable_drop() };
+    #[inline]
+    fn current_depth(&self) -> usize {
+        self._stack.len()
+    }
+
+    #[inline]
+    fn push_stack(&mut self, node: InternalBTreeNode<K>, len: usize, child_idx: usize) {
+        self._stack.push((node, len, child_idx));
+    }
+
+    #[inline]
+    fn pop_stack(&mut self) -> Option<(InternalBTreeNode<K>, usize, usize)> {
+        self._stack.pop()
     }
 
     pub(crate) fn get_root(&self) -> Option<BTreeNode<K, V>> {
@@ -1068,7 +972,6 @@ where
                     modified.remove_root();
 
                     node.destroy();
-                    prev_node.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
                     self.root = Some(prev_node);
 
                     return;
@@ -1319,10 +1222,77 @@ where
             Some(r) => unsafe { r.copy() },
             None => {
                 let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified));
-                new_root.write_parent(&EMPTY_PTR.as_fixed_size_bytes());
 
                 self.root = Some(new_root);
                 unsafe { self.root.as_ref().unwrap_unchecked().copy() }
+            }
+        }
+    }
+}
+
+impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> SBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    #[inline]
+    pub fn clear(&mut self) {
+        let old = mem::replace(self, Self::new());
+
+        unsafe { old.stable_drop() };
+    }
+}
+
+impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
+    for SBTreeMap<K, V>
+where
+    [(); K::SIZE]: Sized,
+    [(); V::SIZE]: Sized,
+{
+    type Output = ();
+
+    unsafe fn stable_drop(self) {
+        if self.root.is_none() {
+            return;
+        }
+
+        let mut nodes = vec![unsafe { self.root.unwrap_unchecked() }];
+        let mut new_nodes = Vec::new();
+
+        loop {
+            if nodes.is_empty() {
+                deallocate_lazy();
+
+                return;
+            }
+
+            for _ in 0..nodes.len() {
+                match unsafe { nodes.pop().unwrap_unchecked() } {
+                    BTreeNode::Internal(internal) => {
+                        for j in 0..(internal.read_len() + 1) {
+                            let child_ptr_raw = internal.read_child_ptr(j);
+                            let child_ptr = u64::from_fixed_size_bytes(&child_ptr_raw);
+                            let child = BTreeNode::<K, V>::from_ptr(child_ptr);
+
+                            new_nodes.push(child);
+                        }
+
+                        nodes = new_nodes;
+                        new_nodes = Vec::new();
+                        internal.destroy();
+                    }
+                    BTreeNode::Leaf(leaf) => {
+                        for j in 0..leaf.read_len() {
+                            let key = K::from_fixed_size_bytes(&leaf.read_key(j));
+                            let value = V::from_fixed_size_bytes(&leaf.read_value(j));
+
+                            key.stable_drop();
+                            value.stable_drop();
+                        }
+
+                        leaf.destroy();
+                    }
+                }
             }
         }
     }
@@ -1454,49 +1424,101 @@ where
 
     #[inline]
     fn remove_from_stable(&mut self) {}
+}
 
-    unsafe fn stable_drop(self) {
-        if self.root.is_none() {
-            return;
-        }
+pub(crate) enum LeveledList {
+    None,
+    Some((Vec<Vec<u64>>, usize)),
+}
 
-        let mut nodes = vec![unsafe { self.root.unwrap_unchecked() }];
-        let mut new_nodes = Vec::new();
+impl LeveledList {
+    pub(crate) fn new() -> Self {
+        Self::Some((vec![Vec::new()], 0))
+    }
 
-        loop {
-            if nodes.is_empty() {
-                deallocate_lazy();
-
-                return;
+    fn insert_root(&mut self, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                let root = vec![ptr];
+                v.insert(0, root);
+                *max_level += 1;
             }
+        }
+    }
 
-            for _ in 0..nodes.len() {
-                match unsafe { nodes.pop().unwrap_unchecked() } {
-                    BTreeNode::Internal(internal) => {
-                        for j in 0..(internal.read_len() + 1) {
-                            let child_ptr_raw = internal.read_child_ptr(j);
-                            let child_ptr = u64::from_fixed_size_bytes(&child_ptr_raw);
-                            let child = BTreeNode::<K, V>::from_ptr(child_ptr);
+    fn remove_root(&mut self) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                v.remove(0);
+                *max_level -= 1;
+            }
+        }
+    }
 
-                            new_nodes.push(child);
-                        }
+    fn push(&mut self, level: usize, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, max_level)) => {
+                if level.gt(max_level) {
+                    *max_level = level;
+                }
 
-                        nodes = new_nodes;
-                        new_nodes = Vec::new();
-                        internal.destroy();
+                match v[level].binary_search(&ptr) {
+                    Ok(_) => {}
+                    Err(idx) => v[level].insert(idx, ptr),
+                };
+            }
+        }
+    }
+
+    fn remove(&mut self, level: usize, ptr: u64) {
+        match self {
+            LeveledList::None => {}
+            LeveledList::Some((v, _)) => {
+                if let Ok(idx) = v[level].binary_search(&ptr) {
+                    v[level].remove(idx);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<u64> {
+        match self {
+            LeveledList::None => unreachable!(),
+            LeveledList::Some((v, max_level)) => {
+                let mut ptr = v[*max_level].pop();
+
+                while ptr.is_none() {
+                    if *max_level == 0 {
+                        return None;
                     }
-                    BTreeNode::Leaf(leaf) => {
-                        for j in 0..leaf.read_len() {
-                            let key = K::from_fixed_size_bytes(&leaf.read_key(j));
-                            let value = V::from_fixed_size_bytes(&leaf.read_value(j));
 
-                            key.stable_drop();
-                            value.stable_drop();
-                        }
+                    *max_level -= 1;
 
-                        leaf.destroy();
+                    ptr = v[*max_level].pop();
+                }
+
+                ptr
+            }
+        }
+    }
+
+    pub(crate) fn debug_print(&self) {
+        match self {
+            LeveledList::None => isoprint("LeveledList [Dummy]"),
+            LeveledList::Some((v, max_level)) => {
+                let mut str = String::from("LeveledList [");
+                for i in 0..(*max_level + 1) {
+                    str += format!("{} - ({:?})", i, v[i]).as_str();
+                    if i < *max_level {
+                        str += ", ";
                     }
                 }
+                str += "]";
+
+                isoprint(&str);
             }
         }
     }
@@ -1506,8 +1528,6 @@ pub trait IBTreeNode {
     unsafe fn from_ptr(ptr: u64) -> Self;
     fn as_ptr(&self) -> u64;
     unsafe fn copy(&self) -> Self;
-    fn read_parent(&self) -> [u8; u64::SIZE];
-    fn write_parent(&mut self, parent: &[u8; u64::SIZE]);
 }
 
 pub(crate) enum BTreeNode<K, V> {
@@ -1541,22 +1561,16 @@ impl<K, V> BTreeNode<K, V> {
             Self::Leaf(l) => Self::Leaf(l.copy()),
         }
     }
-
-    pub(crate) fn write_parent(&mut self, parent: &[u8; u64::SIZE]) {
-        match self {
-            Self::Internal(i) => i.write_parent(parent),
-            Self::Leaf(l) => l.write_parent(parent),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::primitive::StableAllocated;
+    use crate::primitive::StableDrop;
     use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
+    use std::ops::Deref;
 
     #[test]
     fn random_works_fine() {
@@ -1585,8 +1599,8 @@ mod tests {
                     example[j]
                 );
                 assert_eq!(
-                    map.get_copy(&example[j]),
-                    Some(example[j]),
+                    *map.get(&example[j]).unwrap().read(),
+                    example[j],
                     "unable to get {}",
                     example[j]
                 );
@@ -1611,8 +1625,8 @@ mod tests {
                     example[j]
                 );
                 assert_eq!(
-                    map.get_copy(&example[j]),
-                    Some(example[j]),
+                    *map.get(&example[j]).unwrap().read(),
+                    example[j],
                     "unable to get {}",
                     example[j]
                 );

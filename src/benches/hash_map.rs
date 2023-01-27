@@ -54,7 +54,7 @@ mod hash_map_benchmark {
 
             measure!("Stable hash map search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_hash_map.get_copy(&example[i]).unwrap();
+                    stable_hash_map.get(&example[i]).unwrap();
                 }
             });
 

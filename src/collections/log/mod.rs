@@ -1,7 +1,9 @@
 use crate::collections::log::iter::SLogIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
-use crate::primitive::StableAllocated;
+use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::fmt::Debug;
@@ -80,29 +82,51 @@ where
         Some(it)
     }
 
-    pub fn last(&self) -> Option<T> {
+    pub fn last(&self) -> Option<SRef<'_, T>> {
         if self.len == 0 {
             return None;
         }
 
         let sector = self.get_current_sector()?;
-        let it = sector.read_element(self.cur_sector_last_item_offset - T::SIZE);
+        let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE);
 
-        Some(it)
+        Some(SRef::new(ptr))
     }
 
-    pub fn first(&self) -> Option<T> {
+    pub fn last_mut(&mut self) -> Option<SRefMut<'_, T>> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let sector = self.get_current_sector()?;
+        let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE);
+
+        Some(SRefMut::new(ptr))
+    }
+
+    pub fn first(&self) -> Option<SRef<'_, T>> {
         if self.len == 0 {
             return None;
         }
 
         let sector = self.get_first_sector()?;
-        let it = sector.read_element(0);
+        let ptr = sector.get_element_ptr(0);
 
-        Some(it)
+        Some(SRef::new(ptr))
     }
 
-    pub fn get_copy(&self, idx: u64) -> Option<T> {
+    pub fn first_mut(&mut self) -> Option<SRefMut<'_, T>> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let sector = self.get_first_sector()?;
+        let ptr = sector.get_element_ptr(0);
+
+        Some(SRefMut::new(ptr))
+    }
+
+    fn find_sector_for_idx(&self, idx: u64) -> Option<(Sector<T>, u64)> {
         if idx >= self.len || self.len == 0 {
             return None;
         }
@@ -126,7 +150,30 @@ where
             sector = Sector::<T>::from_ptr(sector.read_prev_ptr());
         }
 
-        Some(sector.read_element((idx - len) as usize * T::SIZE))
+        Some((sector, len))
+    }
+
+    #[inline]
+    pub unsafe fn get_copy(&self, idx: u64) -> Option<T> {
+        let (sector, dif) = self.find_sector_for_idx(idx)?;
+
+        Some(sector.read_element((idx - dif) as usize * T::SIZE))
+    }
+
+    #[inline]
+    pub fn get(&self, idx: u64) -> Option<SRef<'_, T>> {
+        let (sector, dif) = self.find_sector_for_idx(idx)?;
+        let ptr = sector.get_element_ptr((idx - dif) as usize * T::SIZE);
+
+        Some(SRef::new(ptr))
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, idx: u64) -> Option<SRefMut<'_, T>> {
+        let (sector, dif) = self.find_sector_for_idx(idx)?;
+        let ptr = sector.get_element_ptr((idx - dif) as usize * T::SIZE);
+
+        Some(SRefMut::new(ptr))
     }
 
     #[inline]
@@ -278,6 +325,11 @@ where
     }
 
     #[inline]
+    fn get_element_ptr(&self, offset: usize) -> u64 {
+        self.0 + (ELEMENTS_OFFSET + offset) as u64
+    }
+
+    #[inline]
     fn read_element(&self, offset: usize) -> T {
         SSlice::_as_fixed_size_bytes_read::<T>(self.0, ELEMENTS_OFFSET + offset)
     }
@@ -426,6 +478,13 @@ where
 
     #[inline]
     fn remove_from_stable(&mut self) {}
+}
+
+impl<T: StableAllocated + StableDrop> StableDrop for SLog<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    type Output = ();
 
     unsafe fn stable_drop(self) {
         let mut sector = if let Some(s) = self.get_first_sector() {
@@ -491,7 +550,7 @@ mod tests {
             log.push(i);
 
             for j in 0..i {
-                assert_eq!(log.get_copy(j).unwrap(), j);
+                assert_eq!(*log.get(j).unwrap().read(), j);
             }
         }
 
@@ -499,7 +558,7 @@ mod tests {
 
         assert_eq!(log.len(), 100);
         for i in 0..100 {
-            assert_eq!(log.get_copy(i).unwrap(), i);
+            assert_eq!(*log.get(i).unwrap().read(), i);
         }
 
         println!();
@@ -520,7 +579,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(log.get_copy(i).unwrap(), i);
+            assert_eq!(*log.get(i).unwrap().read(), i);
         }
 
         println!();

@@ -2,13 +2,18 @@ use crate::utils::encoding::AsFixedSizeBytes;
 use candid::{Int, Nat, Principal};
 
 pub mod s_box;
-pub mod s_box_mut;
+pub mod s_ref;
+pub mod s_ref_mut;
+
+pub trait StableDrop {
+    type Output;
+
+    unsafe fn stable_drop(self) -> Self::Output;
+}
 
 pub trait StableAllocated: AsFixedSizeBytes {
     fn move_to_stable(&mut self);
     fn remove_from_stable(&mut self);
-
-    unsafe fn stable_drop(self);
 }
 
 macro_rules! impl_for_primitive {
@@ -19,6 +24,10 @@ macro_rules! impl_for_primitive {
 
             #[inline]
             fn remove_from_stable(&mut self) {}
+        }
+
+        impl StableDrop for $ty {
+            type Output = ();
 
             #[inline]
             unsafe fn stable_drop(self) {}
@@ -59,35 +68,6 @@ impl_for_primitive!([u8; 1024]);
 impl_for_primitive!([u8; 2048]);
 impl_for_primitive!([u8; 4096]);
 
-impl StableAllocated for Principal {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
-
-    #[inline]
-    unsafe fn stable_drop(self) {}
-}
-
-impl StableAllocated for Nat {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
-
-    #[inline]
-    unsafe fn stable_drop(self) {}
-}
-
-impl StableAllocated for Int {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
-
-    #[inline]
-    unsafe fn stable_drop(self) {}
-}
+impl_for_primitive!(Principal);
+impl_for_primitive!(Nat);
+impl_for_primitive!(Int);

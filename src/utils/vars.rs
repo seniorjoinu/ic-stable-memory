@@ -62,15 +62,18 @@ fn format_name(name: &[u8]) -> [u8; 128] {
 pub fn set_var<T: AsDynSizeBytes>(name: &[u8], value: T) {
     if let Some(m) = &mut *VARS.borrow_mut() {
         let name = format_name(name);
+
+        if m.contains_key(&name) {
+            panic!("Stable variable is already defined!");
+        }
+
         let mut val_box = SBox::new(value);
 
         val_box.move_to_stable();
         let val_box_ptr = val_box.as_ptr();
 
-        if let Some(prev_val_box_ptr) = m.insert(name, val_box_ptr) {
-            let mut prev_val_box = unsafe { SBox::<T>::from_ptr(prev_val_box_ptr) };
-            prev_val_box.remove_from_stable();
-        }
+        // returns None, since we've checked with contains_key
+        m.insert(name, val_box_ptr);
     } else {
         unreachable!("Stable variables are not initialized");
     }
@@ -80,7 +83,7 @@ pub fn get_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
     let ptr = if let Some(m) = &*VARS.borrow() {
         let name = format_name(name);
 
-        m.get_copy(&name).expect("Stable variable not found")
+        *m.get(&name).expect("Stable variable not found").read()
     } else {
         unreachable!("Stable variables are not initialized");
     };
@@ -95,7 +98,7 @@ pub fn remove_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
         let sbox_ptr = vars.remove(&name).expect("Stable variable not found");
 
         let mut sbox = unsafe { SBox::<T>::from_ptr(sbox_ptr) };
-        let copy = sbox.get_cloned();
+        let copy = unsafe { sbox.get_cloned() };
         sbox.remove_from_stable();
 
         copy
@@ -108,7 +111,9 @@ pub fn remove_var<T: AsDynSizeBytes>(name: &[u8]) -> T {
 mod tests {
     use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
     use crate::utils::vars::{get_var, remove_var, set_var};
-    use crate::{deinit_vars, init_vars, reinit_vars, s, s_remove, stable, stable_memory_init};
+    use crate::{
+        define, deinit_vars, init_vars, reinit_vars, s, stable, stable_memory_init, undefine,
+    };
 
     type Var = Vec<u8>;
 
@@ -140,17 +145,19 @@ mod tests {
         stable::clear();
         stable_memory_init(true, 0);
 
-        s! { Var = vec![1u8, 2, 3, 4] };
+        define! { Var = vec![1u8, 2, 3, 4] };
 
         let v = s!(Var);
         assert_eq!(v, vec![1u8, 2, 3, 4]);
 
-        s! { Var = vec![4u8, 3, 2, 1] };
+        undefine!(Var);
+
+        define! { Var = vec![4u8, 3, 2, 1] };
 
         let v = s!(Var);
         assert_eq!(v, vec![4u8, 3, 2, 1]);
 
-        let v1 = s_remove!(Var);
+        let v1 = undefine!(Var);
 
         assert_eq!(v1, v);
     }

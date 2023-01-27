@@ -2,8 +2,10 @@ use crate::collections::vec::iter::SVecIter;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
-use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
+use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
+use crate::primitive::{StableAllocated, StableDrop};
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, reallocate};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -52,7 +54,7 @@ impl<T> SVec<T> {
     }
 }
 
-impl<T: StableAllocated> SVec<T>
+impl<T: StableAllocated + StableDrop> SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -97,12 +99,32 @@ where
         }
     }
 
-    pub fn get_copy(&self, idx: usize) -> Option<T> {
+    pub unsafe fn get_copy(&self, idx: usize) -> Option<T> {
         if idx < self.len() {
             let mut buf = T::_u8_arr_of_size();
             SSlice::_read_bytes(self.ptr, idx * T::SIZE, &mut buf);
 
             Some(T::from_fixed_size_bytes(&buf))
+        } else {
+            None
+        }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
+        if idx < self.len() {
+            let ptr = self.ptr + (idx * T::SIZE) as u64;
+
+            Some(SRef::new(ptr))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_mut(&mut self, idx: usize) -> Option<SRefMut<'_, T>> {
+        if idx < self.len() {
+            let ptr = self.ptr + (idx * T::SIZE) as u64;
+
+            Some(SRefMut::new(ptr))
         } else {
             None
         }
@@ -274,7 +296,7 @@ impl<T> Default for SVec<T> {
     }
 }
 
-impl<T: StableAllocated> From<SVec<T>> for Vec<T>
+impl<T: StableAllocated + StableDrop> From<SVec<T>> for Vec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -292,7 +314,7 @@ where
     }
 }
 
-impl<T: StableAllocated> From<Vec<T>> for SVec<T>
+impl<T: StableAllocated + StableDrop> From<Vec<T>> for SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -307,7 +329,7 @@ where
     }
 }
 
-impl<T: StableAllocated + Debug> Debug for SVec<T>
+impl<T: StableAllocated + StableDrop + Debug> Debug for SVec<T>
 where
     [u8; T::SIZE]: Sized,
 {
@@ -371,6 +393,13 @@ where
 
     #[inline]
     fn remove_from_stable(&mut self) {}
+}
+
+impl<T: StableAllocated + StableDrop> StableDrop for SVec<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    type Output = ();
 
     unsafe fn stable_drop(self) {
         if self.ptr != EMPTY_PTR {
@@ -390,8 +419,7 @@ mod tests {
     use crate::collections::vec::{SVec, DEFAULT_CAPACITY};
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
-    use crate::primitive::s_box_mut::SBoxMut;
-    use crate::primitive::StableAllocated;
+    use crate::primitive::{StableAllocated, StableDrop};
     use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
     use crate::utils::mem_context::stable;
 
@@ -435,8 +463,12 @@ mod tests {
         fn move_to_stable(&mut self) {}
 
         fn remove_from_stable(&mut self) {}
+    }
 
-        unsafe fn stable_drop(self) {}
+    impl StableDrop for Test {
+        type Output = ();
+
+        unsafe fn stable_drop(self) -> Self::Output {}
     }
 
     #[test]
@@ -506,13 +538,13 @@ mod tests {
         init_allocator(0);
 
         let mut v = SVec::default();
-        assert!(v.get_copy(100).is_none());
+        assert!(v.get(100).is_none());
 
         v.push(10);
         v.push(20);
 
-        assert_eq!(v.get_copy(0).unwrap(), 10);
-        assert_eq!(v.get_copy(1).unwrap(), 20);
+        assert_eq!(*v.get(0).unwrap().read(), 10);
+        assert_eq!(*v.get(1).unwrap().read(), 20);
         assert_eq!(v.replace(0, 11), 10);
 
         unsafe { v.stable_drop() };
@@ -543,7 +575,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(array.get_copy(i).unwrap(), i);
+            assert_eq!(*array.get(i).unwrap().read(), i);
         }
 
         let actual: Vec<_> = Vec::from(array);
@@ -669,7 +701,7 @@ mod tests {
         let mut vec = SVec::new();
 
         for i in 0..100 {
-            vec.push(SBoxMut::new(10));
+            vec.push(SBox::new(10));
         }
 
         unsafe { vec.stable_drop() };

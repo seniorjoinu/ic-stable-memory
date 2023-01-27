@@ -58,7 +58,7 @@ mod vec_benchmark {
 
             measure!("Stable vec search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_vec.get_copy(i).unwrap();
+                    stable_vec.get(i).unwrap();
                 }
             });
 

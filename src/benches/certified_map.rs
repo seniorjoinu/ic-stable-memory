@@ -86,7 +86,7 @@ mod certified_btree_map_benchmark {
 
             measure!("Stable certified btree map search", ITERATIONS, {
                 for i in 0..ITERATIONS {
-                    stable_certified_btree_map.get_copy(&example[i]).unwrap();
+                    stable_certified_btree_map.get(&example[i]).unwrap();
                 }
             });
 

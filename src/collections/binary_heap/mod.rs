@@ -1,7 +1,8 @@
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
 use crate::collections::vec::SVec;
-use crate::primitive::StableAllocated;
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
+use crate::primitive::s_ref::SRef;
+use crate::primitive::{StableAllocated, StableDrop};
+use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
@@ -30,13 +31,18 @@ impl<T> SBinaryHeap<T> {
 
 // TODO: apply https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
 
-impl<'a, T: StableAllocated + Ord> SBinaryHeap<T>
+impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T>
 where
     [(); T::SIZE]: Sized,
 {
     #[inline]
-    pub fn peek(&self) -> Option<T> {
-        self.inner.get_copy(0)
+    pub fn peek(&self) -> Option<SRef<'_, T>> {
+        self.inner.get(0)
+    }
+
+    #[inline]
+    pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
+        self.inner.get(idx)
     }
 
     pub fn push(&mut self, elem: T) {
@@ -79,11 +85,9 @@ where
 
         let last_idx = len - 2;
 
-        let mut idx = 0;
+        let mut idx = 0usize;
 
         loop {
-            let parent = self.inner.get_copy(idx).unwrap();
-
             let right_child_idx = (idx + 1).checked_mul(2).unwrap();
             let left_child_idx = (idx + 1) * 2 - 1;
 
@@ -91,7 +95,8 @@ where
                 return Some(elem);
             }
 
-            let left_child = self.inner.get_copy(left_child_idx).unwrap();
+            let parent = unsafe { self.inner.get_copy(idx).unwrap() };
+            let left_child = unsafe { self.inner.get_copy(left_child_idx).unwrap() };
 
             if right_child_idx > last_idx {
                 if parent < left_child {
@@ -103,7 +108,7 @@ where
                 return Some(elem);
             }
 
-            let right_child = self.inner.get_copy(right_child_idx).unwrap();
+            let right_child = unsafe { self.inner.get_copy(right_child_idx).unwrap() };
 
             if left_child >= right_child && left_child > parent {
                 self.inner.swap(idx, left_child_idx);
@@ -134,7 +139,7 @@ where
     }
 }
 
-impl<T: StableAllocated + Debug> Debug for SBinaryHeap<T>
+impl<T: StableAllocated + StableDrop + Debug> Debug for SBinaryHeap<T>
 where
     [(); T::SIZE]: Sized,
 {
@@ -181,6 +186,13 @@ where
     fn remove_from_stable(&mut self) {
         self.inner.remove_from_stable()
     }
+}
+
+impl<T: StableAllocated + StableDrop> StableDrop for SBinaryHeap<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    type Output = ();
 
     #[inline]
     unsafe fn stable_drop(self) {
@@ -191,7 +203,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
-    use crate::primitive::StableAllocated;
+    use crate::primitive::{StableAllocated, StableDrop};
     use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable, stable_memory_init};
 
@@ -219,7 +231,7 @@ mod tests {
 
         println!("{:?}", max_heap);
 
-        assert_eq!(max_heap.peek().unwrap(), 100);
+        assert_eq!(*max_heap.peek().unwrap().read(), 100);
 
         let mut probe = vec![];
 

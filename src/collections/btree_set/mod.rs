@@ -1,6 +1,6 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
-use crate::primitive::StableAllocated;
+use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 
 pub mod iter;
@@ -49,7 +49,12 @@ where
     pub fn iter(&self) -> SBTreeSetIter<T> {
         SBTreeSetIter::new(self)
     }
+}
 
+impl<T: StableAllocated + StableDrop + Ord> SBTreeSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
     #[inline]
     pub fn clear(&mut self) {
         self.map.clear();
@@ -103,6 +108,13 @@ where
     fn remove_from_stable(&mut self) {
         self.map.remove_from_stable()
     }
+}
+
+impl<T: StableAllocated + Ord + StableDrop> StableDrop for SBTreeSet<T>
+where
+    [(); T::SIZE]: Sized,
+{
+    type Output = ();
 
     #[inline]
     unsafe fn stable_drop(self) {
@@ -113,7 +125,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
-    use crate::primitive::StableAllocated;
+    use crate::primitive::{StableAllocated, StableDrop};
     use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
