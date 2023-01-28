@@ -1,0 +1,10 @@
+[package]
+name = "ic-stable-memory-derive-tests"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ic-stable-memory = { path = "../../ic-stable-memory" }
+ic-stable-memory-derive = { path = "../ic-stable-memory-derive" }

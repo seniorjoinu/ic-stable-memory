@@ -126,6 +126,8 @@ mod tests {
             let mut var = vec![0u8; len];
             var.copy_from_slice(&buf[usize::SIZE..(usize::SIZE + len)]);
 
+            let i = [0u8; <u64 as crate::utils::encoding::FixedSize>::SIZE];
+
             var
         }
 

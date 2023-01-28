@@ -43,6 +43,15 @@ pub fn fast_log2(value: usize) -> u32 {
     }
 }
 
+#[inline]
+pub const fn max_usize(a: usize, b: usize) -> usize {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::math::{fast_log2_32, fast_log2_64};
