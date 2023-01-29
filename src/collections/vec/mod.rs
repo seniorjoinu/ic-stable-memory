@@ -1,4 +1,4 @@
-use crate::collections::vec::iter::SVecIter;
+use crate::collections::vec::iter::{SVecIter, SVecIterCopy, SVecIterMut};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::{SSlice, Side};
 use crate::mem::Anyway;
@@ -110,24 +110,18 @@ where
         }
     }
 
+    #[inline]
     pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
-        if idx < self.len() {
-            let ptr = self.ptr + (idx * T::SIZE) as u64;
+        let ptr = self.get_ptr(idx)?;
 
-            Some(SRef::new(ptr))
-        } else {
-            None
-        }
+        Some(SRef::new(ptr))
     }
 
+    #[inline]
     pub fn get_mut(&mut self, idx: usize) -> Option<SRefMut<'_, T>> {
-        if idx < self.len() {
-            let ptr = self.ptr + (idx * T::SIZE) as u64;
+        let ptr = self.get_ptr(idx)?;
 
-            Some(SRefMut::new(ptr))
-        } else {
-            None
-        }
+        Some(SRefMut::new(ptr))
     }
 
     pub fn replace(&mut self, idx: usize, mut element: T) -> T {
@@ -287,6 +281,24 @@ where
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
+
+    #[inline]
+    pub fn iter_mut(&mut self) -> SVecIterMut<T> {
+        SVecIterMut::new(self)
+    }
+
+    #[inline]
+    pub unsafe fn iter_copy(&self) -> SVecIterCopy<T> {
+        SVecIterCopy::new(self)
+    }
+
+    pub(crate) fn get_ptr(&self, idx: usize) -> Option<u64> {
+        if idx < self.len() {
+            Some(self.ptr + (idx * T::SIZE) as u64)
+        } else {
+            None
+        }
+    }
 }
 
 impl<T> Default for SVec<T> {
@@ -303,7 +315,7 @@ where
     fn from(mut svec: SVec<T>) -> Self {
         let mut vec = Self::new();
 
-        for i in svec.iter() {
+        for i in unsafe { svec.iter_copy() } {
             vec.push(i);
         }
 
@@ -335,8 +347,8 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
-        for (idx, item) in self.iter().enumerate() {
-            item.fmt(f)?;
+        for (idx, mut item) in self.iter().enumerate() {
+            item.read().fmt(f)?;
 
             if idx < self.len - 1 {
                 f.write_str(", ")?;
@@ -403,7 +415,7 @@ where
 
     unsafe fn stable_drop(self) {
         if self.ptr != EMPTY_PTR {
-            for elem in self.iter() {
+            for elem in self.iter_copy() {
                 elem.stable_drop();
             }
 
@@ -675,10 +687,10 @@ mod tests {
         }
 
         let mut c = 0;
-        for (idx, i) in vec.iter().enumerate() {
+        for (idx, mut i) in vec.iter().enumerate() {
             c += 1;
 
-            assert_eq!(idx as i32, i);
+            assert_eq!(idx as i32, *i.read());
         }
 
         assert_eq!(c, 100);

@@ -1,4 +1,4 @@
-use crate::collections::hash_map::iter::SHashMapIter;
+use crate::collections::hash_map::iter::{SHashMapIter, SHashMapIterCopy, SHashMapIterMut};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
 use crate::primitive::s_ref::SRef;
@@ -104,7 +104,7 @@ where
                     if self.is_full() {
                         let mut new = Self::new_with_capacity(self.capacity() * 2 - 1);
 
-                        for (k, v) in self.iter() {
+                        for (k, v) in unsafe { self.iter_copy() } {
                             new.insert(k, v);
                         }
 
@@ -226,6 +226,16 @@ where
         SHashMapIter::new(self)
     }
 
+    #[inline]
+    pub fn iter_mut(&mut self) -> SHashMapIterMut<K, V> {
+        SHashMapIterMut::new(self)
+    }
+
+    #[inline]
+    pub unsafe fn iter_copy(&self) -> SHashMapIterCopy<K, V> {
+        SHashMapIterCopy::new(self)
+    }
+
     pub fn clear(&mut self) {
         for i in 0..self.cap {
             match self.read_key_at(i, true) {
@@ -293,6 +303,10 @@ where
                 _ => unreachable!(),
             };
         }
+    }
+
+    fn get_key_ptr(&self, idx: usize) -> u64 {
+        self.table_ptr + (KEYS_OFFSET + (1 + K::SIZE) * idx + 1) as u64
     }
 
     fn get_value_ptr(&self, idx: usize) -> u64 {
@@ -466,7 +480,7 @@ where
 
     unsafe fn stable_drop(self) {
         if self.table_ptr != EMPTY_PTR {
-            for (k, v) in self.iter() {
+            for (k, v) in self.iter_copy() {
                 k.stable_drop();
                 v.stable_drop();
             }
@@ -688,10 +702,10 @@ mod tests {
         }
 
         let mut c = 0;
-        for (k, v) in map.iter() {
+        for (mut k, v) in map.iter() {
             c += 1;
 
-            assert!(k < 100);
+            assert!(*k.read() < 100);
         }
 
         assert_eq!(c, 100);

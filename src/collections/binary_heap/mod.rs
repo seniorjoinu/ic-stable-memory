@@ -266,10 +266,10 @@ mod tests {
         }
 
         let mut c = 0;
-        for i in heap.iter() {
+        for mut i in heap.iter() {
             c += 1;
 
-            assert!(i < 100);
+            assert!(*i.read() < 100);
         }
 
         assert_eq!(c, 100);

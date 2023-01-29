@@ -1648,19 +1648,19 @@ mod tests {
 
         let mut i = 0u64;
 
-        for (k, v) in map.iter() {
-            assert_eq!(i, k);
-            assert_eq!(i, v);
+        for (mut k, mut v) in map.iter() {
+            assert_eq!(i, *k.read());
+            assert_eq!(i, *v.read());
 
             i += 1;
         }
 
         assert_eq!(i, 199);
 
-        for (k, v) in map.iter().rev() {
+        for (mut k, mut v) in map.iter().rev() {
             println!("{}", i);
-            assert_eq!(i, k);
-            assert_eq!(i, v);
+            assert_eq!(i, *k.read());
+            assert_eq!(i, *v.read());
 
             i -= 1;
         }

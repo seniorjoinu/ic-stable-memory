@@ -175,8 +175,8 @@ mod tests {
             set.insert(i);
         }
 
-        for (idx, i) in set.iter().enumerate() {
-            assert_eq!(idx as u32, i);
+        for (idx, mut i) in set.iter().enumerate() {
+            assert_eq!(idx as u32, *i.read());
         }
     }
 

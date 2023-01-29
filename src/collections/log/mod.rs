@@ -607,8 +607,8 @@ mod tests {
         }
 
         let mut j = 0;
-        for i in log.iter() {
-            assert_eq!(i, j);
+        for mut i in log.iter() {
+            assert_eq!(*i.read(), j);
             j += 1;
         }
 
@@ -616,8 +616,8 @@ mod tests {
 
         log.debug_print();
 
-        for i in log.iter().rev() {
-            assert_eq!(i, j);
+        for mut i in log.iter().rev() {
+            assert_eq!(*i.read(), j);
             j -= 1;
         }
     }

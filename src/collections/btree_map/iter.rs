@@ -1,5 +1,6 @@
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::{BTreeNode, IBTreeNode};
+use crate::primitive::s_ref::SRef;
 use crate::primitive::StableAllocated;
 use crate::utils::encoding::AsFixedSizeBytes;
 
@@ -41,8 +42,8 @@ where
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(node) = &self.node {
-            let k = K::from_fixed_size_bytes(&node.read_key(self.node_idx));
-            let v = V::from_fixed_size_bytes(&node.read_value(self.node_idx));
+            let k = SRef::new(node.get_key_ptr(self.node_idx));
+            let v = SRef::new(node.get_value_ptr(self.node_idx));
 
             if self.node_idx == 0 {
                 let prev_ptr = u64::from_fixed_size_bytes(&node.read_prev());
@@ -92,12 +93,12 @@ where
     [(); K::SIZE]: Sized,
     [(); V::SIZE]: Sized,
 {
-    type Item = (K, V);
+    type Item = (SRef<'a, K>, SRef<'a, V>);
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(node) = &self.node {
-            let k = K::from_fixed_size_bytes(&node.read_key(self.node_idx));
-            let v = V::from_fixed_size_bytes(&node.read_value(self.node_idx));
+            let k = SRef::new(node.get_key_ptr(self.node_idx));
+            let v = SRef::new(node.get_value_ptr(self.node_idx));
 
             if self.node_idx == self.node_len - 1 {
                 let next_ptr = u64::from_fixed_size_bytes(&node.read_next());
