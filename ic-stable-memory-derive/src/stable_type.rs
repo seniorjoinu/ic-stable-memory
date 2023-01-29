@@ -4,31 +4,12 @@ use quote::{format_ident, quote};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, GenericParam, Generics, Ident, Index};
 
 pub fn derive_stable_allocated(ident: &Ident, generics: &Generics) -> TokenStream {
-    let mut gen = quote! {};
-    let mut gen_orig = quote! {};
-    let mut wher = &generics.where_clause;
-
-    for g in &generics.params {
-        match g {
-            GenericParam::Lifetime(l) => {
-                gen = quote! { #gen #l, };
-                gen_orig = quote! { #gen_orig #l, };
-            }
-            GenericParam::Const(c) => {
-                gen = quote! { #gen #c, };
-
-                let i = &c.ident;
-                gen_orig = quote! { #gen_orig #i, };
-            }
-            GenericParam::Type(t) => {
-                gen = quote! { #gen #t: ic_stable_memory::primitive::StableAllocated, };
-                gen_orig = quote! { #gen_orig #t, };
-            }
-        }
+    if !generics.params.is_empty() {
+        panic!("Generics not supported");
     }
 
     quote! {
-        impl<#gen> ic_stable_memory::primitive::StableAllocated for #ident<#gen_orig> #wher {
+        impl ic_stable_memory::primitive::StableAllocated for #ident {
             #[inline]
             fn move_to_stable(&mut self) {}
 
@@ -222,31 +203,12 @@ pub fn derive_as_fixed_size_bytes(ident: &Ident, data: &Data, generics: &Generic
         _ => panic!("Unions not supported!"),
     };
 
-    let mut gen = quote! {};
-    let mut gen_orig = quote! {};
-    let mut wher = &generics.where_clause;
-
-    for g in &generics.params {
-        match g {
-            GenericParam::Lifetime(l) => {
-                gen = quote! { #gen #l, };
-                gen_orig = quote! { #gen_orig #l, };
-            }
-            GenericParam::Const(c) => {
-                gen = quote! { #gen #c, };
-
-                let i = &c.ident;
-                gen_orig = quote! { #gen_orig #i, };
-            }
-            GenericParam::Type(t) => {
-                gen = quote! { #gen #t: ic_stable_memory::utils::encoding::AsFixedSizeBytes, };
-                gen_orig = quote! { #gen_orig #t, };
-            }
-        }
+    if !generics.params.is_empty() {
+        panic!("Generics not supported");
     }
 
     quote! {
-        impl<#gen> ic_stable_memory::utils::encoding::AsFixedSizeBytes for #ident<#gen_orig> #wher {
+        impl ic_stable_memory::utils::encoding::AsFixedSizeBytes for #ident {
             fn as_fixed_size_bytes(&self) -> [u8; <Self as ic_stable_memory::utils::encoding::FixedSize>::SIZE] {
                 let mut buf = [0u8; <Self as ic_stable_memory::utils::encoding::FixedSize>::SIZE];
 
@@ -320,31 +282,12 @@ pub fn derive_fixed_size(ident: &Ident, data: &Data, generics: &Generics) -> Tok
         _ => panic!("Unions not supported"),
     };
 
-    let mut gen = quote! {};
-    let mut gen_orig = quote! {};
-    let mut wher = &generics.where_clause;
-
-    for g in &generics.params {
-        match g {
-            GenericParam::Lifetime(l) => {
-                gen = quote! { #gen #l, };
-                gen_orig = quote! { #gen_orig #l, };
-            }
-            GenericParam::Const(c) => {
-                gen = quote! { #gen #c, };
-
-                let i = &c.ident;
-                gen_orig = quote! { #gen_orig #i, };
-            }
-            GenericParam::Type(t) => {
-                gen = quote! { #gen #t: ic_stable_memory::utils::encoding::FixedSize, };
-                gen_orig = quote! { #gen_orig #t, };
-            }
-        }
+    if !generics.params.is_empty() {
+        panic!("Generics not supported");
     }
 
     quote! {
-        impl<#gen> ic_stable_memory::utils::encoding::FixedSize for #ident<#gen_orig> #wher {
+        impl ic_stable_memory::utils::encoding::FixedSize for #ident {
             const SIZE: usize = #size;
         }
     }

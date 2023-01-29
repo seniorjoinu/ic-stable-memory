@@ -1,33 +1,25 @@
 #[cfg(test)]
 mod derive_tests {
-    use ic_stable_memory::utils::encoding::{AsFixedSizeBytes, FixedSize};
     use ic_stable_memory::{StableDrop, StableType};
 
-    #[derive(StableType, PartialEq, Eq, Debug)]
+    #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
     struct A1 {
         x: u64,
         y: u32,
         z: usize,
     }
 
-    #[derive(StableType, PartialEq, Eq, Debug)]
+    #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
     struct A2(u64, u32, usize);
 
-    #[derive(StableType, PartialEq, Eq, Debug)]
+    #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
     struct A3;
 
-    #[derive(StableType, PartialEq, Eq, Debug)]
+    #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
     enum B {
         X,
         Y(u32),
         Z { a: u64, b: u16 },
-    }
-
-    #[derive(StableDrop, StableType, PartialEq, Eq, Debug)]
-    struct C<T> {
-        a: [u8; 1],
-        e: [u8; 10],
-        t: T,
     }
 
     #[test]
