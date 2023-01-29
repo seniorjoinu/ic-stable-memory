@@ -46,10 +46,6 @@ impl_for_primitive!(isize);
 impl_for_primitive!(bool);
 impl_for_primitive!(());
 
-impl<const N: usize> FixedSize for [u8; N] {
-    const SIZE: usize = N;
-}
-
 macro_rules! impl_for_primitive_arr {
     ($ty:ty) => {
         impl<const N: usize> FixedSize for [$ty; N] {
@@ -58,6 +54,7 @@ macro_rules! impl_for_primitive_arr {
     };
 }
 
+impl_for_primitive_arr!(u8);
 impl_for_primitive_arr!(u16);
 impl_for_primitive_arr!(u32);
 impl_for_primitive_arr!(u64);
@@ -221,93 +218,23 @@ impl AsFixedSizeBytes for () {
     fn from_fixed_size_bytes(_: &[u8; 0]) -> Self {}
 }
 
-macro_rules! impl_for_u8_arr {
-    ($size:expr) => {
-        impl AsFixedSizeBytes for [u8; $size] {
-            #[inline]
-            fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-                *self
-            }
+impl<const N: usize> AsFixedSizeBytes for [u8; N] {
+    #[inline]
+    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+        let mut b = [0u8; Self::SIZE];
+        b.copy_from_slice(self);
 
-            #[inline]
-            fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
-                *arr
-            }
-        }
-    };
+        b
+    }
+
+    #[inline]
+    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+        let mut b = [0u8; N];
+        b.copy_from_slice(arr);
+
+        b
+    }
 }
-
-impl_for_u8_arr!(0);
-impl_for_u8_arr!(1);
-impl_for_u8_arr!(2);
-impl_for_u8_arr!(3);
-impl_for_u8_arr!(4);
-impl_for_u8_arr!(5);
-impl_for_u8_arr!(6);
-impl_for_u8_arr!(7);
-impl_for_u8_arr!(8);
-impl_for_u8_arr!(9);
-impl_for_u8_arr!(10);
-impl_for_u8_arr!(11);
-impl_for_u8_arr!(12);
-impl_for_u8_arr!(13);
-impl_for_u8_arr!(14);
-impl_for_u8_arr!(15);
-impl_for_u8_arr!(16);
-impl_for_u8_arr!(17);
-impl_for_u8_arr!(18);
-impl_for_u8_arr!(19);
-impl_for_u8_arr!(20);
-impl_for_u8_arr!(21);
-impl_for_u8_arr!(22);
-impl_for_u8_arr!(23);
-impl_for_u8_arr!(24);
-impl_for_u8_arr!(25);
-impl_for_u8_arr!(26);
-impl_for_u8_arr!(27);
-impl_for_u8_arr!(28);
-impl_for_u8_arr!(29);
-impl_for_u8_arr!(30);
-impl_for_u8_arr!(31);
-impl_for_u8_arr!(32);
-impl_for_u8_arr!(33);
-impl_for_u8_arr!(34);
-impl_for_u8_arr!(35);
-impl_for_u8_arr!(36);
-impl_for_u8_arr!(37);
-impl_for_u8_arr!(38);
-impl_for_u8_arr!(39);
-impl_for_u8_arr!(40);
-impl_for_u8_arr!(41);
-impl_for_u8_arr!(42);
-impl_for_u8_arr!(43);
-impl_for_u8_arr!(44);
-impl_for_u8_arr!(45);
-impl_for_u8_arr!(46);
-impl_for_u8_arr!(47);
-impl_for_u8_arr!(48);
-impl_for_u8_arr!(49);
-impl_for_u8_arr!(50);
-impl_for_u8_arr!(51);
-impl_for_u8_arr!(52);
-impl_for_u8_arr!(53);
-impl_for_u8_arr!(54);
-impl_for_u8_arr!(55);
-impl_for_u8_arr!(56);
-impl_for_u8_arr!(57);
-impl_for_u8_arr!(58);
-impl_for_u8_arr!(59);
-impl_for_u8_arr!(60);
-impl_for_u8_arr!(61);
-impl_for_u8_arr!(62);
-impl_for_u8_arr!(63);
-impl_for_u8_arr!(64);
-impl_for_u8_arr!(128);
-impl_for_u8_arr!(256);
-impl_for_u8_arr!(512);
-impl_for_u8_arr!(1024);
-impl_for_u8_arr!(2048);
-impl_for_u8_arr!(4096);
 
 impl<T: AsFixedSizeBytes> AsFixedSizeBytes for Option<T>
 where

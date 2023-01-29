@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod derive_tests {
-    use ic_stable_memory::{StableDrop, StableType};
+    use candid::{CandidType, Deserialize};
+    use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
     #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
     struct A1 {
@@ -22,9 +23,15 @@ mod derive_tests {
         Z { a: u64, b: u16 },
     }
 
+    #[derive(CandidType, Deserialize, CandidAsDynSizeBytes, PartialEq, Eq, Debug)]
+    struct C {
+        x: u32,
+        y: u32,
+    }
+
     #[test]
     fn works_fine() {
-        use ic_stable_memory::utils::encoding::{AsFixedSizeBytes, FixedSize};
+        use ic_stable_memory::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 
         assert_eq!(A1::SIZE, u64::SIZE + u32::SIZE + usize::SIZE);
         assert_eq!(A2::SIZE, u64::SIZE + u32::SIZE + usize::SIZE);
@@ -67,5 +74,11 @@ mod derive_tests {
         let b_3_copy = B::from_fixed_size_bytes(&b_3_buf);
 
         assert_eq!(b_3, b_3_copy);
+
+        let c = C { x: 10, y: 20 };
+        let c_buf = c.as_dyn_size_bytes();
+        let c_copy = C::from_dyn_size_bytes(&c_buf);
+
+        assert_eq!(c, c_copy);
     }
 }

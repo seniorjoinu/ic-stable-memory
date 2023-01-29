@@ -1,3 +1,4 @@
+use crate::candid_as_dyn_size_bytes::derive_candid_as_dyn_size_bytes_impl;
 use proc_macro::TokenStream as Tokens;
 use proc_macro2::{self, Ident as IdentPM, TokenStream};
 use quote::{format_ident, quote};
@@ -5,6 +6,7 @@ use stable_drop::derive_stable_drop_impl;
 use stable_type::{derive_as_fixed_size_bytes, derive_fixed_size, derive_stable_allocated};
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Ident, Index};
 
+mod candid_as_dyn_size_bytes;
 mod stable_drop;
 mod stable_type;
 
@@ -39,4 +41,16 @@ pub fn derive_stable_drop(input: Tokens) -> Tokens {
     } = parse_macro_input!(input);
 
     derive_stable_drop_impl(&ident, &generics).into()
+}
+
+#[proc_macro_derive(CandidAsDynSizeBytes)]
+pub fn derive_candid_as_dyn_size_bytes(input: Tokens) -> Tokens {
+    let DeriveInput {
+        ident,
+        data,
+        generics,
+        ..
+    } = parse_macro_input!(input);
+
+    derive_candid_as_dyn_size_bytes_impl(&ident, &generics).into()
 }

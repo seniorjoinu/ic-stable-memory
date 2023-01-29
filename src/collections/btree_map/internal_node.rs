@@ -5,9 +5,9 @@ use crate::collections::btree_map::{
 };
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
-use crate::utils::certification::{fork_hash, pruned, AsHashTree, AsHashableBytes, Hash, HashTree};
+use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash};
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, mark_for_lazy_deallocation, SSlice};
+use crate::{allocate, deallocate, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -82,7 +82,8 @@ where
 
     #[inline]
     pub fn destroy(self) {
-        mark_for_lazy_deallocation(self.ptr);
+        let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+        deallocate(slice);
     }
 
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {

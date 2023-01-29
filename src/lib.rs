@@ -9,7 +9,6 @@ use std::cell::RefCell;
 
 mod benches;
 pub mod collections;
-pub mod macros;
 pub mod mem;
 pub mod primitive;
 pub mod utils;
@@ -17,8 +16,6 @@ pub mod utils;
 pub use ic_stable_memory_derive::{StableDrop, StableType};
 
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
-use crate::utils::vars::deinit_vars;
-pub use crate::utils::vars::{init_vars, reinit_vars};
 use crate::utils::{isoprint, MemMetrics};
 
 #[thread_local]
@@ -74,24 +71,6 @@ pub fn deallocate(slice: SSlice) {
 }
 
 #[inline]
-pub fn mark_for_lazy_deallocation(ptr: u64) {
-    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
-        alloc.mark_for_lazy_deallocation(ptr)
-    } else {
-        unreachable!("StableMemoryAllocator is not initialized");
-    }
-}
-
-#[inline]
-pub fn deallocate_lazy() {
-    if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
-        alloc.deallocate_lazy();
-    } else {
-        unreachable!("StableMemoryAllocator is not initialized");
-    }
-}
-
-#[inline]
 pub fn reallocate(slice: SSlice, new_size: usize) -> Result<SSlice, SSlice> {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.reallocate(slice, new_size)
@@ -119,7 +98,7 @@ pub fn get_free_size() -> u64 {
 }
 
 #[inline]
-pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
+pub fn set_custom_data_ptr(idx: usize, data_ptr: u64) {
     if let Some(alloc) = &mut *STABLE_MEMORY_ALLOCATOR.borrow_mut() {
         alloc.set_custom_data_ptr(idx, data_ptr)
     } else {
@@ -128,7 +107,7 @@ pub fn _set_custom_data_ptr(idx: usize, data_ptr: u64) {
 }
 
 #[inline]
-pub fn _get_custom_data_ptr(idx: usize) -> u64 {
+pub fn get_custom_data_ptr(idx: usize) -> u64 {
     if let Some(alloc) = &*STABLE_MEMORY_ALLOCATOR.borrow() {
         alloc.get_custom_data_ptr(idx)
     } else {
@@ -161,19 +140,16 @@ pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
     }
 
     init_allocator(allocator_pointer);
-    init_vars();
 }
 
 #[inline]
 pub fn stable_memory_pre_upgrade() {
-    deinit_vars();
     deinit_allocator();
 }
 
 #[inline]
 pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
     reinit_allocator(allocator_pointer);
-    reinit_vars();
 }
 
 #[cfg(test)]
@@ -181,8 +157,8 @@ mod tests {
     use crate::mem::allocator::EMPTY_PTR;
     use crate::mem::Anyway;
     use crate::{
-        _debug_print_allocator, _get_custom_data_ptr, _set_custom_data_ptr, allocate, deallocate,
-        get_allocated_size, get_free_size, get_mem_metrics, init_allocator, reallocate,
+        _debug_print_allocator, allocate, deallocate, get_allocated_size, get_custom_data_ptr,
+        get_free_size, get_mem_metrics, init_allocator, reallocate, set_custom_data_ptr,
         stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
     };
     use crate::{deinit_allocator, reinit_allocator, stable, SSlice};
@@ -202,9 +178,9 @@ mod tests {
 
         _debug_print_allocator();
 
-        assert_eq!(_get_custom_data_ptr(1), EMPTY_PTR);
-        _set_custom_data_ptr(1, 100);
-        assert_eq!(_get_custom_data_ptr(1), 100);
+        assert_eq!(get_custom_data_ptr(1), EMPTY_PTR);
+        set_custom_data_ptr(1, 100);
+        assert_eq!(get_custom_data_ptr(1), 100);
 
         let m = get_mem_metrics();
         assert!(m.allocated > 0);
@@ -269,13 +245,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_custom_data_without_allocator_should_panic() {
-        _get_custom_data_ptr(0);
+        get_custom_data_ptr(0);
     }
 
     #[test]
     #[should_panic]
     fn set_custom_data_without_allocator_should_panic() {
-        _set_custom_data_ptr(0, 0);
+        set_custom_data_ptr(0, 0);
     }
 
     #[test]

@@ -711,19 +711,6 @@ mod tests {
         assert_eq!(c, 100);
     }
 
-    impl AsDynSizeBytes for i32 {
-        fn as_dyn_size_bytes(&self) -> Vec<u8> {
-            self.as_fixed_size_bytes().to_vec()
-        }
-
-        fn from_dyn_size_bytes(buf: &[u8]) -> Self {
-            let mut b = i32::_u8_arr_of_size();
-            b.copy_from_slice(&buf[0..i32::SIZE]);
-
-            i32::from_fixed_size_bytes(&b)
-        }
-    }
-
     #[test]
     fn sboxes_work_fine() {
         stable::clear();

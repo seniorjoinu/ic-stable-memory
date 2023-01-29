@@ -6,7 +6,7 @@ use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
-use crate::{deallocate_lazy, isoprint, SSlice};
+use crate::{isoprint, SSlice};
 use std::fmt::Debug;
 use std::mem;
 
@@ -217,8 +217,6 @@ where
             found_internal_node,
             modified,
         );
-
-        deallocate_lazy();
 
         it
     }
@@ -1261,8 +1259,6 @@ where
 
         loop {
             if nodes.is_empty() {
-                deallocate_lazy();
-
                 return;
             }
 

@@ -5,7 +5,6 @@ pub mod certification;
 pub mod encoding;
 pub mod math;
 pub mod mem_context;
-pub mod vars;
 
 pub struct MemMetrics {
     pub available: u64,

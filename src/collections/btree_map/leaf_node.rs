@@ -6,7 +6,7 @@ use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::Hash;
 use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
-use crate::{allocate, deallocate, isoprint, mark_for_lazy_deallocation, SSlice};
+use crate::{allocate, deallocate, isoprint, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -69,7 +69,8 @@ where
 
     #[inline]
     pub fn destroy(self) {
-        mark_for_lazy_deallocation(self.ptr);
+        let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+        deallocate(slice);
     }
 
     pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {

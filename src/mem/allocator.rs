@@ -23,8 +23,6 @@ pub(crate) struct StableMemoryAllocator {
 
     min_ptr: u64,
     max_ptr: u64,
-
-    lazy_deallocation_list: Vec<u64>,
 }
 
 impl StableMemoryAllocator {
@@ -44,8 +42,6 @@ impl StableMemoryAllocator {
 
             min_ptr: offset + (Self::SIZE + BLOCK_META_SIZE * 2) as u64,
             max_ptr: stable::size_pages() * PAGE_SIZE_BYTES as u64,
-
-            lazy_deallocation_list: Vec::new(),
         }
     }
 
@@ -74,8 +70,6 @@ impl StableMemoryAllocator {
     }
 
     pub(crate) fn store(mut self) {
-        self.deallocate_lazy();
-
         let slice = SSlice::from_ptr(self.offset, Side::Start).unwrap();
         let mut offset = 0;
 
@@ -176,8 +170,6 @@ impl StableMemoryAllocator {
 
             min_ptr: ptr + (Self::SIZE + BLOCK_META_SIZE * 2) as u64,
             max_ptr: stable::size_pages() * PAGE_SIZE_BYTES as u64,
-
-            lazy_deallocation_list: Vec::new(),
         }
     }
 
@@ -190,20 +182,6 @@ impl StableMemoryAllocator {
         };
 
         free_membox.to_allocated()
-    }
-
-    pub(crate) fn mark_for_lazy_deallocation(&mut self, ptr: u64) {
-        match self.lazy_deallocation_list.binary_search(&ptr) {
-            Ok(_) => {}
-            Err(idx) => self.lazy_deallocation_list.insert(idx, ptr),
-        }
-    }
-
-    pub(crate) fn deallocate_lazy(&mut self) {
-        while let Some(ptr) = self.lazy_deallocation_list.pop() {
-            let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
-            self.deallocate(slice);
-        }
     }
 
     pub(crate) fn deallocate(&mut self, slice: SSlice) {
