@@ -5,7 +5,7 @@ edition = "2021"
 description = "Derive macros for ic-stable-memory"
 license = "MIT"
 keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "collections"]
-version = "0.4.0"
+version = "0.4.1"
 
 [lib]
 proc-macro = true
