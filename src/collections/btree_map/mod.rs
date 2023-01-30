@@ -210,15 +210,13 @@ where
             return Some(v);
         }
 
-        let it = self.steal_from_sibling_leaf_or_merge(
+        self.steal_from_sibling_leaf_or_merge(
             stack_top_frame,
             leaf,
             idx,
             found_internal_node,
             modified,
-        );
-
-        it
+        )
     }
 
     pub unsafe fn get_copy(&self, key: &K) -> Option<V> {

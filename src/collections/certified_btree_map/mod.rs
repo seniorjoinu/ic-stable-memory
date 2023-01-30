@@ -75,11 +75,6 @@ where
     }
 
     #[inline]
-    pub fn get_mut(&mut self, key: &K) -> Option<SRefMut<'_, V>> {
-        self.inner.get_mut(key)
-    }
-
-    #[inline]
     pub fn contains_key(&self, key: &K) -> bool {
         self.inner.contains_key(key)
     }
