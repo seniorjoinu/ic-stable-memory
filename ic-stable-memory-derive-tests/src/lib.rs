@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod derive_tests {
-    use candid::{CandidType, Deserialize};
+    use candid::{CandidType, Deserialize, Principal};
     use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
     #[derive(StableType, StableDrop, PartialEq, Eq, Debug)]
@@ -27,6 +27,7 @@ mod derive_tests {
     struct C {
         x: u32,
         y: u32,
+        p: Principal,
     }
 
     #[test]
@@ -75,8 +76,14 @@ mod derive_tests {
 
         assert_eq!(b_3, b_3_copy);
 
-        let c = C { x: 10, y: 20 };
-        let c_buf = c.as_dyn_size_bytes();
+        let c = C {
+            x: 10,
+            y: 20,
+            p: Principal::management_canister(),
+        };
+        let mut c_buf = c.as_dyn_size_bytes();
+        c_buf.extend(vec![0u8; 10]);
+
         let c_copy = C::from_dyn_size_bytes(&c_buf);
 
         assert_eq!(c, c_copy);

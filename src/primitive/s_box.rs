@@ -27,6 +27,11 @@ impl<T> SBox<T> {
     pub fn as_ptr(&self) -> u64 {
         self.slice.unwrap().get_ptr()
     }
+
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
 }
 
 impl<T: AsDynSizeBytes> SBox<T> {
@@ -56,12 +61,12 @@ impl<T: AsDynSizeBytes> SBox<T> {
     }
 
     #[inline]
-    pub fn read(&self) -> SBoxRef<'_, T> {
+    pub fn get(&self) -> SBoxRef<'_, T> {
         SBoxRef(self)
     }
 
     #[inline]
-    pub fn read_mut(&mut self) -> SBoxRefMut<'_, T> {
+    pub fn get_mut(&mut self) -> SBoxRefMut<'_, T> {
         SBoxRefMut(self)
     }
 
@@ -118,12 +123,17 @@ impl<T: AsDynSizeBytes> StableAllocated for SBox<T> {
     }
 }
 
-impl<T: AsDynSizeBytes + StableDrop> StableDrop for SBox<T> {
+impl<T: StableDrop> StableDrop for SBox<T> {
     type Output = ();
 
     #[inline]
     unsafe fn stable_drop(mut self) -> Self::Output {
-        self.remove_from_stable();
+        if let Some(slice) = self.slice {
+            deallocate(slice);
+
+            self.slice = None;
+        }
+
         self.inner.stable_drop();
     }
 }
@@ -186,6 +196,15 @@ impl<T: Debug> Debug for SBox<T> {
         self.inner.fmt(f)?;
 
         f.write_str(")")
+    }
+}
+
+impl<T: Clone> Clone for SBox<T> {
+    fn clone(&self) -> Self {
+        Self {
+            slice: None,
+            inner: self.inner.clone(),
+        }
     }
 }
 

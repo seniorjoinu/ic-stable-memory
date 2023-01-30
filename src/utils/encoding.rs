@@ -1,4 +1,6 @@
-use candid::{Int, Nat, Principal};
+use candid::de::IDLDeserialize;
+use candid::utils::ArgumentDecoder;
+use candid::{CandidType, Deserialize, Int, Nat, Principal, Result};
 use num_bigint::{BigInt, BigUint, Sign};
 use std::mem::size_of;
 
@@ -350,6 +352,24 @@ where
 
         Self::from_fixed_size_bytes(&b)
     }
+}
+
+pub fn candid_decode_args_allow_trailing<'a, Tuple>(bytes: &'a [u8]) -> Result<Tuple>
+where
+    Tuple: ArgumentDecoder<'a>,
+{
+    let mut de = IDLDeserialize::new(bytes)?;
+    let res = ArgumentDecoder::decode(&mut de)?;
+
+    Ok(res)
+}
+
+pub fn candid_decode_one_allow_trailing<'a, T>(bytes: &'a [u8]) -> Result<T>
+where
+    T: Deserialize<'a> + CandidType,
+{
+    let (res,) = candid_decode_args_allow_trailing(bytes)?;
+    Ok(res)
 }
 
 #[cfg(test)]

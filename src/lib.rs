@@ -13,7 +13,7 @@ pub mod mem;
 pub mod primitive;
 pub mod utils;
 
-pub use ic_stable_memory_derive::{StableDrop, StableType};
+pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use crate::utils::{isoprint, MemMetrics};

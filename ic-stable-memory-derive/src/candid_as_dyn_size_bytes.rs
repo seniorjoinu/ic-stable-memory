@@ -17,7 +17,7 @@ pub fn derive_candid_as_dyn_size_bytes_impl(ident: &Ident, generics: &Generics) 
 
             #[inline]
             fn from_dyn_size_bytes(arr: &[u8]) -> Self {
-                candid::decode_one(arr).unwrap()
+                ic_stable_memory::utils::encoding::candid_decode_one_allow_trailing(arr).unwrap()
             }
         }
     }

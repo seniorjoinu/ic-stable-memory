@@ -237,6 +237,10 @@ where
     }
 
     pub fn clear(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+
         for i in 0..self.cap {
             match self.read_key_at(i, true) {
                 HashMapKey::Empty => continue,
@@ -259,6 +263,10 @@ where
     where
         F: FnMut(&K, &V) -> bool,
     {
+        if self.is_empty() {
+            return;
+        }
+
         for i in 0..self.cap {
             match self.read_key_at(i, true) {
                 HashMapKey::Empty => continue,
@@ -316,6 +324,8 @@ where
     pub(crate) fn read_key_at(&self, idx: usize, read_value: bool) -> HashMapKey<K> {
         let mut key_flag = [0u8];
         let offset = KEYS_OFFSET + (1 + K::SIZE) * idx;
+
+        println!("{} {}", self.table_ptr, offset);
 
         SSlice::_read_bytes(self.table_ptr, offset, &mut key_flag);
 
@@ -412,15 +422,6 @@ pub(crate) enum HashMapKey<K> {
     Empty,
     Occupied(K),
     OccupiedNull,
-}
-
-impl<K> HashMapKey<K> {
-    fn unwrap(self) -> K {
-        match self {
-            HashMapKey::Occupied(k) => k,
-            _ => unreachable!(),
-        }
-    }
 }
 
 impl<K, V> FixedSize for SHashMap<K, V> {
