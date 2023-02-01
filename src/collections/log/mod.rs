@@ -514,7 +514,7 @@ mod tests {
             log.push(i);
 
             for j in 0..i {
-                assert_eq!(*log.get(j).unwrap().read(), j);
+                assert_eq!(*log.get(j).unwrap(), j);
             }
         }
 
@@ -522,7 +522,7 @@ mod tests {
 
         assert_eq!(log.len(), 100);
         for i in 0..100 {
-            assert_eq!(*log.get(i).unwrap().read(), i);
+            assert_eq!(*log.get(i).unwrap(), i);
         }
 
         println!();
@@ -543,7 +543,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(*log.get(i).unwrap().read(), i);
+            assert_eq!(*log.get(i).unwrap(), i);
         }
 
         println!();
@@ -572,7 +572,7 @@ mod tests {
 
         let mut j = 0;
         for mut i in log.iter() {
-            assert_eq!(*i.read(), j);
+            assert_eq!(*i, j);
             j += 1;
         }
 
@@ -581,7 +581,7 @@ mod tests {
         log.debug_print();
 
         for mut i in log.iter().rev() {
-            assert_eq!(*i.read(), j);
+            assert_eq!(*i, j);
             j -= 1;
         }
     }

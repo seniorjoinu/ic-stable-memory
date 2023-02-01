@@ -1,7 +1,8 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::{StableAllocated, StableDrop};
+use std::borrow::Borrow;
 
 pub mod iter;
 
@@ -33,12 +34,20 @@ impl<T: Ord + StableAllocated> SBTreeSet<T> {
     }
 
     #[inline]
-    pub fn remove(&mut self, value: &T) -> bool {
+    pub fn remove<Q>(&mut self, value: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Ord,
+    {
         self.map.remove(value).is_some()
     }
 
     #[inline]
-    pub fn contains(&self, value: &T) -> bool {
+    pub fn contains<Q>(&self, value: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Ord,
+    {
         self.map.contains_key(value)
     }
 
@@ -152,7 +161,7 @@ mod tests {
         }
 
         for (idx, mut i) in set.iter().enumerate() {
-            assert_eq!(idx as u32, *i.read());
+            assert_eq!(idx as u32, *i);
         }
     }
 

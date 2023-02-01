@@ -6,6 +6,7 @@ use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
 use crate::{allocate, deallocate, SSlice};
+use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use zwohash::ZwoHasher;
@@ -129,7 +130,11 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         }
     }
 
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let (i, mut k) = self.find_inner_idx(key)?;
         let mut v = self.remove_by_idx(i);
 
@@ -139,45 +144,23 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         Some(v)
     }
 
-    fn remove_by_idx(&mut self, mut i: usize) -> V {
-        let prev_value = self.read_val_at(i);
-        let mut j = i;
-
-        loop {
-            j = (j + 1) % self.capacity();
-            if j == i {
-                break;
-            }
-            match self.read_key_at(j, true) {
-                HashMapKey::Empty => break,
-                HashMapKey::Occupied(next_key) => {
-                    let k = Self::hash(&next_key) % self.capacity();
-                    if (j < i) ^ (k <= i) ^ (k > j) {
-                        self.write_key_at(i, HashMapKey::Occupied(next_key));
-                        self.write_val_at(i, self.read_val_at(j));
-
-                        i = j;
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        self.write_key_at(i, HashMapKey::Empty);
-        self.len -= 1;
-
-        prev_value
-    }
-
     #[inline]
-    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let (i, _) = self.find_inner_idx(key)?;
 
         Some(self.read_val_at(i))
     }
 
     #[inline]
-    pub fn get(&self, key: &K) -> Option<SRef<'_, V>> {
+    pub fn get<Q>(&self, key: &Q) -> Option<SRef<'_, V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let (i, _) = self.find_inner_idx(key)?;
         let ptr = self.get_value_ptr(i);
 
@@ -185,7 +168,11 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
     }
 
     #[inline]
-    pub fn get_mut(&mut self, key: &K) -> Option<SRefMut<'_, V>> {
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<'_, V>>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let (i, _) = self.find_inner_idx(key)?;
         let ptr = self.get_value_ptr(i);
 
@@ -193,7 +180,11 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
     }
 
     #[inline]
-    pub fn contains_key(&self, key: &K) -> bool {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         self.find_inner_idx(key).is_some()
     }
 
@@ -283,7 +274,41 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         }
     }
 
-    fn find_inner_idx(&self, key: &K) -> Option<(usize, K)> {
+    fn remove_by_idx(&mut self, mut i: usize) -> V {
+        let prev_value = self.read_val_at(i);
+        let mut j = i;
+
+        loop {
+            j = (j + 1) % self.capacity();
+            if j == i {
+                break;
+            }
+            match self.read_key_at(j, true) {
+                HashMapKey::Empty => break,
+                HashMapKey::Occupied(next_key) => {
+                    let k = Self::hash(&next_key) % self.capacity();
+                    if (j < i) ^ (k <= i) ^ (k > j) {
+                        self.write_key_at(i, HashMapKey::Occupied(next_key));
+                        self.write_val_at(i, self.read_val_at(j));
+
+                        i = j;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.write_key_at(i, HashMapKey::Empty);
+        self.len -= 1;
+
+        prev_value
+    }
+
+    fn find_inner_idx<Q>(&self, key: &Q) -> Option<(usize, K)>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         if self.is_empty() {
             return None;
         }
@@ -294,7 +319,7 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         loop {
             match self.read_key_at(i, true) {
                 HashMapKey::Occupied(prev_key) => {
-                    if prev_key.eq(key) {
+                    if prev_key.borrow().eq(key) {
                         return Some((i, prev_key));
                     } else {
                         i = (i + 1) % self.capacity();
@@ -513,14 +538,14 @@ mod tests {
         map.insert(k7, 7);
         map.insert(k8, 8);
 
-        assert_eq!(*map.get(&k1).unwrap().read(), 1);
-        assert_eq!(*map.get(&k2).unwrap().read(), 2);
-        assert_eq!(*map.get(&k3).unwrap().read(), 3);
-        assert_eq!(*map.get(&k4).unwrap().read(), 4);
-        assert_eq!(*map.get(&k5).unwrap().read(), 5);
-        assert_eq!(*map.get(&k6).unwrap().read(), 6);
-        assert_eq!(*map.get(&k7).unwrap().read(), 7);
-        assert_eq!(*map.get(&k8).unwrap().read(), 8);
+        assert_eq!(*map.get(&k1).unwrap(), 1);
+        assert_eq!(*map.get(&k2).unwrap(), 2);
+        assert_eq!(*map.get(&k3).unwrap(), 3);
+        assert_eq!(*map.get(&k4).unwrap(), 4);
+        assert_eq!(*map.get(&k5).unwrap(), 5);
+        assert_eq!(*map.get(&k6).unwrap(), 6);
+        assert_eq!(*map.get(&k7).unwrap(), 7);
+        assert_eq!(*map.get(&k8).unwrap(), 8);
 
         assert!(map.get(&9).is_none());
         assert!(map.get(&0).is_none());
@@ -537,10 +562,10 @@ mod tests {
         assert_eq!(map.remove(&k7).unwrap(), 7);
         assert!(map.get(&k7).is_none());
 
-        assert_eq!(*map.get(&k2).unwrap().read(), 2);
-        assert_eq!(*map.get(&k4).unwrap().read(), 4);
-        assert_eq!(*map.get(&k6).unwrap().read(), 6);
-        assert_eq!(*map.get(&k8).unwrap().read(), 8);
+        assert_eq!(*map.get(&k2).unwrap(), 2);
+        assert_eq!(*map.get(&k4).unwrap(), 4);
+        assert_eq!(*map.get(&k6).unwrap(), 6);
+        assert_eq!(*map.get(&k8).unwrap(), 8);
 
         unsafe { map.stable_drop() };
     }
@@ -578,7 +603,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(*map.get(&i).unwrap().read(), i);
+            assert_eq!(*map.get(&i).unwrap(), i);
         }
 
         for i in 0..100 {
@@ -690,7 +715,7 @@ mod tests {
         for (mut k, v) in map.iter() {
             c += 1;
 
-            assert!(*k.read() < 100);
+            assert!(*k < 100);
         }
 
         assert_eq!(c, 100);

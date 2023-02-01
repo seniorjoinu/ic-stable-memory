@@ -3,13 +3,14 @@ use crate::SSlice;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-pub struct SRefMut<'o, T> {
+pub struct SRefMut<'o, T: AsFixedSizeBytes> {
     ptr: u64,
     inner: Option<T>,
     _marker: PhantomData<&'o mut T>,
 }
 
-impl<'o, T> SRefMut<'o, T> {
+impl<'o, T: AsFixedSizeBytes> SRefMut<'o, T> {
+    #[inline]
     pub(crate) fn new(ptr: u64) -> Self {
         Self {
             ptr,
@@ -17,18 +18,16 @@ impl<'o, T> SRefMut<'o, T> {
             _marker: PhantomData::default(),
         }
     }
-}
 
-impl<'o, T: AsFixedSizeBytes> SRefMut<'o, T> {
-    pub fn read(&mut self) -> SRefMutRead<'o, '_, T> {
+    #[inline]
+    fn read(&self) {
         if self.inner.is_none() {
             let it = SSlice::_as_fixed_size_bytes_read(self.ptr, 0);
-            self.inner = Some(it);
+            unsafe { *(&self.inner as *const Option<T> as *mut Option<T>) = Some(it) };
         }
-
-        SRefMutRead(self)
     }
 
+    #[inline]
     fn repersist(&mut self) {
         if let Some(it) = &self.inner {
             SSlice::_write_bytes(self.ptr, 0, it.as_new_fixed_size_bytes()._deref());
@@ -36,24 +35,29 @@ impl<'o, T: AsFixedSizeBytes> SRefMut<'o, T> {
     }
 }
 
-pub struct SRefMutRead<'o, 'a, T: AsFixedSizeBytes>(&'a mut SRefMut<'o, T>);
-
-impl<'o, 'a, T: AsFixedSizeBytes> Deref for SRefMutRead<'o, 'a, T> {
+impl<'o, T: AsFixedSizeBytes> Deref for SRefMut<'o, T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.0.inner.as_ref().unwrap_unchecked() }
+        self.read();
+
+        self.inner.as_ref().unwrap()
     }
 }
 
-impl<'o, 'a, T: AsFixedSizeBytes> DerefMut for SRefMutRead<'o, 'a, T> {
+impl<'o, T: AsFixedSizeBytes> DerefMut for SRefMut<'o, T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.0.inner.as_mut().unwrap_unchecked() }
+        self.read();
+
+        self.inner.as_mut().unwrap()
     }
 }
 
-impl<'o, 'a, T: AsFixedSizeBytes> Drop for SRefMutRead<'o, 'a, T> {
+impl<'o, T: AsFixedSizeBytes> Drop for SRefMut<'o, T> {
+    #[inline]
     fn drop(&mut self) {
-        self.0.repersist()
+        self.repersist();
     }
 }

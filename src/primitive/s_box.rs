@@ -4,6 +4,7 @@ use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::certification::{AsHashTree, AsHashableBytes};
 use crate::utils::Anyway;
 use crate::{allocate, deallocate, reallocate};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -199,11 +200,19 @@ impl<T: Debug> Debug for SBox<T> {
 }
 
 impl<T: Clone> Clone for SBox<T> {
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             slice: None,
             inner: self.inner.clone(),
         }
+    }
+}
+
+impl<T> Borrow<T> for SBox<T> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        &self.inner
     }
 }
 

@@ -5,6 +5,61 @@ pub mod s_box;
 pub mod s_ref;
 pub mod s_ref_mut;
 
+pub trait StableType {
+    #[inline]
+    fn stable_memory_consume(&mut self) {}
+
+    #[inline]
+    fn stable_memory_unconsume(&mut self) {}
+
+    #[inline]
+    fn is_consumed_by_stable_memory(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    unsafe fn free(&mut self) {}
+}
+
+impl StableType for () {}
+impl StableType for bool {}
+impl StableType for u8 {}
+impl StableType for i8 {}
+impl StableType for u16 {}
+impl StableType for i16 {}
+impl StableType for u32 {}
+impl StableType for i32 {}
+impl StableType for u64 {}
+impl StableType for i64 {}
+impl StableType for u128 {}
+impl StableType for i128 {}
+impl StableType for usize {}
+impl StableType for isize {}
+impl StableType for f32 {}
+impl StableType for f64 {}
+
+impl<const N: usize> StableType for [(); N] {}
+impl<const N: usize> StableType for [bool; N] {}
+impl<const N: usize> StableType for [u8; N] {}
+impl<const N: usize> StableType for [i8; N] {}
+impl<const N: usize> StableType for [u16; N] {}
+impl<const N: usize> StableType for [i16; N] {}
+impl<const N: usize> StableType for [u32; N] {}
+impl<const N: usize> StableType for [i32; N] {}
+impl<const N: usize> StableType for [u64; N] {}
+impl<const N: usize> StableType for [i64; N] {}
+impl<const N: usize> StableType for [u128; N] {}
+impl<const N: usize> StableType for [i128; N] {}
+impl<const N: usize> StableType for [usize; N] {}
+impl<const N: usize> StableType for [isize; N] {}
+impl<const N: usize> StableType for [f32; N] {}
+impl<const N: usize> StableType for [f64; N] {}
+
+impl StableType for Vec<u8> {}
+impl StableType for Principal {}
+impl StableType for Nat {}
+impl StableType for Int {}
+
 pub trait StableDrop {
     type Output;
 

@@ -10,6 +10,7 @@ pub struct SRef<'o, T> {
 }
 
 impl<'o, T> SRef<'o, T> {
+    #[inline]
     pub(crate) fn new(ptr: u64) -> Self {
         Self {
             ptr,
@@ -20,22 +21,21 @@ impl<'o, T> SRef<'o, T> {
 }
 
 impl<'o, T: AsFixedSizeBytes> SRef<'o, T> {
-    pub fn read(&mut self) -> SRefRead<'o, '_, T> {
+    fn read(&self) {
         if self.inner.is_none() {
             let it = SSlice::_as_fixed_size_bytes_read(self.ptr, 0);
-            self.inner = Some(it);
+            unsafe { *(&self.inner as *const Option<T> as *mut Option<T>) = Some(it) };
         }
-
-        SRefRead(self)
     }
 }
 
-pub struct SRefRead<'o, 'a, T: AsFixedSizeBytes>(&'a SRef<'o, T>);
-
-impl<'o, 'a, T: AsFixedSizeBytes> Deref for SRefRead<'o, 'a, T> {
+impl<'o, T: AsFixedSizeBytes> Deref for SRef<'o, T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.0.inner.as_ref().unwrap_unchecked() }
+        self.read();
+
+        self.inner.as_ref().unwrap()
     }
 }

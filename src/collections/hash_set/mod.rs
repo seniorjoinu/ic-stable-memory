@@ -1,7 +1,8 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::primitive::{StableAllocated, StableDrop};
+use std::borrow::Borrow;
 use std::hash::Hash;
 
 pub mod iter;
@@ -31,12 +32,20 @@ impl<T: StableAllocated + Hash + Eq> SHashSet<T> {
     }
 
     #[inline]
-    pub fn remove(&mut self, value: &T) -> bool {
+    pub fn remove<Q>(&mut self, value: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         self.map.remove(value).is_some()
     }
 
     #[inline]
-    pub fn contains(&self, value: &T) -> bool {
+    pub fn contains<Q>(&self, value: &Q) -> bool
+    where
+        T: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         self.map.contains_key(value)
     }
 

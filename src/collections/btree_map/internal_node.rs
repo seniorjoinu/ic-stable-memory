@@ -8,6 +8,7 @@ use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash};
 use crate::{allocate, deallocate, SSlice};
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -83,7 +84,11 @@ impl<K: StableAllocated + Ord> InternalBTreeNode<K> {
         deallocate(slice);
     }
 
-    pub fn binary_search(&self, k: &K, len: usize) -> Result<usize, usize> {
+    pub fn binary_search<Q>(&self, k: &Q, len: usize) -> Result<usize, usize>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let mut min = 0;
         let mut max = len;
         let mut mid = (max - min) / 2;
@@ -94,7 +99,7 @@ impl<K: StableAllocated + Ord> InternalBTreeNode<K> {
             SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, buf._deref_mut());
             let key = K::from_fixed_size_bytes(buf._deref());
 
-            match key.cmp(k) {
+            match key.borrow().cmp(k) {
                 Ordering::Equal => return Ok(mid),
                 // actually LESS
                 Ordering::Greater => {

@@ -218,7 +218,7 @@ mod tests {
 
         println!("{:?}", max_heap);
 
-        assert_eq!(*max_heap.peek().unwrap().read(), 100);
+        assert_eq!(*max_heap.peek().unwrap(), 100);
 
         let mut probe = vec![];
 
@@ -256,7 +256,7 @@ mod tests {
         for mut i in heap.iter() {
             c += 1;
 
-            assert!(*i.read() < 100);
+            assert!(*i < 100);
         }
 
         assert_eq!(c, 100);

@@ -7,6 +7,7 @@ use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
 use crate::{isoprint, SSlice};
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::mem;
 
@@ -127,7 +128,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
 
         // stack is empty now
 
-        let mut new_root = InternalBTreeNode::<K>::create(
+        let new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
             &node.as_ptr().as_new_fixed_size_bytes(),
             &ptr.as_new_fixed_size_bytes(),
@@ -143,11 +144,19 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 
     #[inline]
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         self._remove(key, &mut LeveledList::None)
     }
 
-    pub(crate) fn _remove(&mut self, key: &K, modified: &mut LeveledList) -> Option<V> {
+    pub(crate) fn _remove<Q>(&mut self, key: &Q, modified: &mut LeveledList) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let mut node = self.get_or_create_root();
         let mut found_internal_node = None;
 
@@ -215,7 +224,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         )
     }
 
-    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let (leaf_node, idx) = self.lookup(key, false)?;
         let v = V::from_fixed_size_bytes(leaf_node.read_value(idx)._deref());
 
@@ -223,7 +236,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 
     #[inline]
-    pub fn get<'a>(&'a self, key: &K) -> Option<SRef<'a, V>> {
+    pub fn get<Q>(&self, key: &Q) -> Option<SRef<V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let (leaf_node, idx) = self.lookup(key, false)?;
         let ptr = leaf_node.get_value_ptr(idx);
 
@@ -231,7 +248,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 
     #[inline]
-    pub fn get_mut<'a>(&'a mut self, key: &K) -> Option<SRefMut<'a, V>> {
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let (leaf_node, idx) = self.lookup(key, false)?;
         let ptr = leaf_node.get_value_ptr(idx);
 
@@ -239,7 +260,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 
     #[inline]
-    pub fn contains_key(&self, key: &K) -> bool {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         self.lookup(key, true).is_some()
     }
 
@@ -328,7 +353,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 
     // WARNING: return_early == true will return nonsense leaf node and idx
-    fn lookup(&self, key: &K, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)> {
+    fn lookup<Q>(&self, key: &Q, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let mut node = self.get_root()?;
         loop {
             match node {
@@ -1561,7 +1590,7 @@ mod tests {
                     example[j]
                 );
                 assert_eq!(
-                    *map.get(&example[j]).unwrap().read(),
+                    *map.get(&example[j]).unwrap(),
                     example[j],
                     "unable to get {}",
                     example[j]
@@ -1587,7 +1616,7 @@ mod tests {
                     example[j]
                 );
                 assert_eq!(
-                    *map.get(&example[j]).unwrap().read(),
+                    *map.get(&example[j]).unwrap(),
                     example[j],
                     "unable to get {}",
                     example[j]
@@ -1611,8 +1640,8 @@ mod tests {
         let mut i = 0u64;
 
         for (mut k, mut v) in map.iter() {
-            assert_eq!(i, *k.read());
-            assert_eq!(i, *v.read());
+            assert_eq!(i, *k);
+            assert_eq!(i, *v);
 
             i += 1;
         }
@@ -1621,8 +1650,8 @@ mod tests {
 
         for (mut k, mut v) in map.iter().rev() {
             println!("{}", i);
-            assert_eq!(i, *k.read());
-            assert_eq!(i, *v.read());
+            assert_eq!(i, *k);
+            assert_eq!(i, *v);
 
             i -= 1;
         }

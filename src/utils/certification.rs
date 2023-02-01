@@ -6,6 +6,7 @@ use crate::primitive::StableAllocated;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
+use std::borrow::Borrow;
 use std::mem;
 
 pub type Hash = [u8; 32];
@@ -292,7 +293,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         }
     }
 
-    pub(crate) fn prove_range(&self, from: &K, to: &K) -> HashTree {
+    pub(crate) fn prove_range<Q>(&self, from: &Q, to: &Q) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let len = self.read_len();
 
         if len == 0 {
@@ -332,7 +337,15 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         witness.finish()
     }
 
-    pub(crate) fn witness_with<Fn: FnMut(&V) -> HashTree>(&self, index: &K, mut f: Fn) -> HashTree {
+    pub(crate) fn witness_with<Q, Fn: FnMut(&V) -> HashTree>(
+        &self,
+        index: &Q,
+        mut f: Fn,
+    ) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let len = self.read_len();
 
         assert!(len > 0, "The key is NOT present!");
@@ -377,10 +390,14 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         self.read_root_hash(true)
     }
 
-    pub(crate) fn prove_absence<V: StableAllocated + AsHashTree>(
+    pub(crate) fn prove_absence<V: StableAllocated + AsHashTree, Q>(
         &self,
-        key: &K,
-    ) -> Result<HashTree, HashTree> {
+        key: &Q,
+    ) -> Result<HashTree, HashTree>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let len = self.read_len();
 
         debug_assert!(len > 0);
@@ -403,7 +420,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
 
             let result = if i == index {
                 match child {
-                    BTreeNode::Internal(n) => n.prove_absence::<V>(key),
+                    BTreeNode::Internal(n) => n.prove_absence::<V, Q>(key),
                     BTreeNode::Leaf(n) => {
                         let len = n.read_len();
                         let idx = match n.binary_search(key, len) {
@@ -439,7 +456,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
                     child = BTreeNode::<K, V>::from_ptr(ptr);
 
                     let rh = match child {
-                        BTreeNode::Internal(n) => n.prove_absence::<V>(key),
+                        BTreeNode::Internal(n) => n.prove_absence::<V, Q>(key),
                         BTreeNode::Leaf(n) => {
                             let len = n.read_len();
                             n.prove_absence(0, len)
@@ -457,11 +474,15 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         Ok(witness.finish())
     }
 
-    pub(crate) fn prove_range<V: AsHashTree + StableAllocated>(
+    pub(crate) fn prove_range<V: AsHashTree + StableAllocated, Q>(
         &self,
-        from: &K,
-        to: &K,
-    ) -> HashTree {
+        from: &Q,
+        to: &Q,
+    ) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let len = self.read_len();
 
         debug_assert!(len > 0);
@@ -487,7 +508,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
             let child = BTreeNode::<K, V>::from_ptr(ptr);
 
             let rh = match child {
-                BTreeNode::Internal(n) => n.prove_range::<V>(from, to),
+                BTreeNode::Internal(n) => n.prove_range::<V, Q>(from, to),
                 BTreeNode::Leaf(n) => n.prove_range(from, to),
             };
 

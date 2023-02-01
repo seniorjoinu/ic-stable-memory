@@ -338,7 +338,7 @@ impl<T: StableAllocated + StableDrop + Debug> Debug for SVec<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("[")?;
         for (idx, mut item) in self.iter().enumerate() {
-            item.read().fmt(f)?;
+            item.fmt(f)?;
 
             if idx < self.len - 1 {
                 f.write_str(", ")?;
@@ -518,8 +518,8 @@ mod tests {
         v.push(10);
         v.push(20);
 
-        assert_eq!(*v.get(0).unwrap().read(), 10);
-        assert_eq!(*v.get(1).unwrap().read(), 20);
+        assert_eq!(*v.get(0).unwrap(), 10);
+        assert_eq!(*v.get(1).unwrap(), 20);
         assert_eq!(v.replace(0, 11), 10);
 
         unsafe { v.stable_drop() };
@@ -550,7 +550,7 @@ mod tests {
         }
 
         for i in 0..100 {
-            assert_eq!(*array.get(i).unwrap().read(), i);
+            assert_eq!(*array.get(i).unwrap(), i);
         }
 
         let actual: Vec<_> = Vec::from(array);
@@ -655,7 +655,7 @@ mod tests {
         for (idx, mut i) in vec.iter().enumerate() {
             c += 1;
 
-            assert_eq!(idx as i32, *i.read());
+            assert_eq!(idx as i32, *i);
         }
 
         assert_eq!(c, 100);

@@ -1,12 +1,10 @@
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::{BTreeNode, LeveledList, SBTreeMap};
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
-use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::certification::{
-    empty_hash, leaf, AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH,
-};
+use crate::utils::certification::{empty_hash, AsHashTree, AsHashableBytes, Hash, HashTree};
+use std::borrow::Borrow;
 use std::fmt::Debug;
 
 pub struct SCertifiedBTreeMap<K, V> {
@@ -45,7 +43,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     #[inline]
-    pub fn remove(&mut self, key: &K) -> Option<V> {
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         if !self.frozen {
             self.frozen = true;
         }
@@ -54,7 +56,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     #[inline]
-    pub fn remove_and_commit(&mut self, key: &K) -> Option<V> {
+    pub fn remove_and_commit<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         let it = self.remove(key);
         self.commit();
 
@@ -62,17 +68,29 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     #[inline]
-    pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
+    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         self.inner.get_copy(key)
     }
 
     #[inline]
-    pub fn get(&self, key: &K) -> Option<SRef<'_, V>> {
+    pub fn get<Q>(&self, key: &Q) -> Option<SRef<'_, V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         self.inner.get(key)
     }
 
     #[inline]
-    pub fn contains_key(&self, key: &K) -> bool {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         self.inner.contains_key(key)
     }
 
@@ -116,7 +134,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         }
     }
 
-    pub fn prove_absence(&self, index: &K) -> HashTree {
+    pub fn prove_absence<Q>(&self, index: &Q) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         assert!(!self.frozen);
 
         let root_opt = self.inner.get_root();
@@ -126,7 +148,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
 
         let node = unsafe { root_opt.unwrap_unchecked() };
         match node {
-            BTreeNode::Internal(n) => match n.prove_absence::<V>(index) {
+            BTreeNode::Internal(n) => match n.prove_absence::<V, Q>(index) {
                 Ok(w) => w,
                 Err(w) => w,
             },
@@ -145,7 +167,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         }
     }
 
-    pub fn prove_range(&self, from: &K, to: &K) -> HashTree {
+    pub fn prove_range<Q>(&self, from: &Q, to: &Q) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         assert!(!self.frozen);
         assert!(from.le(to));
 
@@ -156,7 +182,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
 
         let node = unsafe { root_opt.unwrap_unchecked() };
         match node {
-            BTreeNode::Internal(n) => n.prove_range::<V>(from, to),
+            BTreeNode::Internal(n) => n.prove_range::<V, Q>(from, to),
             BTreeNode::Leaf(n) => n.prove_range(from, to),
         }
     }
@@ -172,7 +198,11 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         }
     }
 
-    pub fn witness_with<Fn: FnMut(&V) -> HashTree>(&self, index: &K, f: Fn) -> HashTree {
+    pub fn witness_with<Q, Fn: FnMut(&V) -> HashTree>(&self, index: &Q, f: Fn) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord,
+    {
         assert!(!self.frozen);
 
         let root_opt = self.inner.get_root();
@@ -213,14 +243,19 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
 }
 
 fn witness_node<
+    Q,
     K: StableAllocated + Ord + AsHashableBytes,
     V: StableAllocated + AsHashTree,
     Fn: FnMut(&V) -> HashTree,
 >(
     node: &BTreeNode<K, V>,
-    k: &K,
+    k: &Q,
     f: Fn,
-) -> HashTree {
+) -> HashTree
+where
+    K: Borrow<Q>,
+    Q: Ord,
+{
     match node {
         BTreeNode::Internal(n) => {
             let len = n.read_len();
