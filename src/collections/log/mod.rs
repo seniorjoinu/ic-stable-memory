@@ -1,10 +1,10 @@
 use crate::collections::log::iter::SLogIter;
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -43,10 +43,7 @@ impl<T> Default for SLog<T> {
     }
 }
 
-impl<T: StableAllocated> SLog<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated> SLog<T> {
     #[inline]
     const fn max_capacity() -> usize {
         2usize.pow(31) / T::SIZE
@@ -275,14 +272,11 @@ const ELEMENTS_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
 
 struct Sector<T>(u64, PhantomData<T>);
 
-impl<T: StableAllocated> Sector<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated> Sector<T> {
     fn new(cap: usize, prev: u64) -> Self {
         let slice = allocate(u64::SIZE * 2 + cap * T::SIZE);
 
-        let mut it = Self(slice.get_ptr(), PhantomData::default());
+        let mut it = Self(slice.as_ptr(), PhantomData::default());
         it.write_prev_ptr(prev);
         it.write_next_ptr(EMPTY_PTR);
 
@@ -340,10 +334,7 @@ where
     }
 }
 
-impl<T: StableAllocated + Debug> SLog<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Debug> SLog<T> {
     pub fn debug_print(&self) {
         let mut sector = if let Some(s) = self.get_first_sector() {
             s
@@ -403,59 +394,38 @@ where
     }
 }
 
-impl<T> FixedSize for SLog<T> {
-    const SIZE: usize = usize::SIZE * 3 + u64::SIZE * 3;
-}
-
 impl<T> AsFixedSizeBytes for SLog<T> {
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        let mut buf = Self::_u8_arr_of_size();
+    const SIZE: usize = usize::SIZE * 3 + u64::SIZE * 3;
+    type Buf = [u8; usize::SIZE * 3 + u64::SIZE * 3];
 
-        buf[0..u64::SIZE].copy_from_slice(&self.len.as_fixed_size_bytes());
-        buf[u64::SIZE..(u64::SIZE * 2)]
-            .copy_from_slice(&self.first_sector_ptr.as_fixed_size_bytes());
-        buf[(u64::SIZE * 2)..(u64::SIZE * 3)]
-            .copy_from_slice(&self.cur_sector_ptr.as_fixed_size_bytes());
-        buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]
-            .copy_from_slice(&self.cur_sector_last_item_offset.as_fixed_size_bytes());
-        buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)]
-            .copy_from_slice(&self.cur_sector_capacity.as_fixed_size_bytes());
-        buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)]
-            .copy_from_slice(&self.cur_sector_len.as_fixed_size_bytes());
-
-        buf
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        self.len.as_fixed_size_bytes(&mut buf[0..u64::SIZE]);
+        self.first_sector_ptr
+            .as_fixed_size_bytes(&mut buf[u64::SIZE..(u64::SIZE * 2)]);
+        self.cur_sector_ptr
+            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
+        self.cur_sector_last_item_offset
+            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
+        self.cur_sector_capacity.as_fixed_size_bytes(
+            &mut buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)],
+        );
+        self.cur_sector_len.as_fixed_size_bytes(
+            &mut buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)],
+        );
     }
 
-    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
-        let mut len_buf = u64::_u8_arr_of_size();
-        len_buf.copy_from_slice(&buf[0..u64::SIZE]);
-        let len = u64::from_fixed_size_bytes(&len_buf);
-
-        let mut first_sector_ptr_buf = u64::_u8_arr_of_size();
-        first_sector_ptr_buf.copy_from_slice(&buf[u64::SIZE..(u64::SIZE * 2)]);
-        let first_sector_ptr = u64::from_fixed_size_bytes(&first_sector_ptr_buf);
-
-        let mut cur_sector_ptr_buf = u64::_u8_arr_of_size();
-        cur_sector_ptr_buf.copy_from_slice(&buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
-        let cur_sector_ptr = u64::from_fixed_size_bytes(&cur_sector_ptr_buf);
-
-        let mut cur_sector_last_item_offset_buf = usize::_u8_arr_of_size();
-        cur_sector_last_item_offset_buf
-            .copy_from_slice(&buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
+    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
+        let len = u64::from_fixed_size_bytes(&buf[0..u64::SIZE]);
+        let first_sector_ptr = u64::from_fixed_size_bytes(&buf[u64::SIZE..(u64::SIZE * 2)]);
+        let cur_sector_ptr = u64::from_fixed_size_bytes(&buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
         let cur_sector_last_item_offset =
-            usize::from_fixed_size_bytes(&cur_sector_last_item_offset_buf);
-
-        let mut cur_sector_capacity_buf = usize::_u8_arr_of_size();
-        cur_sector_capacity_buf.copy_from_slice(
+            usize::from_fixed_size_bytes(&buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
+        let cur_sector_capacity = usize::from_fixed_size_bytes(
             &buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)],
         );
-        let cur_sector_capacity = usize::from_fixed_size_bytes(&cur_sector_capacity_buf);
-
-        let mut cur_sector_len_buf = usize::_u8_arr_of_size();
-        cur_sector_len_buf.copy_from_slice(
+        let cur_sector_len = usize::from_fixed_size_bytes(
             &buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)],
         );
-        let cur_sector_len = usize::from_fixed_size_bytes(&cur_sector_len_buf);
 
         Self {
             len,
@@ -469,10 +439,7 @@ impl<T> AsFixedSizeBytes for SLog<T> {
     }
 }
 
-impl<T: StableAllocated> StableAllocated for SLog<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated> StableAllocated for SLog<T> {
     #[inline]
     fn move_to_stable(&mut self) {}
 
@@ -480,10 +447,7 @@ where
     fn remove_from_stable(&mut self) {}
 }
 
-impl<T: StableAllocated + StableDrop> StableDrop for SLog<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + StableDrop> StableDrop for SLog<T> {
     type Output = ();
 
     unsafe fn stable_drop(self) {

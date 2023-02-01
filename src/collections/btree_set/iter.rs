@@ -15,10 +15,7 @@ impl<'a, T> SBTreeSetIter<'a, T> {
     }
 }
 
-impl<'a, T: StableAllocated + Ord> Iterator for SBTreeSetIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated + Ord> Iterator for SBTreeSetIter<'a, T> {
     type Item = SRef<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -26,19 +23,13 @@ where
     }
 }
 
-impl<'a, T: StableAllocated + Ord> ExactSizeIterator for SBTreeSetIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated + Ord> ExactSizeIterator for SBTreeSetIter<'a, T> {
     fn len(&self) -> usize {
         self.iter.len()
     }
 }
 
-impl<'a, T: StableAllocated + Ord> DoubleEndedIterator for SBTreeSetIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated + Ord> DoubleEndedIterator for SBTreeSetIter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.iter.next_back().map(|it| it.0)
     }

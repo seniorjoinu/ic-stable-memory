@@ -1,4 +1,4 @@
-use crate::utils::encoding::AsFixedSizeBytes;
+use crate::encoding::AsFixedSizeBytes;
 use crate::SSlice;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -19,10 +19,7 @@ impl<'o, T> SRef<'o, T> {
     }
 }
 
-impl<'o, T: AsFixedSizeBytes> SRef<'o, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'o, T: AsFixedSizeBytes> SRef<'o, T> {
     pub fn read(&mut self) -> SRefRead<'o, '_, T> {
         if self.inner.is_none() {
             let it = SSlice::_as_fixed_size_bytes_read(self.ptr, 0);
@@ -33,14 +30,9 @@ where
     }
 }
 
-pub struct SRefRead<'o, 'a, T: AsFixedSizeBytes>(&'a SRef<'o, T>)
-where
-    [(); T::SIZE]: Sized;
+pub struct SRefRead<'o, 'a, T: AsFixedSizeBytes>(&'a SRef<'o, T>);
 
-impl<'o, 'a, T: AsFixedSizeBytes> Deref for SRefRead<'o, 'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'o, 'a, T: AsFixedSizeBytes> Deref for SRefRead<'o, 'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {

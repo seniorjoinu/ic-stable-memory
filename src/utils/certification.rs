@@ -1,8 +1,8 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::{BTreeNode, IBTreeNode};
+use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::AsFixedSizeBytes;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -246,9 +246,6 @@ impl AsHashTree for () {
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>
     LeafBTreeNode<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     pub(crate) fn commit(&mut self) {
         let len = self.read_len();
@@ -363,14 +360,8 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K>
-where
-    [(); K::SIZE]: Sized,
-{
-    pub(crate) fn commit<V: StableAllocated + AsHashTree>(&mut self)
-    where
-        [(); V::SIZE]: Sized,
-    {
+impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
+    pub(crate) fn commit<V: StableAllocated + AsHashTree>(&mut self) {
         let len = self.read_len();
         let mut hash = HashForker::default();
 
@@ -389,10 +380,7 @@ where
     pub(crate) fn prove_absence<V: StableAllocated + AsHashTree>(
         &self,
         key: &K,
-    ) -> Result<HashTree, HashTree>
-    where
-        [(); V::SIZE]: Sized,
-    {
+    ) -> Result<HashTree, HashTree> {
         let len = self.read_len();
 
         debug_assert!(len > 0);
@@ -469,10 +457,11 @@ where
         Ok(witness.finish())
     }
 
-    pub(crate) fn prove_range<V: AsHashTree + StableAllocated>(&self, from: &K, to: &K) -> HashTree
-    where
-        [(); V::SIZE]: Sized,
-    {
+    pub(crate) fn prove_range<V: AsHashTree + StableAllocated>(
+        &self,
+        from: &K,
+        to: &K,
+    ) -> HashTree {
         let len = self.read_len();
 
         debug_assert!(len > 0);
@@ -517,10 +506,7 @@ where
         index: usize,
         replace: HashTree,
         len: usize,
-    ) -> HashTree
-    where
-        [(); V::SIZE]: Sized,
-    {
+    ) -> HashTree {
         debug_assert!(len > 0);
 
         let mut witness = WitnessForker::default();

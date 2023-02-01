@@ -1,12 +1,12 @@
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::{BTreeNode, LeveledList, SBTreeMap};
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::certification::{
     empty_hash, leaf, AsHashTree, AsHashableBytes, Hash, HashTree, EMPTY_HASH,
 };
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::fmt::Debug;
 
 pub struct SCertifiedBTreeMap<K, V> {
@@ -17,9 +17,6 @@ pub struct SCertifiedBTreeMap<K, V> {
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>
     SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     #[inline]
     pub fn new() -> Self {
@@ -190,9 +187,6 @@ where
 
 impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop>
     SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     #[inline]
     pub fn clear(&mut self) {
@@ -205,9 +199,6 @@ where
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree> AsHashTree
     for SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     #[inline]
     fn root_hash(&self) -> Hash {
@@ -229,11 +220,7 @@ fn witness_node<
     node: &BTreeNode<K, V>,
     k: &K,
     f: Fn,
-) -> HashTree
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+) -> HashTree {
     match node {
         BTreeNode::Internal(n) => {
             let len = n.read_len();
@@ -255,9 +242,6 @@ impl<
         K: StableAllocated + Ord + AsHashableBytes + Debug,
         V: StableAllocated + AsHashableBytes + Debug,
     > SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     pub fn debug_print(&self) {
         self.inner.debug_print();
@@ -267,27 +251,23 @@ where
 
 impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree> Default
     for SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V> FixedSize for SCertifiedBTreeMap<K, V> {
-    const SIZE: usize = SBTreeMap::<K, V>::SIZE;
-}
-
 impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
+    const SIZE: usize = SBTreeMap::<K, V>::SIZE;
+    type Buf = <SBTreeMap<K, V> as AsFixedSizeBytes>::Buf;
+
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
         assert!(!self.frozen);
 
-        self.inner.as_fixed_size_bytes()
+        self.inner.as_fixed_size_bytes(buf)
     }
 
-    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
+    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
         let mut inner = SBTreeMap::<K, V>::from_fixed_size_bytes(buf);
         inner.certified = true;
 
@@ -299,11 +279,7 @@ impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SCertifiedBTreeMap<K, V> {
     #[inline]
     fn move_to_stable(&mut self) {}
 
@@ -313,9 +289,6 @@ where
 
 impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
     for SCertifiedBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     type Output = ();
 
@@ -327,11 +300,11 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
+    use crate::encoding::AsFixedSizeBytes;
     use crate::primitive::StableAllocated;
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;

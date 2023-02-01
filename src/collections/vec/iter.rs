@@ -1,8 +1,8 @@
 use crate::collections::vec::SVec;
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::SSlice;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 
 pub struct SVecIter<'a, T> {
     svec: &'a SVec<T>,
@@ -10,7 +10,7 @@ pub struct SVecIter<'a, T> {
     max_offset: usize,
 }
 
-impl<'a, T: FixedSize> SVecIter<'a, T> {
+impl<'a, T: AsFixedSizeBytes> SVecIter<'a, T> {
     pub(crate) fn new(svec: &'a SVec<T>) -> Self {
         let offset = 0;
         let max_offset = svec.len() * T::SIZE;
@@ -23,10 +23,7 @@ impl<'a, T: FixedSize> SVecIter<'a, T> {
     }
 }
 
-impl<'a, T: AsFixedSizeBytes> Iterator for SVecIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: AsFixedSizeBytes> Iterator for SVecIter<'a, T> {
     type Item = SRef<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -47,7 +44,7 @@ pub struct SVecIterMut<'a, T> {
     max_offset: usize,
 }
 
-impl<'a, T: FixedSize> SVecIterMut<'a, T> {
+impl<'a, T: AsFixedSizeBytes> SVecIterMut<'a, T> {
     pub(crate) fn new(svec: &'a mut SVec<T>) -> Self {
         let offset = 0;
         let max_offset = svec.len() * T::SIZE;
@@ -60,10 +57,7 @@ impl<'a, T: FixedSize> SVecIterMut<'a, T> {
     }
 }
 
-impl<'a, T: AsFixedSizeBytes> Iterator for SVecIterMut<'a, T>
-    where
-        [(); T::SIZE]: Sized,
-{
+impl<'a, T: AsFixedSizeBytes> Iterator for SVecIterMut<'a, T> {
     type Item = SRefMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -84,7 +78,7 @@ pub struct SVecIterCopy<'a, T> {
     max_offset: usize,
 }
 
-impl<'a, T: FixedSize> SVecIterCopy<'a, T> {
+impl<'a, T: AsFixedSizeBytes> SVecIterCopy<'a, T> {
     pub(crate) fn new(svec: &'a SVec<T>) -> Self {
         let offset = 0;
         let max_offset = svec.len() * T::SIZE;
@@ -97,10 +91,7 @@ impl<'a, T: FixedSize> SVecIterCopy<'a, T> {
     }
 }
 
-impl<'a, T: AsFixedSizeBytes> Iterator for SVecIterCopy<'a, T>
-    where
-        [(); T::SIZE]: Sized,
-{
+impl<'a, T: AsFixedSizeBytes> Iterator for SVecIterCopy<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -108,7 +99,10 @@ impl<'a, T: AsFixedSizeBytes> Iterator for SVecIterCopy<'a, T>
             return None;
         }
 
-        let it = Some(SSlice::_as_fixed_size_bytes_read(self.svec.ptr, self.offset));
+        let it = Some(SSlice::_as_fixed_size_bytes_read(
+            self.svec.ptr,
+            self.offset,
+        ));
 
         self.offset += T::SIZE;
 

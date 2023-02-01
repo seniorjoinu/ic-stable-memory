@@ -172,32 +172,33 @@ pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
     use std::cell::RefCell;
 
-    #[thread_local]
-    static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
+    thread_local! {
+        static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
+    }
 
     #[inline]
     pub fn clear() {
-        CONTEXT.borrow_mut().pages.clear()
+        CONTEXT.with(|it| it.borrow_mut().pages.clear())
     }
 
     #[inline]
     pub fn size_pages() -> u64 {
-        CONTEXT.borrow().size_pages()
+        CONTEXT.with(|it| it.borrow().size_pages())
     }
 
     #[inline]
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
-        CONTEXT.borrow_mut().grow(new_pages)
+        CONTEXT.with(|it| it.borrow_mut().grow(new_pages))
     }
 
     #[inline]
     pub fn read(offset: u64, buf: &mut [u8]) {
-        CONTEXT.borrow().read(offset, buf)
+        CONTEXT.with(|it| it.borrow().read(offset, buf))
     }
 
     #[inline]
     pub fn write(offset: u64, buf: &[u8]) {
-        CONTEXT.borrow_mut().write(offset, buf)
+        CONTEXT.with(|it| it.borrow_mut().write(offset, buf))
     }
 }
 

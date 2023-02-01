@@ -60,10 +60,7 @@ impl<'a, T> SLogIter<'a, T> {
     }
 }
 
-impl<'a, T: StableAllocated> Iterator for SLogIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated> Iterator for SLogIter<'a, T> {
     type Item = SRef<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -101,10 +98,7 @@ where
     }
 }
 
-impl<'a, T: StableAllocated> DoubleEndedIterator for SLogIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated> DoubleEndedIterator for SLogIter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.log.is_empty() {
             return None;
@@ -190,10 +184,7 @@ impl<'a, T> SLogIterMut<'a, T> {
     }
 }
 
-impl<'a, T: StableAllocated> Iterator for SLogIterMut<'a, T>
-    where
-        [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated> Iterator for SLogIterMut<'a, T> {
     type Item = SRefMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -213,7 +204,7 @@ impl<'a, T: StableAllocated> Iterator for SLogIterMut<'a, T>
         }
 
         let sector = Sector::<T>::from_ptr(cur_sector.ptr);
-        let ptr = sector.get_element_ptr(cur_sector.idx * T::SIZE); 
+        let ptr = sector.get_element_ptr(cur_sector.idx * T::SIZE);
 
         cur_sector.idx += 1;
 
@@ -231,10 +222,7 @@ impl<'a, T: StableAllocated> Iterator for SLogIterMut<'a, T>
     }
 }
 
-impl<'a, T: StableAllocated> DoubleEndedIterator for SLogIterMut<'a, T>
-    where
-        [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated> DoubleEndedIterator for SLogIterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.log.is_empty() {
             return None;

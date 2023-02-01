@@ -30,5 +30,4 @@ ic-certified-map = "0.3.2"
 serde_test = "1.0.152"
 
 [features]
-default = ["default_dyn_size_encoding"]
-default_dyn_size_encoding = []
+custom_dyn_encoding = []

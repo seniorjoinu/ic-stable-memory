@@ -16,10 +16,7 @@ impl<'a, T> SHashSetIter<'a, T> {
     }
 }
 
-impl<'a, T: StableAllocated + Eq + Hash> Iterator for SHashSetIter<'a, T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated + Eq + Hash> Iterator for SHashSetIter<'a, T> {
     type Item = SRef<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {

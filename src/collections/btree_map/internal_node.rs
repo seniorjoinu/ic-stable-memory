@@ -3,16 +3,16 @@ use crate::collections::btree_map::{
     B, CAPACITY, CHILDREN_CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash};
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-pub type PtrRaw = [u8; u64::SIZE];
+pub type PtrRaw = <u64 as AsFixedSizeBytes>::Buf;
 
 // LAYOUT:
 // node_type: u8
@@ -25,7 +25,7 @@ const LEN_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
 const CHILDREN_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 const KEYS_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
 
-const fn root_hash_offset<K: FixedSize>() -> usize {
+const fn root_hash_offset<K: AsFixedSizeBytes>() -> usize {
     KEYS_OFFSET + K::SIZE * CAPACITY
 }
 
@@ -34,10 +34,7 @@ pub struct InternalBTreeNode<K> {
     _marker_k: PhantomData<K>,
 }
 
-impl<K: StableAllocated + Ord> InternalBTreeNode<K>
-where
-    [(); K::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord> InternalBTreeNode<K> {
     #[inline]
     const fn calc_byte_size(certified: bool) -> usize {
         let mut size = root_hash_offset::<K>();
@@ -52,7 +49,7 @@ where
     pub fn create_empty(certified: bool) -> Self {
         let slice = allocate(Self::calc_byte_size(certified));
         let mut it = Self {
-            ptr: slice.get_ptr(),
+            ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
         };
 
@@ -62,10 +59,10 @@ where
         it
     }
 
-    pub fn create(key: &[u8; K::SIZE], lcp: &PtrRaw, rcp: &PtrRaw, certified: bool) -> Self {
+    pub fn create(key: &K::Buf, lcp: &PtrRaw, rcp: &PtrRaw, certified: bool) -> Self {
         let slice = allocate(Self::calc_byte_size(certified));
         let mut it = Self {
-            ptr: slice.get_ptr(),
+            ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
         };
 
@@ -91,11 +88,11 @@ where
         let mut max = len;
         let mut mid = (max - min) / 2;
 
-        let mut buf = K::_u8_arr_of_size();
+        let mut buf = K::Buf::new(K::SIZE);
 
         loop {
-            SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, &mut buf);
-            let key = K::from_fixed_size_bytes(&buf);
+            SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, buf._deref_mut());
+            let key = K::from_fixed_size_bytes(buf._deref());
 
             match key.cmp(k) {
                 Ordering::Equal => return Ok(mid),
@@ -134,7 +131,7 @@ where
         left_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        left_insert_last_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        left_insert_last_element: Option<(&K::Buf, &PtrRaw)>,
         buf: &mut Vec<u8>,
     ) {
         let pk = parent.read_key(parent_idx);
@@ -160,7 +157,7 @@ where
         right_sibling_len: usize,
         parent: &mut Self,
         parent_idx: usize,
-        right_insert_first_element: Option<(&[u8; K::SIZE], &PtrRaw)>,
+        right_insert_first_element: Option<(&K::Buf, &PtrRaw)>,
         buf: &mut Vec<u8>,
     ) {
         let pk = parent.read_key(parent_idx);
@@ -192,7 +189,7 @@ where
         &mut self,
         buf: &mut Vec<u8>,
         certified: bool,
-    ) -> (InternalBTreeNode<K>, [u8; K::SIZE]) {
+    ) -> (InternalBTreeNode<K>, K::Buf) {
         let mut right = InternalBTreeNode::<K>::create_empty(certified);
 
         self.read_keys_to_buf(B, MIN_LEN_AFTER_SPLIT, buf);
@@ -204,12 +201,7 @@ where
         (right, self.read_key(MIN_LEN_AFTER_SPLIT))
     }
 
-    pub fn merge_min_len(
-        &mut self,
-        mid: &[u8; K::SIZE],
-        right: InternalBTreeNode<K>,
-        buf: &mut Vec<u8>,
-    ) {
+    pub fn merge_min_len(&mut self, mid: &K::Buf, right: InternalBTreeNode<K>, buf: &mut Vec<u8>) {
         self.push_key(mid, MIN_LEN_AFTER_SPLIT);
 
         right.read_keys_to_buf(0, MIN_LEN_AFTER_SPLIT, buf);
@@ -222,11 +214,11 @@ where
     }
 
     #[inline]
-    pub fn push_key(&mut self, key: &[u8; K::SIZE], len: usize) {
+    pub fn push_key(&mut self, key: &K::Buf, len: usize) {
         self.write_key(len, key);
     }
 
-    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize, buf: &mut Vec<u8>) {
+    pub fn insert_key(&mut self, idx: usize, key: &K::Buf, len: usize, buf: &mut Vec<u8>) {
         if idx == len {
             self.push_key(key, len);
             return;
@@ -300,8 +292,8 @@ where
     }
 
     #[inline]
-    pub fn read_key(&self, idx: usize) -> [u8; K::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<K>(self.ptr, KEYS_OFFSET + idx * K::SIZE)
+    pub fn read_key(&self, idx: usize) -> K::Buf {
+        SSlice::_read_buffer_of_size::<K>(self.ptr, KEYS_OFFSET + idx * K::SIZE)
     }
 
     #[inline]
@@ -312,7 +304,7 @@ where
 
     #[inline]
     pub fn read_child_ptr(&self, idx: usize) -> PtrRaw {
-        SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE)
+        SSlice::_read_buffer_of_size::<u64>(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE)
     }
 
     #[inline]
@@ -322,8 +314,8 @@ where
     }
 
     #[inline]
-    pub fn write_key(&mut self, idx: usize, key: &[u8; K::SIZE]) {
-        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key);
+    pub fn write_key(&mut self, idx: usize, key: &K::Buf) {
+        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key._deref());
     }
 
     #[inline]
@@ -350,7 +342,7 @@ where
     #[inline]
     pub fn read_root_hash(&self, certified: bool) -> Hash {
         debug_assert!(certified);
-        SSlice::_as_fixed_size_bytes_read(self.ptr, root_hash_offset::<K>())
+        SSlice::_as_fixed_size_bytes_read::<Hash>(self.ptr, root_hash_offset::<K>())
     }
 
     #[inline]
@@ -369,19 +361,13 @@ where
     }
 }
 
-impl<K: AsHashableBytes + Ord + StableAllocated> InternalBTreeNode<K>
-where
-    [(); K::SIZE]: Sized,
-{
+impl<K: AsHashableBytes + Ord + StableAllocated> InternalBTreeNode<K> {
     #[inline]
     pub fn read_child_root_hash<V: StableAllocated + AsHashTree>(
         &self,
         idx: usize,
         certified: bool,
-    ) -> Hash
-    where
-        [(); V::SIZE]: Sized,
-    {
+    ) -> Hash {
         debug_assert!(certified);
 
         let ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(idx));
@@ -414,10 +400,7 @@ impl<K> IBTreeNode for InternalBTreeNode<K> {
     }
 }
 
-impl<K: StableAllocated + Ord + Debug> InternalBTreeNode<K>
-where
-    [(); K::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord + Debug> InternalBTreeNode<K> {
     pub fn to_string(&self) -> String {
         let mut result = format!(
             "InternalBTreeNode(&{}, {})[",
@@ -429,7 +412,10 @@ where
                 "*({}), ",
                 u64::from_fixed_size_bytes(&self.read_child_ptr(i))
             );
-            result += &format!("{:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
+            result += &format!(
+                "{:?}, ",
+                K::from_fixed_size_bytes(self.read_key(i)._deref())
+            );
         }
 
         result += &format!(
@@ -447,7 +433,7 @@ mod tests {
     use crate::collections::btree_map::{
         B, CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     };
-    use crate::utils::encoding::AsFixedSizeBytes;
+    use crate::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -460,7 +446,7 @@ mod tests {
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
-            node.push_key(&(i as u64).as_fixed_size_bytes(), i);
+            node.push_key(&(i as u64).as_new_fixed_size_bytes(), i);
         }
 
         node.write_len(CAPACITY);
@@ -469,23 +455,23 @@ mod tests {
 
         for i in 0..CAPACITY {
             let k = node.read_key(CAPACITY - i - 1);
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
         }
 
         for i in 0..CAPACITY {
-            node.insert_key(0, &(i as u64).as_fixed_size_bytes(), i, &mut buf);
+            node.insert_key(0, &(i as u64).as_new_fixed_size_bytes(), i, &mut buf);
         }
 
         for i in 0..CAPACITY {
             let k = node.read_key(i);
             node.remove_key(i, CAPACITY, &mut buf);
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
 
             node.insert_key(i, &k, CAPACITY - 1, &mut buf);
-            node.push_child_ptr(&1u64.as_fixed_size_bytes(), i);
+            node.push_child_ptr(&1u64.as_new_fixed_size_bytes(), i);
         }
 
-        node.push_child_ptr(&1u64.as_fixed_size_bytes(), CAPACITY);
+        node.push_child_ptr(&1u64.as_new_fixed_size_bytes(), CAPACITY);
 
         println!("before split: ");
         println!("{}", node.to_string());
@@ -505,25 +491,25 @@ mod tests {
 
         for i in 0..node.read_len() {
             let k = node.read_key(i);
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
 
             let c = node.read_child_ptr(i);
-            assert_eq!(c, 1u64.as_fixed_size_bytes());
+            assert_eq!(c, 1u64.as_new_fixed_size_bytes());
         }
 
         let c = node.read_child_ptr(MIN_LEN_AFTER_SPLIT);
-        assert_eq!(c, 1u64.as_fixed_size_bytes());
+        assert_eq!(c, 1u64.as_new_fixed_size_bytes());
 
         for i in 0..right.read_len() {
             let k = right.read_key(i);
-            assert_eq!(k, ((CAPACITY - B - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - B - i - 1) as u64).as_new_fixed_size_bytes());
 
             let c = right.read_child_ptr(i);
-            assert_eq!(c, 1u64.as_fixed_size_bytes());
+            assert_eq!(c, 1u64.as_new_fixed_size_bytes());
         }
 
         let c = right.read_child_ptr(CHILDREN_MIN_LEN_AFTER_SPLIT - 1);
-        assert_eq!(c, 1u64.as_fixed_size_bytes());
+        assert_eq!(c, 1u64.as_new_fixed_size_bytes());
 
         node.merge_min_len(&mid, right, &mut buf);
 
@@ -532,13 +518,13 @@ mod tests {
 
         for i in 0..node.read_len() {
             let k = node.read_key(i);
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
 
             let c = node.read_child_ptr(i);
-            assert_eq!(c, 1u64.as_fixed_size_bytes());
+            assert_eq!(c, 1u64.as_new_fixed_size_bytes());
         }
 
         let c = node.read_child_ptr(CAPACITY - 1);
-        assert_eq!(c, 1u64.as_fixed_size_bytes());
+        assert_eq!(c, 1u64.as_new_fixed_size_bytes());
     }
 }

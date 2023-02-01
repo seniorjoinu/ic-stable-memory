@@ -1,7 +1,7 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 
 pub mod iter;
 
@@ -9,10 +9,7 @@ pub struct SBTreeSet<T> {
     map: SBTreeMap<T, ()>,
 }
 
-impl<T: Ord + StableAllocated> SBTreeSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: Ord + StableAllocated> SBTreeSet<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -51,54 +48,36 @@ where
     }
 }
 
-impl<T: StableAllocated + StableDrop + Ord> SBTreeSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + StableDrop + Ord> SBTreeSet<T> {
     #[inline]
     pub fn clear(&mut self) {
         self.map.clear();
     }
 }
 
-impl<T: Ord + StableAllocated> Default for SBTreeSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: Ord + StableAllocated> Default for SBTreeSet<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> FixedSize for SBTreeSet<T> {
-    const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
-}
-
 impl<T> AsFixedSizeBytes for SBTreeSet<T> {
+    const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
+    type Buf = <SBTreeMap<T, ()> as AsFixedSizeBytes>::Buf;
+
     #[inline]
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        let mut buf = [0u8; Self::SIZE];
-        let map_buf = self.map.as_fixed_size_bytes();
-
-        buf.copy_from_slice(&map_buf);
-
-        buf
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        self.map.as_fixed_size_bytes(buf);
     }
 
     #[inline]
-    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
-        let mut buf = [0u8; SBTreeMap::<T, ()>::SIZE];
-        buf.copy_from_slice(arr);
-
-        let map = SBTreeMap::<T, ()>::from_fixed_size_bytes(&buf);
+    fn from_fixed_size_bytes(arr: &[u8]) -> Self {
+        let map = SBTreeMap::<T, ()>::from_fixed_size_bytes(&arr);
         Self { map }
     }
 }
 
-impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T> {
     #[inline]
     fn move_to_stable(&mut self) {
         self.map.move_to_stable();
@@ -110,10 +89,7 @@ where
     }
 }
 
-impl<T: StableAllocated + Ord + StableDrop> StableDrop for SBTreeSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Ord + StableDrop> StableDrop for SBTreeSet<T> {
     type Output = ();
 
     #[inline]
@@ -125,8 +101,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
+    use crate::encoding::{AsFixedSizeBytes, Buffer};
     use crate::primitive::{StableAllocated, StableDrop};
-    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -160,8 +136,8 @@ mod tests {
 
         let set = SBTreeSet::<u32>::new();
 
-        let buf = set.as_fixed_size_bytes();
-        SBTreeSet::<u32>::from_fixed_size_bytes(&buf);
+        let buf = set.as_new_fixed_size_bytes();
+        SBTreeSet::<u32>::from_fixed_size_bytes(buf._deref());
     }
 
     #[test]

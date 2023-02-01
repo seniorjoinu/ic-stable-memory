@@ -214,7 +214,7 @@ impl StableMemoryAllocator {
         slice: SSlice,
         new_size: usize,
     ) -> Result<SSlice, SSlice> {
-        let free_block = FreeBlock::new(slice.get_ptr(), slice.get_size_bytes(), true);
+        let free_block = FreeBlock::new(slice.as_ptr(), slice.get_size_bytes(), true);
 
         let next_neighbor_free_size_1_opt =
             free_block.check_neighbor_is_also_free(Side::End, self.min_ptr, self.max_ptr);
@@ -570,8 +570,8 @@ fn get_seg_class_id(size: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
-    use crate::mem::Anyway;
     use crate::utils::mem_context::stable;
+    use crate::utils::Anyway;
     use crate::{deallocate, isoprint, StableMemoryAllocator};
     use rand::seq::SliceRandom;
     use rand::thread_rng;

@@ -1,4 +1,4 @@
-use crate::utils::encoding::AsFixedSizeBytes;
+use crate::encoding::AsFixedSizeBytes;
 use candid::{Int, Nat, Principal};
 
 pub mod s_box;

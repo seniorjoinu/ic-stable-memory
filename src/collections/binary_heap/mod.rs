@@ -1,8 +1,8 @@
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
 use crate::collections::vec::SVec;
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
@@ -31,10 +31,7 @@ impl<T> SBinaryHeap<T> {
 
 // TODO: apply https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
 
-impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
     #[inline]
     pub fn peek(&self) -> Option<SRef<'_, T>> {
         self.inner.get(0)
@@ -139,10 +136,7 @@ where
     }
 }
 
-impl<T: StableAllocated + StableDrop + Debug> Debug for SBinaryHeap<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + StableDrop + Debug> Debug for SBinaryHeap<T> {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.inner.fmt(f)
@@ -156,27 +150,23 @@ impl<T> Default for SBinaryHeap<T> {
     }
 }
 
-impl<T> FixedSize for SBinaryHeap<T> {
-    const SIZE: usize = SVec::<T>::SIZE;
-}
-
 impl<T> AsFixedSizeBytes for SBinaryHeap<T> {
+    const SIZE: usize = SVec::<T>::SIZE;
+    type Buf = <SVec<T> as AsFixedSizeBytes>::Buf;
+
     #[inline]
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        self.inner.as_fixed_size_bytes()
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        self.inner.as_fixed_size_bytes(buf)
     }
 
     #[inline]
-    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+    fn from_fixed_size_bytes(arr: &[u8]) -> Self {
         let inner = SVec::<T>::from_fixed_size_bytes(arr);
         Self { inner }
     }
 }
 
-impl<T: StableAllocated> StableAllocated for SBinaryHeap<T>
-where
-    [u8; T::SIZE]: Sized,
-{
+impl<T: StableAllocated> StableAllocated for SBinaryHeap<T> {
     #[inline]
     fn move_to_stable(&mut self) {
         self.inner.move_to_stable()
@@ -188,10 +178,7 @@ where
     }
 }
 
-impl<T: StableAllocated + StableDrop> StableDrop for SBinaryHeap<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + StableDrop> StableDrop for SBinaryHeap<T> {
     type Output = ();
 
     #[inline]
@@ -203,8 +190,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
+    use crate::encoding::{AsFixedSizeBytes, Buffer};
     use crate::primitive::{StableAllocated, StableDrop};
-    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
@@ -282,7 +269,8 @@ mod tests {
         init_allocator(0);
 
         let heap = SBinaryHeap::<u32>::default();
-        let buf = heap.as_fixed_size_bytes();
+        let mut buf = <SBinaryHeap<u32> as AsFixedSizeBytes>::Buf::new(SBinaryHeap::<u32>::SIZE);
+        heap.as_fixed_size_bytes(&mut buf);
         let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(heap.inner.ptr, heap1.inner.ptr);
@@ -293,7 +281,8 @@ mod tests {
         let len = heap.inner.len;
         let cap = heap.inner.cap;
 
-        let buf = heap.as_fixed_size_bytes();
+        let mut buf = <SBinaryHeap<u32> as AsFixedSizeBytes>::Buf::new(SBinaryHeap::<u32>::SIZE);
+        heap.as_fixed_size_bytes(&mut buf);
         let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(ptr, heap1.inner.ptr);

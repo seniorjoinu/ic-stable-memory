@@ -1,8 +1,8 @@
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::{BTreeNode, IBTreeNode};
+use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::StableAllocated;
-use crate::utils::encoding::AsFixedSizeBytes;
 
 pub struct SBTreeMapIter<'a, K, V> {
     root: &'a Option<BTreeNode<K, V>>,
@@ -24,10 +24,8 @@ impl<'a, K, V> SBTreeMapIter<'a, K, V> {
         }
     }
 }
-impl<'a, K: StableAllocated + Ord, V: StableAllocated> ExactSizeIterator for SBTreeMapIter<'a, K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
+impl<'a, K: StableAllocated + Ord, V: StableAllocated> ExactSizeIterator
+    for SBTreeMapIter<'a, K, V>
 {
     fn len(&self) -> usize {
         self.len as usize
@@ -36,9 +34,6 @@ where
 
 impl<'a, K: StableAllocated + Ord, V: StableAllocated> DoubleEndedIterator
     for SBTreeMapIter<'a, K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(node) = &self.node {
@@ -88,11 +83,7 @@ where
     }
 }
 
-impl<'a, K: StableAllocated + Ord, V: StableAllocated> Iterator for SBTreeMapIter<'a, K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<'a, K: StableAllocated + Ord, V: StableAllocated> Iterator for SBTreeMapIter<'a, K, V> {
     type Item = (SRef<'a, K>, SRef<'a, V>);
 
     fn next(&mut self) -> Option<Self::Item> {

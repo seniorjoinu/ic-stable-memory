@@ -1,7 +1,7 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use std::hash::Hash;
 
 pub mod iter;
@@ -10,10 +10,7 @@ pub struct SHashSet<T> {
     map: SHashMap<T, ()>,
 }
 
-impl<T: StableAllocated + Hash + Eq> SHashSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Hash + Eq> SHashSet<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -74,37 +71,30 @@ where
     }
 }
 
-impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T> {
     #[inline]
     fn default() -> Self {
         SHashSet::new()
     }
 }
 
-impl<T> FixedSize for SHashSet<T> {
-    const SIZE: usize = SHashMap::<T, ()>::SIZE;
-}
-
 impl<T> AsFixedSizeBytes for SHashSet<T> {
+    const SIZE: usize = SHashMap::<T, ()>::SIZE;
+    type Buf = <SHashMap<T, ()> as AsFixedSizeBytes>::Buf;
+
     #[inline]
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        self.map.as_fixed_size_bytes()
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        self.map.as_fixed_size_bytes(buf)
     }
 
     #[inline]
-    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+    fn from_fixed_size_bytes(arr: &[u8]) -> Self {
         let map = SHashMap::<T, ()>::from_fixed_size_bytes(arr);
         Self { map }
     }
 }
 
-impl<T: StableAllocated + Eq + Hash> StableAllocated for SHashSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Eq + Hash> StableAllocated for SHashSet<T> {
     #[inline]
     fn move_to_stable(&mut self) {
         self.map.move_to_stable();
@@ -116,10 +106,7 @@ where
     }
 }
 
-impl<T: StableAllocated + Eq + Hash + StableDrop> StableDrop for SHashSet<T>
-where
-    [(); T::SIZE]: Sized,
-{
+impl<T: StableAllocated + Eq + Hash + StableDrop> StableDrop for SHashSet<T> {
     type Output = ();
 
     #[inline]
@@ -131,8 +118,8 @@ where
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_set::SHashSet;
+    use crate::encoding::{AsFixedSizeBytes, Buffer};
     use crate::primitive::{StableAllocated, StableDrop};
-    use crate::utils::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -194,8 +181,8 @@ mod tests {
         let len = set.len();
         let cap = set.capacity();
 
-        let buf = set.as_fixed_size_bytes();
-        let set1 = SHashSet::<u32>::from_fixed_size_bytes(&buf);
+        let buf = set.as_new_fixed_size_bytes();
+        let set1 = SHashSet::<u32>::from_fixed_size_bytes(buf._deref());
 
         assert_eq!(len, set1.len());
         assert_eq!(cap, set1.capacity());

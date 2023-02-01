@@ -1,8 +1,8 @@
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::mem::s_slice::{SSlice, Side};
-use crate::mem::Anyway;
 use crate::primitive::{StableAllocated, StableDrop};
 use crate::utils::certification::{AsHashTree, AsHashableBytes};
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
+use crate::utils::Anyway;
 use crate::{allocate, deallocate, reallocate};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -25,7 +25,7 @@ impl<T> SBox<T> {
 
     #[inline]
     pub fn as_ptr(&self) -> u64 {
-        self.slice.unwrap().get_ptr()
+        self.slice.unwrap().as_ptr()
     }
 
     #[inline]
@@ -84,18 +84,17 @@ impl<T: AsDynSizeBytes> SBox<T> {
     }
 }
 
-impl<T> FixedSize for SBox<T> {
-    const SIZE: usize = u64::SIZE;
-}
-
 impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBox<T> {
+    const SIZE: usize = u64::SIZE;
+    type Buf = [u8; u64::SIZE];
+
     #[inline]
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        self.as_ptr().as_fixed_size_bytes()
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        self.as_ptr().as_fixed_size_bytes(buf)
     }
 
     #[inline]
-    fn from_fixed_size_bytes(arr: &[u8; Self::SIZE]) -> Self {
+    fn from_fixed_size_bytes(arr: &[u8]) -> Self {
         let ptr = u64::from_fixed_size_bytes(arr);
 
         unsafe { Self::from_ptr(ptr) }
@@ -255,8 +254,8 @@ mod tests {
         let mut sbox11 = SBox::new(10);
         let mut sbox2 = SBox::new(20);
 
-        assert_eq!(sbox1.read().deref(), &10);
-        assert_eq!(*sbox1.read(), 10);
+        assert_eq!(sbox1.get().deref(), &10);
+        assert_eq!(*sbox1.get(), 10);
 
         assert!(sbox1 < sbox2);
         assert!(sbox2 > sbox1);

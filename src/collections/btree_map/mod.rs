@@ -1,11 +1,11 @@
 use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::{StableAllocated, StableDrop};
-use crate::utils::encoding::{AsDynSizeBytes, AsFixedSizeBytes, FixedSize};
 use crate::{isoprint, SSlice};
 use std::fmt::Debug;
 use std::mem;
@@ -35,11 +35,7 @@ pub struct SBTreeMap<K, V> {
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -115,7 +111,7 @@ where
                 parent_len,
                 idx,
                 key_to_index,
-                ptr.as_fixed_size_bytes(),
+                ptr.as_new_fixed_size_bytes(),
                 modified,
             ) {
                 key_to_index = _k;
@@ -133,8 +129,8 @@ where
 
         let mut new_root = InternalBTreeNode::<K>::create(
             &key_to_index,
-            &node.as_ptr().as_fixed_size_bytes(),
-            &ptr.as_fixed_size_bytes(),
+            &node.as_ptr().as_new_fixed_size_bytes(),
+            &ptr.as_new_fixed_size_bytes(),
             self.certified,
         );
 
@@ -221,7 +217,7 @@ where
 
     pub unsafe fn get_copy(&self, key: &K) -> Option<V> {
         let (leaf_node, idx) = self.lookup(key, false)?;
-        let v = V::from_fixed_size_bytes(&leaf_node.read_value(idx));
+        let v = V::from_fixed_size_bytes(leaf_node.read_value(idx)._deref());
 
         Some(v)
     }
@@ -374,11 +370,12 @@ where
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
             Ok(existing_idx) => {
                 // if there is already a key like that, return early
-                let mut prev_value = V::from_fixed_size_bytes(&leaf_node.read_value(existing_idx));
+                let mut prev_value =
+                    V::from_fixed_size_bytes(leaf_node.read_value(existing_idx)._deref());
                 prev_value.remove_from_stable();
                 value.move_to_stable();
 
-                leaf_node.write_value(existing_idx, &value.as_fixed_size_bytes());
+                leaf_node.write_value(existing_idx, &value.as_new_fixed_size_bytes());
 
                 modified.push(self.current_depth(), leaf_node.as_ptr());
 
@@ -388,10 +385,10 @@ where
         };
 
         key.move_to_stable();
-        let k = key.as_fixed_size_bytes();
+        let k = key.as_new_fixed_size_bytes();
 
         value.move_to_stable();
-        let v = value.as_fixed_size_bytes();
+        let v = value.as_new_fixed_size_bytes();
 
         // if there is enough space - simply insert and return early
         if leaf_node_len < CAPACITY {
@@ -439,10 +436,10 @@ where
         internal_node: &mut InternalBTreeNode<K>,
         len: usize,
         idx: usize,
-        key: [u8; K::SIZE],
+        key: K::Buf,
         child_ptr: PtrRaw,
         modified: &mut LeveledList,
-    ) -> Option<(InternalBTreeNode<K>, [u8; K::SIZE])> {
+    ) -> Option<(InternalBTreeNode<K>, K::Buf)> {
         if len < CAPACITY {
             internal_node.insert_key(idx, &key, len, &mut self._buf);
             internal_node.insert_child_ptr(idx + 1, &child_ptr, len + 1, &mut self._buf);
@@ -484,8 +481,8 @@ where
     fn pass_elem_to_sibling_leaf(
         &mut self,
         leaf_node: &mut LeafBTreeNode<K, V>,
-        key: &[u8; K::SIZE],
-        value: &[u8; V::SIZE],
+        key: &K::Buf,
+        value: &V::Buf,
         insert_idx: usize,
         modified: &mut LeveledList,
     ) -> bool {
@@ -555,8 +552,8 @@ where
         rs: &mut LeafBTreeNode<K, V>,
         rs_len: usize,
         i_idx: usize,
-        key: &[u8; K::SIZE],
-        value: &[u8; V::SIZE],
+        key: &K::Buf,
+        value: &V::Buf,
     ) {
         if i_idx != CAPACITY {
             rs.steal_from_left(rs_len, leaf, CAPACITY, p, p_idx, None, &mut self._buf);
@@ -581,8 +578,8 @@ where
         ls: &mut LeafBTreeNode<K, V>,
         ls_len: usize,
         i_idx: usize,
-        key: &[u8; K::SIZE],
-        value: &[u8; V::SIZE],
+        key: &K::Buf,
+        value: &V::Buf,
     ) {
         if i_idx != 1 {
             ls.steal_from_right(ls_len, leaf, CAPACITY, p, p_idx - 1, None, &mut self._buf);
@@ -603,7 +600,7 @@ where
         &mut self,
         internal_node: &mut InternalBTreeNode<K>,
         idx: usize,
-        key: &[u8; K::SIZE],
+        key: &K::Buf,
         child_ptr: &PtrRaw,
         modified: &mut LeveledList,
     ) -> bool {
@@ -672,7 +669,7 @@ where
         rs: &mut InternalBTreeNode<K>,
         rs_len: usize,
         i_idx: usize,
-        key: &[u8; K::SIZE],
+        key: &K::Buf,
         child_ptr: &PtrRaw,
     ) {
         if i_idx != CAPACITY {
@@ -698,7 +695,7 @@ where
         ls: &mut InternalBTreeNode<K>,
         ls_len: usize,
         i_idx: usize,
-        key: &[u8; K::SIZE],
+        key: &K::Buf,
         child_ptr: &PtrRaw,
     ) {
         if i_idx != 0 {
@@ -1226,11 +1223,7 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> SBTreeMap<K, V> {
     #[inline]
     pub fn clear(&mut self) {
         let old = mem::replace(self, Self::new());
@@ -1241,9 +1234,6 @@ where
 
 impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
     for SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
 {
     type Output = ();
 
@@ -1277,8 +1267,8 @@ where
                     }
                     BTreeNode::Leaf(leaf) => {
                         for j in 0..leaf.read_len() {
-                            let key = K::from_fixed_size_bytes(&leaf.read_key(j));
-                            let value = V::from_fixed_size_bytes(&leaf.read_value(j));
+                            let key = K::from_fixed_size_bytes(leaf.read_key(j)._deref());
+                            let value = V::from_fixed_size_bytes(leaf.read_value(j)._deref());
 
                             key.stable_drop();
                             value.stable_drop();
@@ -1292,11 +1282,7 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V> {
     pub fn debug_print_stack(&self) {
         isoprint(&format!(
             "STACK: {:?}",
@@ -1354,45 +1340,31 @@ where
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V> FixedSize for SBTreeMap<K, V> {
-    const SIZE: usize = u64::SIZE * 2;
-}
-
 impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
-    fn as_fixed_size_bytes(&self) -> [u8; Self::SIZE] {
-        let mut buf = [0u8; Self::SIZE];
+    const SIZE: usize = u64::SIZE * 2;
+    type Buf = [u8; u64::SIZE * 2];
 
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
         let ptr = if let Some(root) = &self.root {
-            root.as_ptr().as_fixed_size_bytes()
+            root.as_ptr()
         } else {
-            EMPTY_PTR.as_fixed_size_bytes()
+            EMPTY_PTR
         };
 
-        buf[..u64::SIZE].copy_from_slice(&ptr);
-        buf[u64::SIZE..(u64::SIZE * 2)].copy_from_slice(&self.len.as_fixed_size_bytes());
-
-        buf
+        ptr.as_fixed_size_bytes(&mut buf[0..u64::SIZE]);
+        self.len
+            .as_fixed_size_bytes(&mut buf[u64::SIZE..(u64::SIZE * 2)]);
     }
 
-    fn from_fixed_size_bytes(buf: &[u8; Self::SIZE]) -> Self {
-        let mut ptr_buf = [0u8; u64::SIZE];
-        let mut len_buf = [0u8; u64::SIZE];
-
-        ptr_buf.copy_from_slice(&buf[..u64::SIZE]);
-        len_buf.copy_from_slice(&buf[u64::SIZE..]);
-
-        let ptr = u64::from_fixed_size_bytes(&ptr_buf);
-        let len = u64::from_fixed_size_bytes(&len_buf);
+    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
+        let ptr = u64::from_fixed_size_bytes(&buf[0..u64::SIZE]);
+        let len = u64::from_fixed_size_bytes(&buf[u64::SIZE..(u64::SIZE * 2)]);
 
         Self {
             root: if ptr == EMPTY_PTR {
@@ -1408,11 +1380,7 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V> {
     #[inline]
     fn move_to_stable(&mut self) {}
 

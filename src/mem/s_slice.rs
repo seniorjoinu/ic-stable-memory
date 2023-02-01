@@ -1,5 +1,6 @@
+use crate::encoding::{AsFixedSizeBytes, Buffer};
+use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::utils::mem_context::stable;
 use std::mem::{size_of, MaybeUninit};
 use std::usize;
@@ -82,7 +83,7 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn get_ptr(&self) -> u64 {
+    pub fn as_ptr(&self) -> u64 {
         self.ptr
     }
 
@@ -94,6 +95,18 @@ impl SSlice {
     #[inline]
     pub fn get_total_size_bytes(&self) -> usize {
         self.get_size_bytes() + BLOCK_META_SIZE * 2
+    }
+
+    #[inline]
+    pub fn _make_ptr_by_offset(self_ptr: u64, offset: usize) -> u64 {
+        debug_assert_ne!(self_ptr, EMPTY_PTR);
+
+        self_ptr + (BLOCK_META_SIZE + offset) as u64
+    }
+
+    #[inline]
+    pub fn make_ptr_by_offset(&self, offset: usize) -> u64 {
+        Self::_make_ptr_by_offset(self.as_ptr(), offset)
     }
 
     #[inline]
@@ -138,42 +151,33 @@ impl SSlice {
 }
 
 impl SSlice {
-    pub fn _read_const_u8_array_of_size<T: FixedSize>(ptr: u64, offset: usize) -> [u8; T::SIZE] {
-        let mut buf = T::_u8_arr_of_size();
-        SSlice::_read_bytes(ptr, offset, &mut buf);
+    pub fn _read_buffer_of_size<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T::Buf {
+        let mut buf = T::Buf::new(T::SIZE);
+        SSlice::_read_bytes(ptr, offset, buf._deref_mut());
 
         buf
     }
 
-    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T
-    where
-        [(); T::SIZE]: Sized,
-    {
-        let buf = Self::_read_const_u8_array_of_size::<T>(ptr, offset);
-        T::from_fixed_size_bytes(&buf)
+    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T {
+        let mut buf = Self::_read_buffer_of_size::<T>(ptr, offset);
+        T::from_fixed_size_bytes(buf._deref_mut())
     }
 
     #[inline]
-    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes>(ptr: u64, offset: usize, it: T)
-    where
-        [(); T::SIZE]: Sized,
-    {
-        SSlice::_write_bytes(ptr, offset, &it.as_fixed_size_bytes())
+    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes>(ptr: u64, offset: usize, it: T) {
+        let mut buf = T::Buf::new(T::SIZE);
+        it.as_fixed_size_bytes(buf._deref_mut());
+
+        SSlice::_write_bytes(ptr, offset, buf._deref())
     }
 
     #[inline]
-    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes>(&self, offset: usize) -> T
-    where
-        [(); T::SIZE]: Sized,
-    {
+    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes>(&self, offset: usize) -> T {
         Self::_as_fixed_size_bytes_read::<T>(self.ptr, offset)
     }
 
     #[inline]
-    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes>(&self, offset: usize, it: T)
-    where
-        [(); T::SIZE]: Sized,
-    {
+    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes>(&self, offset: usize, it: T) {
         Self::_as_fixed_size_bytes_write::<T>(self.ptr, offset, it)
     }
 }

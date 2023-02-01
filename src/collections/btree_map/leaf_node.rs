@@ -2,10 +2,10 @@ use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::{
     IBTreeNode, B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::s_slice::Side;
 use crate::primitive::StableAllocated;
 use crate::utils::certification::Hash;
-use crate::utils::encoding::{AsFixedSizeBytes, FixedSize};
 use crate::{allocate, deallocate, isoprint, SSlice};
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -24,10 +24,10 @@ const NEXT_OFFSET: usize = PREV_OFFSET + u64::SIZE;
 const LEN_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
 const KEYS_OFFSET: usize = LEN_OFFSET + usize::SIZE;
 
-const fn values_offset<K: FixedSize>() -> usize {
+const fn values_offset<K: AsFixedSizeBytes>() -> usize {
     KEYS_OFFSET + K::SIZE * CAPACITY
 }
-const fn root_hash_offset<K: FixedSize, V: FixedSize>() -> usize {
+const fn root_hash_offset<K: AsFixedSizeBytes, V: AsFixedSizeBytes>() -> usize {
     values_offset::<K>() + V::SIZE * CAPACITY
 }
 
@@ -37,11 +37,7 @@ pub struct LeafBTreeNode<K, V> {
     _marker_v: PhantomData<V>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> LeafBTreeNode<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord, V: StableAllocated> LeafBTreeNode<K, V> {
     #[inline]
     const fn calc_size(certified: bool) -> usize {
         let mut size = root_hash_offset::<K, V>();
@@ -55,12 +51,12 @@ where
 
     pub fn create(certified: bool) -> Self {
         let slice = allocate(Self::calc_size(certified));
-        let mut it = unsafe { Self::from_ptr(slice.get_ptr()) };
+        let mut it = unsafe { Self::from_ptr(slice.as_ptr()) };
 
         it.init_node_type();
         it.write_len(0);
 
-        let b = u64::_u8_arr_of_size();
+        let b = <u64 as AsFixedSizeBytes>::Buf::new(u64::SIZE);
         it.write_prev(&b);
         it.write_next(&b);
 
@@ -82,11 +78,11 @@ where
         let mut max = len;
         let mut mid = (max - min) / 2;
 
-        let mut buf = K::_u8_arr_of_size();
+        let mut buf = K::Buf::new(K::SIZE);
 
         loop {
-            SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, &mut buf);
-            let key = K::from_fixed_size_bytes(&buf);
+            SSlice::_read_bytes(self.ptr, KEYS_OFFSET + mid * K::SIZE, buf._deref_mut());
+            let key = K::from_fixed_size_bytes(buf._deref());
 
             match key.cmp(k) {
                 Ordering::Equal => return Ok(mid),
@@ -125,7 +121,7 @@ where
         left_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
-        left_insert_last_element: Option<(&[u8; K::SIZE], &[u8; V::SIZE])>,
+        left_insert_last_element: Option<(&K::Buf, &V::Buf)>,
         buf: &mut Vec<u8>,
     ) {
         if let Some((k, v)) = left_insert_last_element {
@@ -151,7 +147,7 @@ where
         right_sibling_len: usize,
         parent: &mut InternalBTreeNode<K>,
         parent_idx: usize,
-        right_insert_first_element: Option<(&[u8; K::SIZE], &[u8; V::SIZE])>,
+        right_insert_first_element: Option<(&K::Buf, &V::Buf)>,
         buf: &mut Vec<u8>,
     ) {
         let replace_key = right_sibling.read_key(0);
@@ -191,9 +187,13 @@ where
         right.write_values_from_buf(0, buf);
 
         let self_next = self.read_next();
-        self.write_next(&right.ptr.as_fixed_size_bytes());
+        let mut buf = <u64 as AsFixedSizeBytes>::Buf::new(<u64 as AsFixedSizeBytes>::SIZE);
 
-        right.write_prev(&self.ptr.as_fixed_size_bytes());
+        right.ptr.as_fixed_size_bytes(buf._deref_mut());
+        self.write_next(&buf);
+
+        self.ptr.as_fixed_size_bytes(buf._deref_mut());
+        right.write_prev(&buf);
         right.write_next(&self_next);
 
         right
@@ -213,7 +213,7 @@ where
             let right_next_ptr = u64::from_fixed_size_bytes(&right_next_buf);
             let mut right_next = unsafe { Self::from_ptr(right_next_ptr) };
 
-            right_next.write_prev(&self.ptr.as_fixed_size_bytes());
+            right_next.write_prev(&self.ptr.as_new_fixed_size_bytes());
         }
 
         right.destroy();
@@ -221,8 +221,8 @@ where
 
     #[inline]
     pub fn remove_by_idx(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) -> V {
-        let mut k = K::from_fixed_size_bytes(&self.read_key(idx));
-        let mut v = V::from_fixed_size_bytes(&self.read_value(idx));
+        let mut k = K::from_fixed_size_bytes(self.read_key(idx)._deref());
+        let mut v = V::from_fixed_size_bytes(self.read_value(idx)._deref());
 
         self.remove_key(idx, len, buf);
         self.remove_value(idx, len, buf);
@@ -234,11 +234,11 @@ where
     }
 
     #[inline]
-    pub fn push_key(&mut self, key: &[u8; K::SIZE], len: usize) {
+    pub fn push_key(&mut self, key: &K::Buf, len: usize) {
         self.write_key(len, key);
     }
 
-    pub fn insert_key(&mut self, idx: usize, key: &[u8; K::SIZE], len: usize, buf: &mut Vec<u8>) {
+    pub fn insert_key(&mut self, idx: usize, key: &K::Buf, len: usize, buf: &mut Vec<u8>) {
         if idx == len {
             self.push_key(key, len);
             return;
@@ -260,17 +260,11 @@ where
     }
 
     #[inline]
-    pub fn push_value(&mut self, value: &[u8; V::SIZE], len: usize) {
+    pub fn push_value(&mut self, value: &V::Buf, len: usize) {
         self.write_value(len, value);
     }
 
-    pub fn insert_value(
-        &mut self,
-        idx: usize,
-        value: &[u8; V::SIZE],
-        len: usize,
-        buf: &mut Vec<u8>,
-    ) {
+    pub fn insert_value(&mut self, idx: usize, value: &V::Buf, len: usize, buf: &mut Vec<u8>) {
         if idx == len {
             self.push_value(value, len);
             return;
@@ -294,14 +288,14 @@ where
     #[inline]
     pub fn read_entry(&self, idx: usize) -> (K, V) {
         (
-            K::from_fixed_size_bytes(&self.read_key(idx)),
-            V::from_fixed_size_bytes(&self.read_value(idx)),
+            K::from_fixed_size_bytes(self.read_key(idx)._deref()),
+            V::from_fixed_size_bytes(self.read_value(idx)._deref()),
         )
     }
 
     #[inline]
-    pub fn write_key(&mut self, idx: usize, key: &[u8; K::SIZE]) {
-        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key);
+    pub fn write_key(&mut self, idx: usize, key: &K::Buf) {
+        SSlice::_write_bytes(self.ptr, KEYS_OFFSET + idx * K::SIZE, key._deref());
     }
 
     #[inline]
@@ -315,8 +309,8 @@ where
     }
 
     #[inline]
-    pub fn read_key(&self, idx: usize) -> [u8; K::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<K>(self.ptr, KEYS_OFFSET + idx * K::SIZE)
+    pub fn read_key(&self, idx: usize) -> K::Buf {
+        SSlice::_read_buffer_of_size::<K>(self.ptr, KEYS_OFFSET + idx * K::SIZE)
     }
 
     #[inline]
@@ -326,8 +320,12 @@ where
     }
 
     #[inline]
-    pub fn write_value(&mut self, idx: usize, value: &[u8; V::SIZE]) {
-        SSlice::_write_bytes(self.ptr, values_offset::<K>() + idx * V::SIZE, value);
+    pub fn write_value(&mut self, idx: usize, value: &V::Buf) {
+        SSlice::_write_bytes(
+            self.ptr,
+            values_offset::<K>() + idx * V::SIZE,
+            value._deref(),
+        );
     }
 
     #[inline]
@@ -341,8 +339,8 @@ where
     }
 
     #[inline]
-    pub fn read_value(&self, idx: usize) -> [u8; V::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<V>(self.ptr, values_offset::<K>() + idx * V::SIZE)
+    pub fn read_value(&self, idx: usize) -> V::Buf {
+        SSlice::_read_buffer_of_size::<V>(self.ptr, values_offset::<K>() + idx * V::SIZE)
     }
 
     #[inline]
@@ -352,23 +350,23 @@ where
     }
 
     #[inline]
-    pub fn write_prev(&mut self, prev: &[u8; u64::SIZE]) {
+    pub fn write_prev(&mut self, prev: &<u64 as AsFixedSizeBytes>::Buf) {
         SSlice::_write_bytes(self.ptr, PREV_OFFSET, prev);
     }
 
     #[inline]
-    pub fn read_prev(&self) -> [u8; u64::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, PREV_OFFSET)
+    pub fn read_prev(&self) -> <u64 as AsFixedSizeBytes>::Buf {
+        SSlice::_read_buffer_of_size::<u64>(self.ptr, PREV_OFFSET)
     }
 
     #[inline]
-    pub fn write_next(&mut self, next: &[u8; u64::SIZE]) {
+    pub fn write_next(&mut self, next: &<u64 as AsFixedSizeBytes>::Buf) {
         SSlice::_write_bytes(self.ptr, NEXT_OFFSET, next);
     }
 
     #[inline]
-    pub fn read_next(&self) -> [u8; u64::SIZE] {
-        SSlice::_read_const_u8_array_of_size::<u64>(self.ptr, NEXT_OFFSET)
+    pub fn read_next(&self) -> <u64 as AsFixedSizeBytes>::Buf {
+        SSlice::_read_buffer_of_size::<u64>(self.ptr, NEXT_OFFSET)
     }
 
     #[inline]
@@ -381,7 +379,7 @@ where
     pub fn read_root_hash(&self, certified: bool) -> Hash {
         debug_assert!(certified);
 
-        SSlice::_read_const_u8_array_of_size::<Hash>(self.ptr, root_hash_offset::<K, V>())
+        SSlice::_read_buffer_of_size::<Hash>(self.ptr, root_hash_offset::<K, V>())
     }
 
     #[inline]
@@ -421,16 +419,18 @@ impl<K, V> IBTreeNode for LeafBTreeNode<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> LeafBTreeNode<K, V>
-where
-    [(); K::SIZE]: Sized,
-    [(); V::SIZE]: Sized,
-{
+impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> LeafBTreeNode<K, V> {
     pub fn to_string(&self) -> String {
         let mut result = format!("LeafBTreeNode(&{}, {})[", self.as_ptr(), self.read_len());
         for i in 0..self.read_len() {
-            result += &format!("({:?}, ", K::from_fixed_size_bytes(&self.read_key(i)));
-            result += &format!("{:?})", V::from_fixed_size_bytes(&self.read_value(i)));
+            result += &format!(
+                "({:?}, ",
+                K::from_fixed_size_bytes(self.read_key(i)._deref())
+            );
+            result += &format!(
+                "{:?})",
+                V::from_fixed_size_bytes(self.read_value(i)._deref())
+            );
 
             if i < self.read_len() - 1 {
                 result += ", ";
@@ -447,7 +447,7 @@ where
 mod tests {
     use crate::collections::btree_map::leaf_node::LeafBTreeNode;
     use crate::collections::btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
-    use crate::utils::encoding::AsFixedSizeBytes;
+    use crate::encoding::AsFixedSizeBytes;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -460,28 +460,28 @@ mod tests {
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
-            node.push_key(&(i as u64).as_fixed_size_bytes(), i);
-            node.push_value(&(i as u64).as_fixed_size_bytes(), i);
+            node.push_key(&(i as u64).as_new_fixed_size_bytes(), i);
+            node.push_value(&(i as u64).as_new_fixed_size_bytes(), i);
         }
 
         for i in 0..CAPACITY {
             let k = node.read_key(CAPACITY - i - 1);
             let v = node.read_value(CAPACITY - i - 1);
 
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
-            assert_eq!(v, ((CAPACITY - i - 1) as u64).as_fixed_size_bytes());
+            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
+            assert_eq!(v, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
         }
 
         for i in (0..CAPACITY).rev() {
             node.insert_key(
                 0,
-                &(i as u64).as_fixed_size_bytes(),
+                &(i as u64).as_new_fixed_size_bytes(),
                 CAPACITY - i - 1,
                 &mut buf,
             );
             node.insert_value(
                 0,
-                &(i as u64).as_fixed_size_bytes(),
+                &(i as u64).as_new_fixed_size_bytes(),
                 CAPACITY - i - 1,
                 &mut buf,
             );
@@ -497,8 +497,8 @@ mod tests {
             node.remove_key(i, CAPACITY, &mut buf);
             node.remove_value(i, CAPACITY, &mut buf);
 
-            assert_eq!(k, (i as u64).as_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_fixed_size_bytes());
+            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
 
             node.insert_key(i, &k, CAPACITY - 1, &mut buf);
             node.insert_value(i, &v, CAPACITY - 1, &mut buf);
@@ -510,16 +510,22 @@ mod tests {
             let k = node.read_key(i);
             let v = node.read_value(i);
 
-            assert_eq!(k, (i as u64).as_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_fixed_size_bytes());
+            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
         }
 
         for i in 0..B {
             let k = right.read_key(i);
             let v = right.read_value(i);
 
-            assert_eq!(k, ((i + MIN_LEN_AFTER_SPLIT) as u64).as_fixed_size_bytes());
-            assert_eq!(v, ((i + MIN_LEN_AFTER_SPLIT) as u64).as_fixed_size_bytes());
+            assert_eq!(
+                k,
+                ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
+            );
+            assert_eq!(
+                v,
+                ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
+            );
         }
 
         node.merge_min_len(right, &mut buf);
@@ -528,8 +534,8 @@ mod tests {
             let k = node.read_key(i);
             let v = node.read_value(i);
 
-            assert_eq!(k, (i as u64).as_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_fixed_size_bytes());
+            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
         }
     }
 }
