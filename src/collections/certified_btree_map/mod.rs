@@ -329,13 +329,13 @@ impl<
     > StableType for SCertifiedBTreeMap<K, V>
 {
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
-        self.inner.stable_memory_disown();
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
+        self.inner.assume_not_owned_by_stable_memory();
     }
 
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
-        self.inner.stable_memory_own();
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
+        self.inner.assume_owned_by_stable_memory();
     }
 
     #[inline]
@@ -353,7 +353,7 @@ mod tests {
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::{init_allocator, stable};
+    use crate::{init_allocator, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
@@ -372,8 +372,7 @@ mod tests {
     #[test]
     fn random_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let iterations = 1000;
         let mut map = SCertifiedBTreeMap::<u64, u64>::default();
@@ -436,8 +435,7 @@ mod tests {
     #[test]
     fn random_in_batches_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let iterations = 10;
         let mut map = SCertifiedBTreeMap::<u64, u64>::default();
@@ -502,8 +500,7 @@ mod tests {
     #[test]
     fn absence_proofs_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let iterations = 100;
         let mut map = SCertifiedBTreeMap::<u64, u64>::default();
@@ -587,8 +584,7 @@ mod tests {
     #[test]
     fn range_proofs_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let iterations = 100;
         let mut map = SCertifiedBTreeMap::<u64, u64>::default();
@@ -620,8 +616,7 @@ mod tests {
     #[test]
     fn nested_maps_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SCertifiedBTreeMap::<u64, SCertifiedBTreeMap<u64, u64>>::default();
 

@@ -3,6 +3,7 @@ use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
+use crate::SSlice;
 
 pub struct SVecIter<'a, T: StableType + AsFixedSizeBytes> {
     svec: &'a SVec<T>,
@@ -31,7 +32,7 @@ impl<'a, T: StableType + AsFixedSizeBytes> Iterator for SVecIter<'a, T> {
             return None;
         }
 
-        let ptr = self.svec.ptr + self.offset as u64;
+        let ptr = SSlice::_make_ptr_by_offset(self.svec.ptr, self.offset);
         self.offset += T::SIZE;
 
         Some(SRef::new(ptr))

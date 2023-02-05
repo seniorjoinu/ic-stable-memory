@@ -1,7 +1,7 @@
 use crate::encoding::{AsFixedSizeBytes, Buffer};
-use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, FREE, PTR_SIZE};
+use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, FREE};
 use crate::mem::StablePtrBuf;
-use crate::{stable, SSlice};
+use crate::{stable, SSlice, StablePtr};
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct FreeBlock {
@@ -11,9 +11,8 @@ pub(crate) struct FreeBlock {
 }
 
 impl FreeBlock {
-    pub fn new(ptr: u64, size: usize, transient: bool) -> Self {
-        assert!(size >= PTR_SIZE * 2);
-
+    #[inline]
+    pub fn new(ptr: StablePtr, size: usize, transient: bool) -> Self {
         Self {
             ptr,
             size,
@@ -21,15 +20,17 @@ impl FreeBlock {
         }
     }
 
-    pub fn new_total_size(ptr: u64, total_size: usize) -> Self {
+    #[inline]
+    pub fn new_total_size(ptr: StablePtr, total_size: usize) -> Self {
         Self::new(ptr, total_size - BLOCK_META_SIZE * 2, true)
     }
 
+    #[inline]
     pub fn to_allocated(self) -> SSlice {
         SSlice::new(self.ptr, self.size, true)
     }
 
-    pub fn from_ptr(ptr: u64, side: Side, size_1_opt: Option<usize>) -> Option<Self> {
+    pub fn from_ptr(ptr: StablePtr, side: Side, size_1_opt: Option<usize>) -> Option<Self> {
         match side {
             Side::Start => {
                 let size_1 = if let Some(s) = size_1_opt {
@@ -55,6 +56,7 @@ impl FreeBlock {
         }
     }
 
+    #[inline]
     pub(crate) fn validate(&self) -> Option<()> {
         let size_2 = Self::read_size(self.ptr + (BLOCK_META_SIZE + self.size) as u64)?;
 
@@ -65,6 +67,7 @@ impl FreeBlock {
         }
     }
 
+    #[inline]
     pub(crate) fn persist(&mut self) {
         if self.transient {
             Self::write_size(self.ptr, self.size);
@@ -73,19 +76,21 @@ impl FreeBlock {
         }
     }
 
-    pub fn get_next_neighbor_ptr(&self) -> u64 {
+    #[inline]
+    pub fn get_next_neighbor_ptr(&self) -> StablePtr {
         self.ptr + (BLOCK_META_SIZE * 2 + self.size) as u64
     }
 
-    pub fn get_prev_neighbor_ptr(&self) -> u64 {
+    #[inline]
+    pub fn get_prev_neighbor_ptr(&self) -> StablePtr {
         self.ptr
     }
 
     pub fn check_neighbor_is_also_free(
         &self,
         side: Side,
-        min_ptr: u64,
-        max_ptr: u64,
+        min_ptr: StablePtr,
+        max_ptr: StablePtr,
     ) -> Option<usize> {
         match side {
             Side::Start => {
@@ -109,38 +114,38 @@ impl FreeBlock {
         }
     }
 
-    pub fn set_free_ptrs(ptr: u64, prev_ptr: u64, next_ptr: u64) {
-        let mut buf = [0u8; 2 * PTR_SIZE];
-        buf[0..PTR_SIZE].copy_from_slice(&prev_ptr.to_le_bytes());
-        buf[PTR_SIZE..PTR_SIZE * 2].copy_from_slice(&next_ptr.to_le_bytes());
+    pub fn set_free_ptrs(ptr: StablePtr, prev_ptr: StablePtr, next_ptr: StablePtr) {
+        let mut buf = [0u8; 2 * StablePtr::SIZE];
+        prev_ptr.as_fixed_size_bytes(&mut buf[0..StablePtr::SIZE]);
+        next_ptr.as_fixed_size_bytes(&mut buf[StablePtr::SIZE..StablePtr::SIZE * 2]);
 
-        stable::write(ptr + PTR_SIZE as u64, &buf);
+        stable::write(ptr + StablePtr::SIZE as u64, &buf);
     }
 
-    pub fn set_prev_free_ptr(ptr: u64, prev_ptr: u64) {
+    pub fn set_prev_free_ptr(ptr: StablePtr, prev_ptr: StablePtr) {
         stable::write(
-            ptr + PTR_SIZE as u64,
+            ptr + StablePtr::SIZE as u64,
             prev_ptr.as_new_fixed_size_bytes()._deref(),
         );
     }
 
-    pub fn get_prev_free_ptr(ptr: u64) -> u64 {
-        let mut buf = StablePtrBuf::new(u64::SIZE);
-        stable::read(ptr + PTR_SIZE as u64, &mut buf);
+    pub fn get_prev_free_ptr(ptr: StablePtr) -> StablePtr {
+        let mut buf = StablePtrBuf::new(StablePtr::SIZE);
+        stable::read(ptr + StablePtr::SIZE as u64, &mut buf);
 
         u64::from_fixed_size_bytes(&buf)
     }
 
-    pub fn set_next_free_ptr(ptr: u64, next_ptr: u64) {
+    pub fn set_next_free_ptr(ptr: StablePtr, next_ptr: StablePtr) {
         stable::write(
-            ptr + (PTR_SIZE * 2) as u64,
+            ptr + (StablePtr::SIZE * 2) as u64,
             &next_ptr.as_new_fixed_size_bytes(),
         );
     }
 
-    pub fn get_next_free_ptr(ptr: u64) -> u64 {
+    pub fn get_next_free_ptr(ptr: StablePtr) -> u64 {
         let mut buf = StablePtrBuf::new(u64::SIZE);
-        stable::read(ptr + (PTR_SIZE * 2) as u64, &mut buf);
+        stable::read(ptr + (StablePtr::SIZE * 2) as u64, &mut buf);
 
         u64::from_fixed_size_bytes(&buf)
     }
@@ -149,8 +154,8 @@ impl FreeBlock {
         self.size + BLOCK_META_SIZE * 2
     }
 
-    fn read_size(ptr: u64) -> Option<usize> {
-        let mut meta = [0u8; PTR_SIZE];
+    fn read_size(ptr: StablePtr) -> Option<usize> {
+        let mut meta = [0u8; u64::SIZE];
         stable::read(ptr, &mut meta);
 
         let encoded_size = u64::from_le_bytes(meta);
@@ -170,13 +175,13 @@ impl FreeBlock {
         }
     }
 
-    fn write_size(ptr: u64, size: usize) {
+    fn write_size(ptr: StablePtr, size: usize) {
         let encoded_size = size as u64 & FREE;
 
         let meta = encoded_size.to_le_bytes();
 
         stable::write(ptr, &meta);
-        stable::write(ptr + (PTR_SIZE + size) as u64, &meta);
+        stable::write(ptr + (StablePtr::SIZE + size) as u64, &meta);
     }
 }
 

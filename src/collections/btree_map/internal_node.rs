@@ -470,13 +470,12 @@ mod tests {
         B, CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     };
     use crate::encoding::AsFixedSizeBytes;
-    use crate::{init_allocator, stable};
+    use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
     fn works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut node = InternalBTreeNode::<u64>::create_empty(false);
         let mut buf = Vec::default();

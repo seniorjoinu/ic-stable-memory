@@ -11,6 +11,7 @@ pub mod mem;
 pub mod primitive;
 pub mod utils;
 
+use crate::mem::StablePtr;
 pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
@@ -21,10 +22,10 @@ thread_local! {
 }
 
 #[inline]
-pub fn init_allocator(offset: u64) {
+pub fn init_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if it.borrow().is_none() {
-            let allocator = unsafe { StableMemoryAllocator::init(offset) };
+            let allocator = unsafe { StableMemoryAllocator::init() };
 
             *it.borrow_mut() = Some(allocator);
         } else {
@@ -36,7 +37,7 @@ pub fn init_allocator(offset: u64) {
 #[inline]
 pub fn deinit_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = it.take() {
+        if let Some(mut alloc) = it.take() {
             alloc.store();
         } else {
             unreachable!("StableMemoryAllocator is not initialized");
@@ -45,10 +46,10 @@ pub fn deinit_allocator() {
 }
 
 #[inline]
-pub fn reinit_allocator(offset: u64) {
+pub fn reinit_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if it.borrow().is_none() {
-            let allocator = unsafe { StableMemoryAllocator::reinit(offset) };
+            let allocator = unsafe { StableMemoryAllocator::retrieve() };
 
             *it.borrow_mut() = Some(allocator);
         } else {
@@ -113,7 +114,7 @@ pub fn get_free_size() -> u64 {
 }
 
 #[inline]
-pub fn set_custom_data_ptr(idx: usize, data_ptr: u64) {
+pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
             alloc.set_custom_data_ptr(idx, data_ptr)
@@ -124,7 +125,7 @@ pub fn set_custom_data_ptr(idx: usize, data_ptr: u64) {
 }
 
 #[inline]
-pub fn get_custom_data_ptr(idx: usize) -> u64 {
+pub fn get_custom_data_ptr(idx: usize) -> StablePtr {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &*it.borrow() {
             alloc.get_custom_data_ptr(idx)
@@ -155,12 +156,8 @@ pub fn _debug_print_allocator() {
 }
 
 #[inline]
-pub fn stable_memory_init(should_grow: bool, allocator_pointer: u64) {
-    if should_grow {
-        stable::grow(1).expect("Out of memory (stable_memory_init)");
-    }
-
-    init_allocator(allocator_pointer);
+pub fn stable_memory_init() {
+    init_allocator();
 }
 
 #[inline]
@@ -169,8 +166,8 @@ pub fn stable_memory_pre_upgrade() {
 }
 
 #[inline]
-pub fn stable_memory_post_upgrade(allocator_pointer: u64) {
-    reinit_allocator(allocator_pointer);
+pub fn stable_memory_post_upgrade() {
+    reinit_allocator();
 }
 
 #[cfg(test)]
@@ -186,9 +183,9 @@ mod tests {
 
     #[test]
     fn basic_flow_works_fine() {
-        stable_memory_init(true, 0);
+        stable_memory_init();
         stable_memory_pre_upgrade();
-        stable_memory_post_upgrade(0);
+        stable_memory_post_upgrade();
 
         let b = allocate(100);
         let b = reallocate(b, 200).anyway();
@@ -214,9 +211,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn init_allocator_twice_should_panic() {
-        stable::grow(1).expect("Out of memory (stable_memory_init)");
-        init_allocator(0);
-        init_allocator(0);
+        init_allocator();
+        init_allocator();
     }
 
     #[test]
@@ -228,9 +224,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn reinit_allocator_twice_should_panic() {
-        stable::grow(1).expect("Out of memory (stable_memory_init)");
-        init_allocator(0);
-        reinit_allocator(0);
+        init_allocator();
+        reinit_allocator();
     }
 
     #[test]

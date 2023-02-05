@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod log_benchmark {
     use crate::collections::log::SLog;
-    use crate::measure;
     use crate::{init_allocator, stable};
+    use crate::{measure, stable_memory_init};
 
     const ITERATIONS: usize = 1_000_000;
 
@@ -33,8 +33,7 @@ mod log_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_log = SLog::new();
 

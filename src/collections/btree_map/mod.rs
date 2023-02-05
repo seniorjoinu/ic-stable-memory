@@ -404,10 +404,10 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             Err(idx) => idx,
         };
 
-        unsafe { key.stable_memory_own() };
+        unsafe { key.assume_owned_by_stable_memory() };
         let k = key.as_new_fixed_size_bytes();
 
-        unsafe { value.stable_memory_own() };
+        unsafe { value.assume_owned_by_stable_memory() };
         let v = value.as_new_fixed_size_bytes();
 
         // if there is enough space - simply insert and return early
@@ -1266,12 +1266,12 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     for SBTreeMap<K, V>
 {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.is_owned = true;
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         self.is_owned = false;
     }
 
@@ -1586,14 +1586,13 @@ impl<K, V> BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::{get_allocated_size, init_allocator, stable};
+    use crate::{get_allocated_size, init_allocator, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     #[test]
     fn random_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let iterations = 1000;
         let mut map = SBTreeMap::<u64, u64>::default();
@@ -1654,8 +1653,7 @@ mod tests {
     #[test]
     fn iters_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SBTreeMap::<u64, u64>::default();
 
@@ -1678,13 +1676,14 @@ mod tests {
     #[test]
     fn stable_drop_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
-        let mut map = SBTreeMap::<u64, u64>::default();
+        {
+            let mut map = SBTreeMap::<u64, u64>::default();
 
-        for i in 0..200 {
-            map.insert(i, i);
+            for i in 0..200 {
+                map.insert(i, i);
+            }
         }
 
         assert_eq!(get_allocated_size(), 0);

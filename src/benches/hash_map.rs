@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod hash_map_benchmark {
     use crate::collections::hash_map::SHashMap;
-    use crate::{init_allocator, measure, stable};
+    use crate::{init_allocator, measure, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     use std::collections::HashMap;
@@ -41,8 +41,7 @@ mod hash_map_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_hash_map = SHashMap::new();
 

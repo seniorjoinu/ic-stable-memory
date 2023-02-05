@@ -22,7 +22,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         let buf = it.as_dyn_size_bytes();
         let slice = allocate(buf.len());
 
-        unsafe { crate::mem::write_bytes(slice.as_ptr(), &buf) };
+        unsafe { crate::mem::write_bytes(slice.make_ptr_by_offset(0), &buf) };
 
         Self {
             slice: Some(slice),
@@ -45,7 +45,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; slice.get_size_bytes()];
-        unsafe { crate::mem::read_bytes(slice.as_ptr(), &mut buf) };
+        unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf) };
 
         let inner = Some(T::from_dyn_size_bytes(&buf));
 
@@ -59,7 +59,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
     pub unsafe fn get_cloned(&self) -> T {
         if let Some(slice) = self.slice {
             let mut buf = vec![0u8; slice.get_size_bytes()];
-            unsafe { crate::mem::read_bytes(slice.as_ptr(), &mut buf) };
+            unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf) };
 
             T::from_dyn_size_bytes(&buf)
         } else {
@@ -85,7 +85,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
                 slice = reallocate(slice, buf.len()).anyway();
             }
 
-            unsafe { crate::mem::write_bytes(slice.as_ptr(), &buf) };
+            unsafe { crate::mem::write_bytes(slice.make_ptr_by_offset(0), &buf) };
             self.slice = Some(slice);
         }
     }
@@ -115,20 +115,20 @@ impl<T: AsDynSizeBytes + StableType> StableType for SBox<T> {
     }
 
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.is_owned = true;
 
         if let Some(it) = self.inner.as_mut() {
-            it.stable_memory_own();
+            it.assume_owned_by_stable_memory();
         }
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         self.is_owned = false;
 
         if let Some(it) = self.inner.as_mut() {
-            it.stable_memory_disown();
+            it.assume_not_owned_by_stable_memory();
         }
     }
 
@@ -267,11 +267,15 @@ impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRef<'a, T> {
 #[cfg(test)]
 mod tests {
     use crate::primitive::s_box::SBox;
+    use crate::{stable, stable_memory_init};
     use std::cmp::Ordering;
     use std::ops::Deref;
 
     #[test]
     fn sboxes_work_fine() {
+        stable::clear();
+        stable_memory_init();
+
         let mut sbox1 = SBox::new(10);
         let mut sbox11 = SBox::new(10);
         let mut sbox2 = SBox::new(20);

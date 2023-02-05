@@ -316,43 +316,27 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn get_element_ptr(&self, offset: usize) -> u64 {
-        self.0 + (ELEMENTS_OFFSET + offset) as u64
+        SSlice::_make_ptr_by_offset(self.0, ELEMENTS_OFFSET + offset)
     }
 
     #[inline]
     fn read_and_disown_element(&self, offset: usize) -> T {
-        unsafe {
-            crate::mem::read_and_disown_fixed(SSlice::_make_ptr_by_offset(
-                self.0,
-                ELEMENTS_OFFSET + offset,
-            ))
-        }
+        unsafe { crate::mem::read_and_disown_fixed(self.get_element_ptr(offset)) }
     }
 
     #[inline]
     fn get_element(&self, offset: usize) -> SRef<T> {
-        SRef::new(SSlice::_make_ptr_by_offset(
-            self.0,
-            ELEMENTS_OFFSET + offset,
-        ))
+        SRef::new(self.get_element_ptr(offset))
     }
 
     #[inline]
     fn get_element_mut(&mut self, offset: usize) -> SRefMut<T> {
-        SRefMut::new(SSlice::_make_ptr_by_offset(
-            self.0,
-            ELEMENTS_OFFSET + offset,
-        ))
+        SRefMut::new(self.get_element_ptr(offset))
     }
 
     #[inline]
     fn write_and_own_element(&self, offset: usize, mut element: T) {
-        unsafe {
-            crate::mem::write_and_own_fixed(
-                SSlice::_make_ptr_by_offset(self.0, ELEMENTS_OFFSET + offset),
-                &mut element,
-            )
-        };
+        unsafe { crate::mem::write_and_own_fixed(self.get_element_ptr(offset), &mut element) };
     }
 }
 
@@ -464,12 +448,12 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
 
 impl<T: StableType + AsFixedSizeBytes> StableType for SLog<T> {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.is_owned = true;
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         self.is_owned = false;
     }
 
@@ -502,13 +486,12 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::log::SLog;
-    use crate::{init_allocator, stable};
+    use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
     fn works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut log = SLog::new();
 
@@ -570,8 +553,7 @@ mod tests {
     #[test]
     fn iter_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut log = SLog::new();
 
@@ -580,6 +562,8 @@ mod tests {
         }
 
         let mut j = 99;
+
+        log.debug_print();
 
         for mut i in log.iter() {
             assert_eq!(*i, j);

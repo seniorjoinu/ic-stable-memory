@@ -7,10 +7,10 @@ pub mod s_ref_mut;
 
 pub trait StableType {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {}
+    unsafe fn assume_owned_by_stable_memory(&mut self) {}
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {}
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {}
 
     #[inline]
     fn is_owned_by_stable_memory(&self) -> bool {
@@ -61,16 +61,16 @@ impl StableType for Int {}
 
 impl<T: StableType> StableType for Option<T> {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         if let Some(it) = self.as_mut() {
-            it.stable_memory_own();
+            it.assume_owned_by_stable_memory();
         }
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         if let Some(it) = self.as_mut() {
-            it.stable_memory_disown();
+            it.assume_not_owned_by_stable_memory();
         }
     }
 }

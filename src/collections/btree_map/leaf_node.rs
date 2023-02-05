@@ -512,13 +512,12 @@ mod tests {
     use crate::collections::btree_map::leaf_node::LeafBTreeNode;
     use crate::collections::btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
     use crate::encoding::AsFixedSizeBytes;
-    use crate::{init_allocator, stable};
+    use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
     fn works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut node = LeafBTreeNode::<u64, u64>::create(false);
         let mut buf = Vec::default();

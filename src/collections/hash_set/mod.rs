@@ -105,13 +105,13 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> AsFixedSizeBytes for SHashSet
 
 impl<T: StableType + AsFixedSizeBytes + Hash + Eq> StableType for SHashSet<T> {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
-        self.map.stable_memory_own();
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
+        self.map.assume_owned_by_stable_memory();
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
-        self.map.stable_memory_disown();
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
+        self.map.assume_not_owned_by_stable_memory();
     }
 
     #[inline]
@@ -128,13 +128,12 @@ mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
     use crate::primitive::StableType;
-    use crate::{init_allocator, stable};
+    use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
     fn basic_flow_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut set = SHashSet::default();
 
@@ -158,8 +157,7 @@ mod tests {
     #[test]
     fn iter_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut set = SHashSet::default();
 
@@ -178,8 +176,7 @@ mod tests {
     #[test]
     fn serialization_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let set = SHashSet::<u32>::default();
 
@@ -196,8 +193,7 @@ mod tests {
     #[test]
     fn helpers_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut set = SHashSet::<u32>::default();
     }

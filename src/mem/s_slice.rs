@@ -1,15 +1,14 @@
+use crate::encoding::AsFixedSizeBytes;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
 use crate::mem::StablePtr;
 use crate::utils::mem_context::stable;
 use std::usize;
-use crate::encoding::AsFixedSizeBytes;
 
-pub(crate) const FREE: u64 = 2usize.pow(u32::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
-pub(crate) const ALLOCATED: u64 = 2usize.pow(u32::BITS - 1) as u64; // first biggest bit set to 1, other set to 0
-pub(crate) const PTR_SIZE: usize = <StablePtr as AsFixedSizeBytes>::SIZE;
-pub(crate) const BLOCK_META_SIZE: usize = PTR_SIZE;
-pub(crate) const BLOCK_MIN_TOTAL_SIZE: usize = PTR_SIZE * 4;
+pub(crate) const FREE: u64 = 2usize.pow(u64::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
+pub(crate) const ALLOCATED: u64 = 2usize.pow(u64::BITS - 1) as u64; // first biggest bit set to 1, other set to 0
+pub(crate) const BLOCK_META_SIZE: usize = StablePtr::SIZE;
+pub(crate) const BLOCK_MIN_TOTAL_SIZE: usize = StablePtr::SIZE * 4;
 
 #[derive(Debug)]
 pub(crate) enum Side {
@@ -37,16 +36,16 @@ impl SSlice {
     pub(crate) fn from_ptr(ptr: StablePtr, side: Side) -> Option<Self> {
         match side {
             Side::Start => {
-                let size_1 = Self::read_size(ptr)?;
+                let size = Self::read_size(ptr)?;
 
-                Some(Self::new(ptr, size_1, false))
+                Some(Self::new(ptr, size, false))
             }
             Side::End => {
-                let size_1 = Self::read_size(ptr - BLOCK_META_SIZE as u64)?;
+                let size = Self::read_size(ptr - BLOCK_META_SIZE as u64)?;
 
                 Some(Self::new(
-                    ptr - (BLOCK_META_SIZE * 2 + size_1) as u64,
-                    size_1,
+                    ptr - (BLOCK_META_SIZE * 2 + size) as u64,
+                    size,
                     false,
                 ))
             }
@@ -100,7 +99,7 @@ impl SSlice {
     }
 
     fn read_size(ptr: StablePtr) -> Option<usize> {
-        let mut meta = [0u8; BLOCK_META_SIZE as usize];
+        let mut meta = [0u8; BLOCK_META_SIZE];
         stable::read(ptr, &mut meta);
 
         let encoded_size = u64::from_le_bytes(meta);

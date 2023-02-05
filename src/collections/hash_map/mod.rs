@@ -73,10 +73,10 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
-            let table = allocate(size as usize);
+            let table = allocate(size);
 
-            let zeroed = vec![0u8; size as usize];
-            unsafe { crate::mem::write_bytes(table.as_ptr(), &zeroed) };
+            let zeroed = vec![0u8; size];
+            unsafe { crate::mem::write_bytes(table.make_ptr_by_offset(0), &zeroed) };
 
             self.table_ptr = table.as_ptr();
         }
@@ -114,6 +114,11 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
                         let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
                         deallocate(slice);
+
+                        // dirty hack to make it not call stable_drop() when it is dropped
+                        // it is safe to use, since we've moved all the data inside into the new map
+                        // and deallocated the underlying slice
+                        unsafe { self.assume_owned_by_stable_memory() };
 
                         *self = new;
 
@@ -220,8 +225,8 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                 let mut v = self.read_and_disown_val(i);
                 if f(&k, &v) {
                     unsafe {
-                        k.stable_memory_own();
-                        v.stable_memory_own();
+                        k.assume_owned_by_stable_memory();
+                        v.assume_owned_by_stable_memory();
                     }
 
                     continue;
@@ -437,12 +442,12 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     for SHashMap<K, V>
 {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.is_owned = true;
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         self.is_owned = false;
     }
 
@@ -477,18 +482,17 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 mod tests {
     use crate::collections::hash_map::SHashMap;
     use crate::encoding::AsFixedSizeBytes;
-    use crate::init_allocator;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
+    use crate::{init_allocator, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
     #[test]
     fn simple_flow_works_well() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new_with_capacity(3);
 
@@ -543,8 +547,7 @@ mod tests {
     #[test]
     fn basic_flow_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new_with_capacity(3);
 
@@ -582,8 +585,7 @@ mod tests {
     #[test]
     fn removes_work() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new();
 
@@ -617,8 +619,7 @@ mod tests {
     #[test]
     fn tombstones_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new();
 
@@ -644,8 +645,7 @@ mod tests {
     #[test]
     fn serialization_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new();
         map.insert(0, 0);
@@ -655,6 +655,10 @@ mod tests {
         let ptr = map.table_ptr;
 
         let buf = map.as_new_fixed_size_bytes();
+
+        // emulating stable memory save
+        unsafe { map.assume_owned_by_stable_memory() };
+
         let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
         assert_eq!(len, map1.len());
@@ -665,8 +669,7 @@ mod tests {
     #[test]
     fn iter_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new();
         for i in 0..100 {
@@ -686,8 +689,7 @@ mod tests {
     #[test]
     fn sboxes_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut map = SHashMap::new();
 

@@ -40,7 +40,7 @@ fn read_fixed<T: AsFixedSizeBytes>(ptr: StablePtr) -> T {
 #[inline]
 pub unsafe fn read_fixed_for_reference<T: AsFixedSizeBytes + StableType>(ptr: StablePtr) -> T {
     let mut it = read_fixed::<T>(ptr);
-    it.stable_memory_own();
+    it.assume_owned_by_stable_memory();
 
     it
 }
@@ -48,13 +48,13 @@ pub unsafe fn read_fixed_for_reference<T: AsFixedSizeBytes + StableType>(ptr: St
 #[inline]
 pub unsafe fn read_and_disown_fixed<T: AsFixedSizeBytes + StableType>(ptr: StablePtr) -> T {
     let mut it = read_fixed::<T>(ptr);
-    it.stable_memory_disown();
+    it.assume_not_owned_by_stable_memory();
 
     it
 }
 
 #[inline]
 pub unsafe fn write_and_own_fixed<T: AsFixedSizeBytes + StableType>(ptr: StablePtr, it: &mut T) {
-    it.stable_memory_own();
+    it.assume_owned_by_stable_memory();
     stable::write(ptr, it.as_new_fixed_size_bytes()._deref())
 }

@@ -88,22 +88,22 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
             return None;
         }
 
+        let elem_ptr = self.get_element_ptr(self.len - 1)?;
         self.len -= 1;
-        let elem_ptr = self.get_ptr(self.len)?;
 
-        unsafe { crate::mem::read_and_disown_fixed(elem_ptr) }
+        Some(unsafe { crate::mem::read_and_disown_fixed(elem_ptr) })
     }
 
     #[inline]
     pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
-        let ptr = self.get_ptr(idx)?;
+        let ptr = self.get_element_ptr(idx)?;
 
         Some(SRef::new(ptr))
     }
 
     #[inline]
     pub fn get_mut(&mut self, idx: usize) -> Option<SRefMut<'_, T>> {
-        let ptr = self.get_ptr(idx)?;
+        let ptr = self.get_element_ptr(idx)?;
 
         Some(SRefMut::new(ptr))
     }
@@ -236,7 +236,28 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         SVecIter::new(self)
     }
 
-    pub(crate) fn get_ptr(&self, idx: usize) -> Option<StablePtr> {
+    pub fn debug_print(&self) {
+        print!("SVec[");
+        for i in 0..self.len {
+            let mut b = T::Buf::new(T::SIZE);
+            unsafe {
+                crate::mem::read_bytes(
+                    SSlice::_make_ptr_by_offset(self.ptr, i * T::SIZE),
+                    b._deref_mut(),
+                )
+            };
+
+            print!("{:?}", b._deref());
+
+            if i < self.len - 1 {
+                print!(", ");
+            }
+        }
+
+        println!("]");
+    }
+
+    pub(crate) fn get_element_ptr(&self, idx: usize) -> Option<StablePtr> {
         if idx < self.len() {
             Some(SSlice::_make_ptr_by_offset(self.ptr, idx * T::SIZE))
         } else {
@@ -257,7 +278,7 @@ impl<T: StableType + AsFixedSizeBytes> From<SVec<T>> for Vec<T> {
         let mut vec = Self::new();
 
         while let Some(it) = svec.pop() {
-            vec.push(it);
+            vec.insert(0, it);
         }
 
         vec
@@ -322,12 +343,12 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SVec<T> {
 
 impl<T: StableType + AsFixedSizeBytes> StableType for SVec<T> {
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.is_owned = true;
     }
 
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
         self.is_owned = false;
     }
 
@@ -361,10 +382,10 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SVec<T> {
 mod tests {
     use crate::collections::vec::{SVec, DEFAULT_CAPACITY};
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::init_allocator;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
+    use crate::{_debug_print_allocator, init_allocator, stable_memory_init};
 
     #[derive(Copy, Clone, Debug)]
     struct Test {
@@ -395,8 +416,7 @@ mod tests {
     #[test]
     fn create_destroy_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut stable_vec = SVec::new();
         assert_eq!(stable_vec.capacity(), DEFAULT_CAPACITY);
@@ -410,8 +430,7 @@ mod tests {
     #[test]
     fn push_pop_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut stable_vec = SVec::new();
         let count = 10usize;
@@ -430,11 +449,15 @@ mod tests {
             stable_vec.replace(i, it);
         }
 
+        stable_vec.debug_print();
         assert_eq!(stable_vec.len(), count, "Invalid len after push");
 
         for i in 0..count {
+            println!("{} {}", i, stable_vec.len());
+
             let it = stable_vec.pop().unwrap();
 
+            assert_eq!(stable_vec.len(), count - i - 1);
             assert_eq!(it.a, count - 1 - i);
             assert!(!it.b);
         }
@@ -451,8 +474,7 @@ mod tests {
     #[test]
     fn basic_flow_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut v = SVec::default();
         assert!(v.get(100).is_none());
@@ -468,8 +490,7 @@ mod tests {
     #[test]
     fn insert_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut array = SVec::default();
         let mut check = Vec::default();
@@ -500,8 +521,7 @@ mod tests {
     #[test]
     fn binary_search_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         // 0..100 randomly shuffled
         let initial = vec![
@@ -534,8 +554,7 @@ mod tests {
     #[test]
     fn remove_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let initial = vec![
             3, 24, 46, 92, 2, 21, 34, 95, 82, 22, 88, 32, 59, 13, 73, 51, 12, 83, 28, 17, 9, 23, 5,
@@ -555,8 +574,7 @@ mod tests {
     #[test]
     fn serialization_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let vec = SVec::<u32>::new_with_capacity(10);
         let mut buf = <SVec<u32> as AsFixedSizeBytes>::Buf::new(SVec::<u32>::SIZE);
@@ -583,8 +601,7 @@ mod tests {
     #[test]
     fn iter_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut vec = SVec::new();
         for i in 0..100 {
@@ -592,6 +609,8 @@ mod tests {
         }
 
         let mut c = 0;
+        vec.debug_print();
+
         for (idx, mut i) in vec.iter().enumerate() {
             c += 1;
 
@@ -604,19 +623,23 @@ mod tests {
     #[test]
     fn sboxes_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
-        let mut vec = SVec::new();
+        {
+            let mut vec = SVec::new();
 
-        for i in 0..100 {
-            vec.push(SBox::new(10));
+            for i in 0..100 {
+                vec.debug_print();
+                let b = SBox::new(10);
+
+                println!("{}", b.as_ptr());
+
+                vec.push(b);
+            }
+
+            vec.debug_print();
         }
 
-        let mut vec = SVec::new();
-
-        for i in 0..100 {
-            vec.push(SBox::new(10));
-        }
+        _debug_print_allocator();
     }
 }

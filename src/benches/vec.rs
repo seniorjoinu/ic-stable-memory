@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod vec_benchmark {
     use crate::collections::vec::SVec;
-    use crate::measure;
     use crate::{init_allocator, stable};
+    use crate::{measure, stable_memory_init};
 
     const ITERATIONS: usize = 1_000_000;
 
@@ -45,8 +45,7 @@ mod vec_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_vec = SVec::new();
 

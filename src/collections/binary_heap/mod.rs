@@ -170,13 +170,13 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SBinaryHeap<T> {
 
 impl<T: StableType + AsFixedSizeBytes> StableType for SBinaryHeap<T> {
     #[inline]
-    unsafe fn stable_memory_disown(&mut self) {
-        self.inner.stable_memory_disown();
+    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
+        self.inner.assume_not_owned_by_stable_memory();
     }
 
     #[inline]
-    unsafe fn stable_memory_own(&mut self) {
-        self.inner.stable_memory_own();
+    unsafe fn assume_owned_by_stable_memory(&mut self) {
+        self.inner.assume_owned_by_stable_memory();
     }
 
     #[inline]
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn heap_sort_works_fine() {
         stable::clear();
-        stable_memory_init(true, 0);
+        stable_memory_init();
 
         let example = vec![10u32, 20, 30, 40, 50, 60, 70, 80, 90, 100];
         let mut max_heap = SBinaryHeap::default();
@@ -242,8 +242,7 @@ mod tests {
     #[test]
     fn iter_works_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut heap = SBinaryHeap::default();
 
@@ -264,8 +263,7 @@ mod tests {
     #[test]
     fn serialization_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let heap = SBinaryHeap::<u32>::default();
         let mut buf = <SBinaryHeap<u32> as AsFixedSizeBytes>::Buf::new(SBinaryHeap::<u32>::SIZE);
@@ -280,8 +278,7 @@ mod tests {
     #[test]
     fn helpers_work_fine() {
         stable::clear();
-        stable::grow(1).unwrap();
-        init_allocator(0);
+        stable_memory_init();
 
         let mut heap = SBinaryHeap::<u32>::default();
     }

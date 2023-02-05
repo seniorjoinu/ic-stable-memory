@@ -2,7 +2,7 @@
 mod certified_btree_map_benchmark {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
     use crate::utils::certification::{leaf, AsHashTree as MyAsHashTree, AsHashableBytes};
-    use crate::{init_allocator, measure, stable};
+    use crate::{init_allocator, measure, stable, stable_memory_init};
     use ic_certified_map::{leaf_hash, AsHashTree, Hash, HashTree, RbTree};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -73,8 +73,7 @@ mod certified_btree_map_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_certified_btree_map = SCertifiedBTreeMap::new();
 
@@ -134,8 +133,7 @@ mod certified_btree_map_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_certified_btree_map = SCertifiedBTreeMap::new();
             let batch_size = 1000;
