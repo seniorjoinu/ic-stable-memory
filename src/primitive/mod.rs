@@ -1,5 +1,5 @@
-use crate::encoding::AsFixedSizeBytes;
 use candid::{Int, Nat, Principal};
+use std::collections::{BTreeSet, HashSet};
 
 pub mod s_box;
 pub mod s_ref;
@@ -7,18 +7,18 @@ pub mod s_ref_mut;
 
 pub trait StableType {
     #[inline]
-    fn stable_memory_consume(&mut self) {}
+    unsafe fn stable_memory_own(&mut self) {}
 
     #[inline]
-    fn stable_memory_unconsume(&mut self) {}
+    unsafe fn stable_memory_disown(&mut self) {}
 
     #[inline]
-    fn is_consumed_by_stable_memory(&self) -> bool {
+    fn is_owned_by_stable_memory(&self) -> bool {
         false
     }
 
     #[inline]
-    unsafe fn free(&mut self) {}
+    unsafe fn stable_drop(&mut self) {}
 }
 
 impl StableType for () {}
@@ -55,74 +55,78 @@ impl<const N: usize> StableType for [isize; N] {}
 impl<const N: usize> StableType for [f32; N] {}
 impl<const N: usize> StableType for [f64; N] {}
 
-impl StableType for Vec<u8> {}
 impl StableType for Principal {}
 impl StableType for Nat {}
 impl StableType for Int {}
 
-pub trait StableDrop {
-    type Output;
-
-    unsafe fn stable_drop(self) -> Self::Output;
-}
-
-pub trait StableAllocated: AsFixedSizeBytes {
-    fn move_to_stable(&mut self);
-    fn remove_from_stable(&mut self);
-}
-
-macro_rules! impl_for_primitive {
-    ($ty:ty) => {
-        impl StableAllocated for $ty {
-            #[inline]
-            fn move_to_stable(&mut self) {}
-
-            #[inline]
-            fn remove_from_stable(&mut self) {}
+impl<T: StableType> StableType for Option<T> {
+    #[inline]
+    unsafe fn stable_memory_own(&mut self) {
+        if let Some(it) = self.as_mut() {
+            it.stable_memory_own();
         }
+    }
 
-        impl StableDrop for $ty {
-            type Output = ();
-
-            #[inline]
-            unsafe fn stable_drop(self) {}
+    #[inline]
+    unsafe fn stable_memory_disown(&mut self) {
+        if let Some(it) = self.as_mut() {
+            it.stable_memory_disown();
         }
-    };
+    }
 }
 
-impl_for_primitive!(u8);
-impl_for_primitive!(u16);
-impl_for_primitive!(u32);
-impl_for_primitive!(u64);
-impl_for_primitive!(u128);
-impl_for_primitive!(usize);
-impl_for_primitive!(i8);
-impl_for_primitive!(i16);
-impl_for_primitive!(i32);
-impl_for_primitive!(i64);
-impl_for_primitive!(i128);
-impl_for_primitive!(isize);
-impl_for_primitive!(f32);
-impl_for_primitive!(f64);
-impl_for_primitive!(bool);
-impl_for_primitive!(());
+impl StableType for String {}
+impl StableType for Vec<u8> {}
+impl StableType for Vec<i8> {}
+impl StableType for Vec<u16> {}
+impl StableType for Vec<i16> {}
+impl StableType for Vec<u32> {}
+impl StableType for Vec<i32> {}
+impl StableType for Vec<u64> {}
+impl StableType for Vec<i64> {}
+impl StableType for Vec<u128> {}
+impl StableType for Vec<i128> {}
+impl StableType for Vec<usize> {}
+impl StableType for Vec<isize> {}
+impl StableType for Vec<f32> {}
+impl StableType for Vec<f64> {}
+impl StableType for Vec<()> {}
+impl StableType for Vec<bool> {}
 
-impl_for_primitive!([u8; 0]);
-impl_for_primitive!([u8; 1]);
-impl_for_primitive!([u8; 2]);
-impl_for_primitive!([u8; 4]);
-impl_for_primitive!([u8; 8]);
-impl_for_primitive!([u8; 16]);
-impl_for_primitive!([u8; 30]); // for principals
-impl_for_primitive!([u8; 32]);
-impl_for_primitive!([u8; 64]);
-impl_for_primitive!([u8; 128]);
-impl_for_primitive!([u8; 256]);
-impl_for_primitive!([u8; 512]);
-impl_for_primitive!([u8; 1024]);
-impl_for_primitive!([u8; 2048]);
-impl_for_primitive!([u8; 4096]);
+impl StableType for Vec<Principal> {}
+impl StableType for Vec<Nat> {}
+impl StableType for Vec<Int> {}
 
-impl_for_primitive!(Principal);
-impl_for_primitive!(Nat);
-impl_for_primitive!(Int);
+impl StableType for HashSet<u8> {}
+impl StableType for HashSet<i8> {}
+impl StableType for HashSet<u16> {}
+impl StableType for HashSet<i16> {}
+impl StableType for HashSet<u32> {}
+impl StableType for HashSet<i32> {}
+impl StableType for HashSet<u64> {}
+impl StableType for HashSet<i64> {}
+impl StableType for HashSet<u128> {}
+impl StableType for HashSet<i128> {}
+impl StableType for HashSet<usize> {}
+impl StableType for HashSet<isize> {}
+impl StableType for HashSet<f32> {}
+impl StableType for HashSet<f64> {}
+impl StableType for HashSet<()> {}
+impl StableType for HashSet<bool> {}
+
+impl StableType for BTreeSet<u8> {}
+impl StableType for BTreeSet<i8> {}
+impl StableType for BTreeSet<u16> {}
+impl StableType for BTreeSet<i16> {}
+impl StableType for BTreeSet<u32> {}
+impl StableType for BTreeSet<i32> {}
+impl StableType for BTreeSet<u64> {}
+impl StableType for BTreeSet<i64> {}
+impl StableType for BTreeSet<u128> {}
+impl StableType for BTreeSet<i128> {}
+impl StableType for BTreeSet<usize> {}
+impl StableType for BTreeSet<isize> {}
+impl StableType for BTreeSet<f32> {}
+impl StableType for BTreeSet<f64> {}
+impl StableType for BTreeSet<()> {}
+impl StableType for BTreeSet<bool> {}

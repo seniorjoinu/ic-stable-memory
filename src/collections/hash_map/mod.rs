@@ -1,10 +1,11 @@
-use crate::collections::hash_map::iter::{SHashMapIter, SHashMapIterCopy, SHashMapIterMut};
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::collections::hash_map::iter::SHashMapIter;
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
+use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use crate::{allocate, deallocate, SSlice};
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
@@ -32,25 +33,27 @@ const OCCUPIED: u8 = 255;
 type KeyHash = usize;
 
 // all for maximum cache-efficiency
-// fixed-size, open addressing, linear probing, 3/4 load factor, non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
-pub struct SHashMap<K, V> {
+// fixed-size, open addressing, linear probing, 3/4 load factor, no tombstones / non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
+pub struct SHashMap<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
+{
     table_ptr: u64,
     len: usize,
     cap: usize,
+    is_owned: bool,
     _marker_k: PhantomData<K>,
     _marker_v: PhantomData<V>,
 }
 
-impl<K, V> SHashMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
+    SHashMap<K, V>
+{
     fn hash<T: Hash>(val: &T) -> KeyHash {
         let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
 
         hasher.finish() as KeyHash
     }
-}
 
-impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self::new_with_capacity(DEFAULT_CAPACITY)
@@ -61,18 +64,19 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
             table_ptr: EMPTY_PTR,
             len: 0,
             cap: capacity,
+            is_owned: false,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
     }
 
-    pub fn insert(&mut self, mut key: K, mut value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
             let table = allocate(size as usize);
 
             let zeroed = vec![0u8; size as usize];
-            table.write_bytes(0, &zeroed);
+            unsafe { crate::mem::write_bytes(table.as_ptr(), &zeroed) };
 
             self.table_ptr = table.as_ptr();
         }
@@ -81,14 +85,11 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         let mut i = key_hash % self.capacity();
 
         loop {
-            match self.read_key_at(i, true) {
-                HashMapKey::Occupied(prev_key) => {
+            match self.get_key(i) {
+                Some(prev_key) => {
                     if prev_key.eq(&key) {
-                        let mut prev_value = self.read_val_at(i);
-                        prev_value.remove_from_stable();
-
-                        value.move_to_stable();
-                        self.write_val_at(i, value);
+                        let prev_value = self.read_and_disown_val(i);
+                        self.write_and_own_val(i, value);
 
                         return Some(prev_value);
                     } else {
@@ -97,12 +98,16 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
                         continue;
                     }
                 }
-                HashMapKey::Empty => {
+                None => {
                     if self.is_full() {
                         let mut new = Self::new_with_capacity(self.capacity() * 2 - 1);
 
-                        for (k, v) in unsafe { self.iter_copy() } {
-                            new.insert(k, v);
+                        for i in 0..self.cap {
+                            if let Some(k) = self.read_and_disown_key(i) {
+                                let v = self.read_and_disown_val(i);
+
+                                new.insert(k, v);
+                            }
                         }
 
                         let res = new.insert(key, value);
@@ -115,17 +120,13 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
                         return res;
                     }
 
-                    key.move_to_stable();
-                    value.move_to_stable();
-
-                    self.write_key_at(i, HashMapKey::Occupied(key));
-                    self.write_val_at(i, value);
+                    self.write_and_own_key(i, Some(key));
+                    self.write_and_own_val(i, value);
 
                     self.len += 1;
 
                     return None;
                 }
-                _ => unreachable!(),
             }
         }
     }
@@ -135,48 +136,25 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let (i, mut k) = self.find_inner_idx(key)?;
-        let mut v = self.remove_by_idx(i);
-
-        k.remove_from_stable();
-        v.remove_from_stable();
-
-        Some(v)
+        Some(self.remove_by_idx(self.find_inner_idx(key)?))
     }
 
     #[inline]
-    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
+    pub fn get<Q>(&self, key: &Q) -> Option<SRef<V>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let (i, _) = self.find_inner_idx(key)?;
-
-        Some(self.read_val_at(i))
+        Some(self.get_val(self.find_inner_idx(key)?))
     }
 
     #[inline]
-    pub fn get<Q>(&self, key: &Q) -> Option<SRef<'_, V>>
+    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<V>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
     {
-        let (i, _) = self.find_inner_idx(key)?;
-        let ptr = self.get_value_ptr(i);
-
-        Some(SRef::new(ptr))
-    }
-
-    #[inline]
-    pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<'_, V>>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq,
-    {
-        let (i, _) = self.find_inner_idx(key)?;
-        let ptr = self.get_value_ptr(i);
-
-        Some(SRefMut::new(ptr))
+        Some(self.get_val_mut(self.find_inner_idx(key)?))
     }
 
     #[inline]
@@ -213,33 +191,16 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         SHashMapIter::new(self)
     }
 
-    #[inline]
-    pub fn iter_mut(&mut self) -> SHashMapIterMut<K, V> {
-        SHashMapIterMut::new(self)
-    }
-
-    #[inline]
-    pub unsafe fn iter_copy(&self) -> SHashMapIterCopy<K, V> {
-        SHashMapIterCopy::new(self)
-    }
-
     pub fn clear(&mut self) {
         if self.is_empty() {
             return;
         }
 
         for i in 0..self.cap {
-            match self.read_key_at(i, true) {
-                HashMapKey::Empty => continue,
-                HashMapKey::Occupied(mut k) => {
-                    let mut v = self.read_val_at(i);
+            if let Some(k) = self.read_and_disown_key(i) {
+                let v = self.read_and_disown_val(i);
 
-                    k.remove_from_stable();
-                    v.remove_from_stable();
-
-                    self.write_key_at(i, HashMapKey::Empty);
-                }
-                _ => unreachable!(),
+                self.write_and_own_key(i, None);
             }
         }
 
@@ -255,27 +216,29 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         }
 
         for i in 0..self.cap {
-            match self.read_key_at(i, true) {
-                HashMapKey::Empty => continue,
-                HashMapKey::Occupied(mut k) => {
-                    let mut v = self.read_val_at(i);
-                    if f(&k, &v) {
-                        continue;
+            if let Some(mut k) = self.read_and_disown_key(i) {
+                let mut v = self.read_and_disown_val(i);
+                if f(&k, &v) {
+                    unsafe {
+                        k.stable_memory_own();
+                        v.stable_memory_own();
                     }
 
-                    k.remove_from_stable();
-                    v.remove_from_stable();
-
-                    self.write_key_at(i, HashMapKey::Empty);
-                    self.len -= 1;
+                    continue;
                 }
-                _ => unreachable!(),
+
+                self.write_and_own_key(i, None);
+                self.len -= 1;
             }
+
+            continue;
         }
     }
 
     fn remove_by_idx(&mut self, mut i: usize) -> V {
-        let prev_value = self.read_val_at(i);
+        let prev_value = self.read_and_disown_val(i);
+        self.read_and_disown_key(i).unwrap();
+
         let mut j = i;
 
         loop {
@@ -283,28 +246,29 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
             if j == i {
                 break;
             }
-            match self.read_key_at(j, true) {
-                HashMapKey::Empty => break,
-                HashMapKey::Occupied(next_key) => {
-                    let k = Self::hash(&next_key) % self.capacity();
-                    if (j < i) ^ (k <= i) ^ (k > j) {
-                        self.write_key_at(i, HashMapKey::Occupied(next_key));
-                        self.write_val_at(i, self.read_val_at(j));
 
-                        i = j;
-                    }
+            if let Some(next_key) = self.read_and_disown_key(j) {
+                let k = Self::hash(&next_key) % self.capacity();
+                if (j < i) ^ (k <= i) ^ (k > j) {
+                    self.write_and_own_key(i, Some(next_key));
+                    self.write_and_own_val(i, self.read_and_disown_val(j));
+
+                    i = j;
                 }
-                _ => unreachable!(),
+
+                continue;
             }
+
+            break;
         }
 
-        self.write_key_at(i, HashMapKey::Empty);
+        self.write_and_own_key(i, None);
         self.len -= 1;
 
         prev_value
     }
 
-    fn find_inner_idx<Q>(&self, key: &Q) -> Option<(usize, K)>
+    fn find_inner_idx<Q>(&self, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,
         Q: Hash + Eq,
@@ -317,112 +281,107 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
         let mut i = key_hash % self.capacity();
 
         loop {
-            match self.read_key_at(i, true) {
-                HashMapKey::Occupied(prev_key) => {
-                    if prev_key.borrow().eq(key) {
-                        return Some((i, prev_key));
-                    } else {
-                        i = (i + 1) % self.capacity();
-                        continue;
-                    }
-                }
-                HashMapKey::Empty => {
-                    return None;
-                }
-                _ => unreachable!(),
-            };
+            if (*self.get_key(i)?).borrow().eq(key) {
+                return Some(i);
+            } else {
+                i = (i + 1) % self.capacity();
+            }
         }
     }
 
-    fn get_key_ptr(&self, idx: usize) -> u64 {
-        self.table_ptr + (KEYS_OFFSET + (1 + K::SIZE) * idx + 1) as u64
-    }
+    fn get_key(&self, idx: usize) -> Option<SRef<K>> {
+        let ptr = self.get_key_flag_ptr(idx);
+        let flag: u8 = unsafe { crate::mem::read_fixed_for_reference(ptr) };
 
-    fn get_value_ptr(&self, idx: usize) -> u64 {
-        self.table_ptr + (values_offset::<K>(self.capacity()) + V::SIZE * idx) as u64
-    }
-
-    pub(crate) fn read_key_at(&self, idx: usize, read_value: bool) -> HashMapKey<K> {
-        let mut key_flag = [0u8];
-        let offset = KEYS_OFFSET + (1 + K::SIZE) * idx;
-
-        println!("{} {}", self.table_ptr, offset);
-
-        SSlice::_read_bytes(self.table_ptr, offset, &mut key_flag);
-
-        match key_flag[0] {
-            EMPTY => HashMapKey::Empty,
-            OCCUPIED => {
-                if read_value {
-                    let k = SSlice::_as_fixed_size_bytes_read::<K>(self.table_ptr, offset + 1);
-
-                    HashMapKey::Occupied(k)
-                } else {
-                    HashMapKey::OccupiedNull
-                }
-            }
+        match flag {
+            EMPTY => None,
+            OCCUPIED => Some(SRef::new(ptr + 1)),
             _ => unreachable!(),
         }
     }
 
-    #[inline]
-    pub(crate) fn read_val_at(&self, idx: usize) -> V {
-        let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
+    fn read_and_disown_key(&self, idx: usize) -> Option<K> {
+        let ptr = self.get_key_flag_ptr(idx);
+        let flag: u8 = unsafe { crate::mem::read_fixed_for_reference(ptr) };
 
-        SSlice::_as_fixed_size_bytes_read::<V>(self.table_ptr, offset)
-    }
-
-    fn write_key_at(&mut self, idx: usize, key: HashMapKey<K>) {
-        let offset = KEYS_OFFSET + (1 + K::SIZE) * idx;
-
-        let key_flag = match key {
-            HashMapKey::Empty => [EMPTY],
-            HashMapKey::Occupied(k) => {
-                SSlice::_as_fixed_size_bytes_write::<K>(self.table_ptr, offset + 1, k);
-
-                [OCCUPIED]
-            }
+        match flag {
+            EMPTY => None,
+            OCCUPIED => Some(unsafe { crate::mem::read_and_disown_fixed(ptr + 1) }),
             _ => unreachable!(),
-        };
+        }
+    }
 
-        SSlice::_write_bytes(self.table_ptr, offset, &key_flag);
+    fn write_and_own_key(&mut self, idx: usize, key: Option<K>) {
+        let ptr = self.get_key_flag_ptr(idx);
+
+        if let Some(mut k) = key {
+            unsafe { crate::mem::write_and_own_fixed(ptr, &mut OCCUPIED) };
+            unsafe { crate::mem::write_and_own_fixed(ptr + 1, &mut k) };
+
+            return;
+        }
+
+        unsafe { crate::mem::write_and_own_fixed(ptr, &mut EMPTY) };
     }
 
     #[inline]
-    fn write_val_at(&mut self, idx: usize, val: V) {
-        let offset = values_offset::<K>(self.capacity()) + V::SIZE * idx;
+    fn get_val(&self, idx: usize) -> SRef<V> {
+        SRef::new(self.get_value_ptr(idx))
+    }
 
-        SSlice::_as_fixed_size_bytes_write::<V>(self.table_ptr, offset, val);
+    #[inline]
+    fn get_val_mut(&self, idx: usize) -> SRefMut<V> {
+        SRefMut::new(self.get_value_ptr(idx))
+    }
+
+    #[inline]
+    fn read_and_disown_val(&self, idx: usize) -> V {
+        unsafe { crate::mem::read_and_disown_fixed(self.get_value_ptr(idx)) }
+    }
+
+    #[inline]
+    fn write_and_own_val(&mut self, idx: usize, mut val: V) {
+        unsafe { crate::mem::write_and_own_fixed(self.get_value_ptr(idx), &mut val) }
+    }
+
+    #[inline]
+    fn get_value_ptr(&self, idx: usize) -> StablePtr {
+        SSlice::_make_ptr_by_offset(
+            self.table_ptr,
+            values_offset::<K>(self.capacity()) + V::SIZE * idx,
+        )
+    }
+
+    #[inline]
+    fn get_key_flag_ptr(&self, idx: usize) -> StablePtr {
+        SSlice::_make_ptr_by_offset(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * idx)
+    }
+
+    #[inline]
+    fn get_key_data_ptr(&self, idx: usize) -> StablePtr {
+        SSlice::_make_ptr_by_offset(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * idx + 1)
     }
 
     pub fn debug_print(&self) {
         print!("Node({}, {})[", self.len(), self.capacity());
         for i in 0..self.capacity() {
-            let mut k_flag = [0u8];
-            let mut k = K::Buf::new(K::SIZE);
-            let mut v = K::Buf::new(K::SIZE);
+            let k_flag: u8 =
+                unsafe { crate::mem::read_fixed_for_reference(self.get_key_flag_ptr(i)) };
+            let mut k_buf = K::Buf::new(K::SIZE);
+            let mut v_buf = V::Buf::new(V::SIZE);
 
-            SSlice::_read_bytes(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * i, &mut k_flag);
-            SSlice::_read_bytes(
-                self.table_ptr,
-                KEYS_OFFSET + (1 + K::SIZE) * i + 1,
-                k._deref_mut(),
-            );
-            SSlice::_read_bytes(
-                self.table_ptr,
-                values_offset::<K>(self.capacity()) + V::SIZE * i,
-                v._deref_mut(),
-            );
+            unsafe { crate::mem::read_bytes(self.get_key_data_ptr(i), k_buf._deref_mut()) };
+            unsafe { crate::mem::read_bytes(self.get_value_ptr(i), v_buf._deref_mut()) };
 
             print!("(");
 
-            match k_flag[0] {
+            match k_flag {
                 EMPTY => print!("<empty> = "),
                 OCCUPIED => print!("<occupied> = "),
                 _ => unreachable!(),
             };
 
-            print!("{:?}, {:?})", k._deref(), v._deref());
+            print!("{:?}, {:?})", k_buf._deref(), v_buf._deref());
 
             if i < self.capacity() - 1 {
                 print!(", ");
@@ -432,20 +391,18 @@ impl<K: StableAllocated + Hash + Eq, V: StableAllocated> SHashMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Hash + Eq, V: StableAllocated> Default for SHashMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes> Default
+    for SHashMap<K, V>
+{
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub(crate) enum HashMapKey<K> {
-    Empty,
-    Occupied(K),
-    OccupiedNull,
-}
-
-impl<K, V> AsFixedSizeBytes for SHashMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
+    AsFixedSizeBytes for SHashMap<K, V>
+{
     const SIZE: usize = u64::SIZE + usize::SIZE * 2;
     type Buf = [u8; u64::SIZE + usize::SIZE * 2];
 
@@ -469,31 +426,34 @@ impl<K, V> AsFixedSizeBytes for SHashMap<K, V> {
             table_ptr,
             len,
             cap,
+            is_owned: false,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
     }
 }
 
-impl<K: StableAllocated + Eq + Hash, V: StableAllocated> StableAllocated for SHashMap<K, V> {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
-}
-
-impl<K: StableAllocated + Eq + Hash + StableDrop, V: StableAllocated + StableDrop> StableDrop
+impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes> StableType
     for SHashMap<K, V>
 {
-    type Output = ();
+    #[inline]
+    unsafe fn stable_memory_own(&mut self) {
+        self.is_owned = true;
+    }
 
-    unsafe fn stable_drop(self) {
+    #[inline]
+    unsafe fn stable_memory_disown(&mut self) {
+        self.is_owned = false;
+    }
+
+    #[inline]
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.is_owned
+    }
+
+    unsafe fn stable_drop(&mut self) {
         if self.table_ptr != EMPTY_PTR {
-            for (k, v) in self.iter_copy() {
-                k.stable_drop();
-                v.stable_drop();
-            }
+            self.clear();
 
             let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
             deallocate(slice);
@@ -501,13 +461,25 @@ impl<K: StableAllocated + Eq + Hash + StableDrop, V: StableAllocated + StableDro
     }
 }
 
+impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes> Drop
+    for SHashMap<K, V>
+{
+    fn drop(&mut self) {
+        if !self.is_owned_by_stable_memory() {
+            unsafe {
+                self.stable_drop();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_map::SHashMap;
-    use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+    use crate::encoding::AsFixedSizeBytes;
     use crate::init_allocator;
     use crate::primitive::s_box::SBox;
-    use crate::primitive::StableDrop;
+    use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -566,8 +538,6 @@ mod tests {
         assert_eq!(*map.get(&k4).unwrap(), 4);
         assert_eq!(*map.get(&k6).unwrap(), 6);
         assert_eq!(*map.get(&k8).unwrap(), 8);
-
-        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -595,8 +565,6 @@ mod tests {
 
         map.debug_print();
 
-        unsafe { map.stable_drop() };
-
         let mut map = SHashMap::default();
         for i in 0..100 {
             assert!(map.insert(i, i).is_none());
@@ -609,8 +577,6 @@ mod tests {
         for i in 0..100 {
             assert_eq!(map.remove(&(99 - i)).unwrap(), 99 - i);
         }
-
-        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -646,8 +612,6 @@ mod tests {
         for i in vec {
             map.remove(&i);
         }
-
-        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -675,8 +639,6 @@ mod tests {
         }
 
         assert_eq!(map.len(), 100);
-
-        unsafe { map.stable_drop() };
     }
 
     #[test]
@@ -733,15 +695,11 @@ mod tests {
             map.insert(SBox::new(i), i);
         }
 
-        unsafe { map.stable_drop() };
-
         println!("sbox mut");
         let mut map = SHashMap::new();
 
         for i in 0..100 {
             map.insert(SBox::new(i), i);
         }
-
-        unsafe { map.stable_drop() };
     }
 }

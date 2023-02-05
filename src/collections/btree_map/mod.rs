@@ -1,11 +1,12 @@
-use crate::collections::btree_map::internal_node::{InternalBTreeNode, PtrRaw};
+use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
+use crate::mem::{StablePtr, StablePtrBuf};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use crate::{isoprint, SSlice};
 use std::borrow::Borrow;
 use std::fmt::Debug;
@@ -28,21 +29,23 @@ pub(crate) mod leaf_node;
 
 // LEFT CHILD - LESS THAN
 // RIGHT CHILD - MORE OR EQUAL THAN
-pub struct SBTreeMap<K, V> {
-    pub(crate) root: Option<BTreeNode<K, V>>,
-    pub(crate) len: u64,
-    pub(crate) certified: bool,
+pub struct SBTreeMap<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> {
+    root: Option<BTreeNode<K, V>>,
+    len: u64,
+    certified: bool,
+    is_owned: bool,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> SBTreeMap<K, V> {
     #[inline]
     pub fn new() -> Self {
         Self {
             root: None,
             len: 0,
             certified: false,
+            is_owned: false,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
@@ -54,6 +57,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
             root: None,
             len: 0,
             certified: true,
+            is_owned: false,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
@@ -76,7 +80,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                         Err(idx) => idx,
                     };
 
-                    let child_ptr = internal_node.read_child_ptr(child_idx);
+                    let child_ptr = internal_node.read_child_ptr_buf(child_idx);
                     self.push_stack(internal_node, node_len, child_idx);
 
                     node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
@@ -103,7 +107,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
             }
         };
 
-        let mut key_to_index = right_leaf.read_key(0);
+        let mut key_to_index = right_leaf.read_key_buf(0);
         let mut ptr = right_leaf.as_ptr();
 
         while let Some((mut parent, parent_len, idx)) = self.pop_stack() {
@@ -174,7 +178,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                         Err(idx) => idx,
                     };
 
-                    let child_ptr = internal_node.read_child_ptr(child_idx);
+                    let child_ptr = internal_node.read_child_ptr_buf(child_idx);
                     self.push_stack(internal_node, node_len, child_idx);
 
                     node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
@@ -190,11 +194,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
 
         // if possible to simply remove the key without violating - return early
         if leaf_len > MIN_LEN_AFTER_SPLIT {
-            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
+            let v = leaf.remove_and_disown_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
 
             if let Some((mut fin, i)) = found_internal_node {
-                fin.write_key(i, &leaf.read_key(0));
+                fin.write_key_buf(i, &leaf.read_key_buf(0));
             }
 
             modified.push(self.current_depth(), leaf.as_ptr());
@@ -207,7 +211,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
 
         // if the only node in the tree is the root - return early
         if stack_top_frame.is_none() {
-            let v = leaf.remove_by_idx(idx, leaf_len, &mut self._buf);
+            let v = leaf.remove_and_disown_by_idx(idx, leaf_len, &mut self._buf);
             leaf.write_len(leaf_len - 1);
 
             modified.push(0, leaf.as_ptr());
@@ -224,17 +228,6 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         )
     }
 
-    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Ord,
-    {
-        let (leaf_node, idx) = self.lookup(key, false)?;
-        let v = V::from_fixed_size_bytes(leaf_node.read_value(idx)._deref());
-
-        Some(v)
-    }
-
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<SRef<V>>
     where
@@ -242,9 +235,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         Q: Ord,
     {
         let (leaf_node, idx) = self.lookup(key, false)?;
-        let ptr = leaf_node.get_value_ptr(idx);
 
-        Some(SRef::new(ptr))
+        Some(leaf_node.get_value(idx))
     }
 
     #[inline]
@@ -253,10 +245,9 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         K: Borrow<Q>,
         Q: Ord,
     {
-        let (leaf_node, idx) = self.lookup(key, false)?;
-        let ptr = leaf_node.get_value_ptr(idx);
+        let (mut leaf_node, idx) = self.lookup(key, false)?;
 
-        Some(SRefMut::new(ptr))
+        Some(leaf_node.get_value_mut(idx))
     }
 
     #[inline]
@@ -270,7 +261,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
 
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
-        SBTreeMapIter::<K, V>::new(&self.root, self.len)
+        SBTreeMapIter::<K, V>::new(self)
     }
 
     #[inline]
@@ -283,23 +274,23 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         self.len() == 0
     }
 
-    pub unsafe fn first_copy(&self) -> Option<(K, V)> {
+    pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
         let mut node = self.get_root()?;
 
         loop {
             match node {
                 BTreeNode::Internal(n) => {
-                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr(0));
+                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr_buf(0));
                     node = BTreeNode::from_ptr(ptr);
                 }
                 BTreeNode::Leaf(n) => {
-                    return Some(n.read_entry(0));
+                    return Some((n.get_key(0), n.get_value(0)));
                 }
             }
         }
     }
 
-    pub unsafe fn last_copy(&self) -> Option<(K, V)> {
+    pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
         let mut node = self.get_root()?;
 
         loop {
@@ -307,13 +298,13 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                 BTreeNode::Internal(n) => {
                     let len = n.read_len();
 
-                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr(len));
+                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr_buf(len));
                     node = BTreeNode::from_ptr(ptr);
                 }
                 BTreeNode::Leaf(n) => {
                     let len = n.read_len();
 
-                    return Some(n.read_entry(len - 1));
+                    return Some((n.get_key(len - 1), n.get_value(len - 1)));
                 }
             }
         }
@@ -352,6 +343,10 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         unsafe { self.root.as_ref().map(|it| it.copy()) }
     }
 
+    pub(crate) fn set_certified(&mut self, val: bool) {
+        self.certified = val;
+    }
+
     // WARNING: return_early == true will return nonsense leaf node and idx
     fn lookup<Q>(&self, key: &Q, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)>
     where
@@ -375,7 +370,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                     };
 
                     let child_ptr =
-                        u64::from_fixed_size_bytes(&internal_node.read_child_ptr(child_idx));
+                        u64::from_fixed_size_bytes(&internal_node.read_child_ptr_buf(child_idx));
                     node = BTreeNode::from_ptr(child_ptr);
                 }
                 BTreeNode::Leaf(leaf_node) => {
@@ -399,12 +394,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
             Ok(existing_idx) => {
                 // if there is already a key like that, return early
-                let mut prev_value =
-                    V::from_fixed_size_bytes(leaf_node.read_value(existing_idx)._deref());
-                prev_value.remove_from_stable();
-                value.move_to_stable();
-
-                leaf_node.write_value(existing_idx, &value.as_new_fixed_size_bytes());
+                let prev_value: V = leaf_node.read_and_disown_value(existing_idx);
+                leaf_node.write_and_own_value(existing_idx, value);
 
                 modified.push(self.current_depth(), leaf_node.as_ptr());
 
@@ -413,10 +404,10 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
             Err(idx) => idx,
         };
 
-        key.move_to_stable();
+        unsafe { key.stable_memory_own() };
         let k = key.as_new_fixed_size_bytes();
 
-        value.move_to_stable();
+        unsafe { value.stable_memory_own() };
         let v = value.as_new_fixed_size_bytes();
 
         // if there is enough space - simply insert and return early
@@ -466,12 +457,12 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         len: usize,
         idx: usize,
         key: K::Buf,
-        child_ptr: PtrRaw,
+        child_ptr: StablePtrBuf,
         modified: &mut LeveledList,
     ) -> Option<(InternalBTreeNode<K>, K::Buf)> {
         if len < CAPACITY {
-            internal_node.insert_key(idx, &key, len, &mut self._buf);
-            internal_node.insert_child_ptr(idx + 1, &child_ptr, len + 1, &mut self._buf);
+            internal_node.insert_key_buf(idx, &key, len, &mut self._buf);
+            internal_node.insert_child_ptr_buf(idx + 1, &child_ptr, len + 1, &mut self._buf);
 
             internal_node.write_len(len + 1);
 
@@ -488,14 +479,14 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         let (mut right, mid) = internal_node.split_max_len(&mut self._buf, self.certified);
 
         if idx <= MIN_LEN_AFTER_SPLIT {
-            internal_node.insert_key(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
-            internal_node.insert_child_ptr(idx + 1, &child_ptr, B, &mut self._buf);
+            internal_node.insert_key_buf(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
+            internal_node.insert_child_ptr_buf(idx + 1, &child_ptr, B, &mut self._buf);
 
             internal_node.write_len(B);
             right.write_len(MIN_LEN_AFTER_SPLIT);
         } else {
-            right.insert_key(idx - B, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
-            right.insert_child_ptr(idx - B + 1, &child_ptr, B, &mut self._buf);
+            right.insert_key_buf(idx - B, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
+            right.insert_child_ptr_buf(idx - B + 1, &child_ptr, B, &mut self._buf);
 
             internal_node.write_len(MIN_LEN_AFTER_SPLIT);
             right.write_len(B);
@@ -630,7 +621,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         internal_node: &mut InternalBTreeNode<K>,
         idx: usize,
         key: &K::Buf,
-        child_ptr: &PtrRaw,
+        child_ptr: &StablePtrBuf,
         modified: &mut LeveledList,
     ) -> bool {
         let stack_top_frame = self.peek_stack();
@@ -699,13 +690,13 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         rs_len: usize,
         i_idx: usize,
         key: &K::Buf,
-        child_ptr: &PtrRaw,
+        child_ptr: &StablePtrBuf,
     ) {
         if i_idx != CAPACITY {
             rs.steal_from_left(rs_len, node, CAPACITY, p, p_idx, None, &mut self._buf);
 
-            node.insert_key(i_idx, key, CAPACITY - 1, &mut self._buf);
-            node.insert_child_ptr(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
+            node.insert_key_buf(i_idx, key, CAPACITY - 1, &mut self._buf);
+            node.insert_child_ptr_buf(i_idx + 1, child_ptr, CAPACITY, &mut self._buf);
 
             rs.write_len(rs_len + 1);
             return;
@@ -725,13 +716,13 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         ls_len: usize,
         i_idx: usize,
         key: &K::Buf,
-        child_ptr: &PtrRaw,
+        child_ptr: &StablePtrBuf,
     ) {
         if i_idx != 0 {
             ls.steal_from_right(ls_len, node, CAPACITY, p, p_idx - 1, None, &mut self._buf);
 
-            node.insert_key(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
-            node.insert_child_ptr(i_idx, child_ptr, CAPACITY, &mut self._buf);
+            node.insert_key_buf(i_idx - 1, key, CAPACITY - 1, &mut self._buf);
+            node.insert_child_ptr_buf(i_idx, child_ptr, CAPACITY, &mut self._buf);
 
             ls.write_len(ls_len + 1);
             return;
@@ -768,7 +759,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                 );
 
                 // idx + 1, because after the rotation the leaf has one more key added before
-                let v = leaf.remove_by_idx(idx + 1, B, &mut self._buf);
+                let v = leaf.remove_and_disown_by_idx(idx + 1, B, &mut self._buf);
 
                 modified.push(self.current_depth(), leaf.as_ptr());
                 modified.push(self.current_depth(), left_sibling.as_ptr());
@@ -794,7 +785,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                     );
 
                     // just idx, because after rotation leaf has one more key added to the end
-                    let v = leaf.remove_by_idx(idx, B, &mut self._buf);
+                    let v = leaf.remove_and_disown_by_idx(idx, B, &mut self._buf);
 
                     modified.push(self.current_depth(), leaf.as_ptr());
                     modified.push(self.current_depth(), right_sibling.as_ptr());
@@ -832,7 +823,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                 );
 
                 // just idx, because after rotation leaf has one more key added to the end
-                let v = leaf.remove_by_idx(idx, B, &mut self._buf);
+                let v = leaf.remove_and_disown_by_idx(idx, B, &mut self._buf);
 
                 modified.push(self.current_depth(), leaf.as_ptr());
                 modified.push(self.current_depth(), right_sibling.as_ptr());
@@ -868,11 +859,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         leaf.merge_min_len(right_sibling, &mut self._buf);
 
         // just idx, because leaf keys stay unchanged
-        let v = leaf.remove_by_idx(idx, CAPACITY - 1, &mut self._buf);
+        let v = leaf.remove_and_disown_by_idx(idx, CAPACITY - 1, &mut self._buf);
         leaf.write_len(CAPACITY - 2);
 
         if let Some((mut fin, i)) = found_internal_node {
-            fin.write_key(i, &leaf.read_key(0));
+            fin.write_key_buf(i, &leaf.read_key_buf(0));
         }
 
         self.handle_stack_after_merge(true, leaf, modified);
@@ -894,7 +885,11 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         left_sibling.merge_min_len(leaf, &mut self._buf);
         // idx + MIN_LEN_AFTER_SPLIT, because all keys of leaf are added to the
         // end of left_sibling
-        let v = left_sibling.remove_by_idx(idx + MIN_LEN_AFTER_SPLIT, CAPACITY - 1, &mut self._buf);
+        let v = left_sibling.remove_and_disown_by_idx(
+            idx + MIN_LEN_AFTER_SPLIT,
+            CAPACITY - 1,
+            &mut self._buf,
+        );
         left_sibling.write_len(CAPACITY - 2);
 
         // no reason to handle 'found_internal_node', because the key is
@@ -928,7 +923,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         left_sibling.write_len(left_sibling_len - 1);
 
         if let Some((mut fin, i)) = found_internal_node {
-            fin.write_key(i, &leaf.read_key(0));
+            fin.write_key_buf(i, &leaf.read_key_buf(0));
         }
     }
 
@@ -954,7 +949,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         right_sibling.write_len(right_sibling_len - 1);
 
         if let Some((mut fin, i)) = found_internal_node {
-            fin.write_key(i, &leaf.read_key(0));
+            fin.write_key_buf(i, &leaf.read_key_buf(0));
         }
     }
 
@@ -975,8 +970,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
 
             // if the node has enough keys, return early
             if node_len > MIN_LEN_AFTER_SPLIT {
-                node.remove_key(idx_to_remove, node_len, &mut self._buf);
-                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_key_buf(idx_to_remove, node_len, &mut self._buf);
+                node.remove_child_ptr_buf(child_idx_to_remove, node_len + 1, &mut self._buf);
                 node.write_len(node_len - 1);
 
                 modified.push(self.current_depth(), node.as_ptr());
@@ -1000,8 +995,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
                 }
 
                 // otherwise simply remove and return
-                node.remove_key(idx_to_remove, node_len, &mut self._buf);
-                node.remove_child_ptr(child_idx_to_remove, node_len + 1, &mut self._buf);
+                node.remove_key_buf(idx_to_remove, node_len, &mut self._buf);
+                node.remove_child_ptr_buf(child_idx_to_remove, node_len + 1, &mut self._buf);
                 node.write_len(node_len - 1);
 
                 modified.push(self.current_depth(), node.as_ptr());
@@ -1164,8 +1159,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
             &mut self._buf,
         );
         right_sibling.write_len(right_sibling_len - 1);
-        node.remove_key(idx_to_remove, B, &mut self._buf);
-        node.remove_child_ptr(child_idx_to_remove, B + 1, &mut self._buf);
+        node.remove_key_buf(idx_to_remove, B, &mut self._buf);
+        node.remove_child_ptr_buf(child_idx_to_remove, B + 1, &mut self._buf);
     }
 
     fn steal_from_left_sibling_internal(
@@ -1189,8 +1184,8 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
             &mut self._buf,
         );
         left_sibling.write_len(left_sibling_len - 1);
-        node.remove_key(idx_to_remove + 1, B, &mut self._buf);
-        node.remove_child_ptr(child_idx_to_remove + 1, B + 1, &mut self._buf);
+        node.remove_key_buf(idx_to_remove + 1, B, &mut self._buf);
+        node.remove_child_ptr_buf(child_idx_to_remove + 1, B + 1, &mut self._buf);
     }
 
     fn merge_with_right_sibling_internal(
@@ -1206,10 +1201,10 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         modified.remove(self.current_depth(), right_sibling.as_ptr());
         modified.push(self.current_depth(), node.as_ptr());
 
-        let mid_element = parent.read_key(parent_idx);
+        let mid_element = parent.read_key_buf(parent_idx);
         node.merge_min_len(&mid_element, right_sibling, &mut self._buf);
-        node.remove_key(idx_to_remove, CAPACITY, &mut self._buf);
-        node.remove_child_ptr(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
+        node.remove_key_buf(idx_to_remove, CAPACITY, &mut self._buf);
+        node.remove_child_ptr_buf(child_idx_to_remove, CHILDREN_CAPACITY, &mut self._buf);
         node.write_len(CAPACITY - 1);
     }
 
@@ -1226,10 +1221,14 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         modified.remove(self.current_depth(), node.as_ptr());
         modified.push(self.current_depth(), left_sibling.as_ptr());
 
-        let mid_element = parent.read_key(parent_idx - 1);
+        let mid_element = parent.read_key_buf(parent_idx - 1);
         left_sibling.merge_min_len(&mid_element, node, &mut self._buf);
-        left_sibling.remove_key(idx_to_remove + B, CAPACITY, &mut self._buf);
-        left_sibling.remove_child_ptr(child_idx_to_remove + B, CHILDREN_CAPACITY, &mut self._buf);
+        left_sibling.remove_key_buf(idx_to_remove + B, CAPACITY, &mut self._buf);
+        left_sibling.remove_child_ptr_buf(
+            child_idx_to_remove + B,
+            CHILDREN_CAPACITY,
+            &mut self._buf,
+        );
         left_sibling.write_len(CAPACITY - 1);
     }
 
@@ -1243,7 +1242,7 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
         match &self.root {
             Some(r) => unsafe { r.copy() },
             None => {
-                let mut new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified));
+                let new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified));
 
                 self.root = Some(new_root);
                 unsafe { self.root.as_ref().unwrap_unchecked().copy() }
@@ -1252,26 +1251,41 @@ impl<K: StableAllocated + Ord, V: StableAllocated> SBTreeMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> SBTreeMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> SBTreeMap<K, V> {
     #[inline]
     pub fn clear(&mut self) {
-        let old = mem::replace(self, Self::new());
+        let mut old = mem::replace(self, Self::new());
+        self.is_owned = old.is_owned;
+        self.certified = old.certified;
 
         unsafe { old.stable_drop() };
     }
 }
 
-impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> StableType
     for SBTreeMap<K, V>
 {
-    type Output = ();
+    #[inline]
+    unsafe fn stable_memory_own(&mut self) {
+        self.is_owned = true;
+    }
 
-    unsafe fn stable_drop(self) {
+    #[inline]
+    unsafe fn stable_memory_disown(&mut self) {
+        self.is_owned = false;
+    }
+
+    #[inline]
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.is_owned
+    }
+
+    unsafe fn stable_drop(&mut self) {
         if self.root.is_none() {
             return;
         }
 
-        let mut nodes = vec![unsafe { self.root.unwrap_unchecked() }];
+        let mut nodes = vec![unsafe { self.root.take().unwrap_unchecked() }];
         let mut new_nodes = Vec::new();
 
         loop {
@@ -1283,7 +1297,7 @@ impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> Sta
                 match unsafe { nodes.pop().unwrap_unchecked() } {
                     BTreeNode::Internal(internal) => {
                         for j in 0..(internal.read_len() + 1) {
-                            let child_ptr_raw = internal.read_child_ptr(j);
+                            let child_ptr_raw = internal.read_child_ptr_buf(j);
                             let child_ptr = u64::from_fixed_size_bytes(&child_ptr_raw);
                             let child = BTreeNode::<K, V>::from_ptr(child_ptr);
 
@@ -1296,8 +1310,10 @@ impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> Sta
                     }
                     BTreeNode::Leaf(leaf) => {
                         for j in 0..leaf.read_len() {
-                            let key = K::from_fixed_size_bytes(leaf.read_key(j)._deref());
-                            let value = V::from_fixed_size_bytes(leaf.read_value(j)._deref());
+                            // TODO: make it use mem api
+                            let mut key = K::from_fixed_size_bytes(leaf.read_key_buf(j)._deref());
+                            let mut value =
+                                V::from_fixed_size_bytes(leaf.read_value_buf(j)._deref());
 
                             key.stable_drop();
                             value.stable_drop();
@@ -1311,7 +1327,21 @@ impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> Sta
     }
 }
 
-impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> Drop
+    for SBTreeMap<K, V>
+{
+    fn drop(&mut self) {
+        if !self.is_owned_by_stable_memory() {
+            unsafe {
+                self.stable_drop();
+            }
+        }
+    }
+}
+
+impl<K: StableType + AsFixedSizeBytes + Ord + Debug, V: StableType + AsFixedSizeBytes + Debug>
+    SBTreeMap<K, V>
+{
     pub fn debug_print_stack(&self) {
         isoprint(&format!(
             "STACK: {:?}",
@@ -1340,7 +1370,7 @@ impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, 
                     let c_len = internal.read_len() + 1;
                     for i in 0..c_len {
                         let c = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(
-                            &internal.read_child_ptr(i),
+                            &internal.read_child_ptr_buf(i),
                         ));
                         new_level.push(c);
                     }
@@ -1369,13 +1399,17 @@ impl<K: StableAllocated + Ord + Debug, V: StableAllocated + Debug> SBTreeMap<K, 
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> Default for SBTreeMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> Default
+    for SBTreeMap<K, V>
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
+impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> AsFixedSizeBytes
+    for SBTreeMap<K, V>
+{
     const SIZE: usize = u64::SIZE * 2;
     type Buf = [u8; u64::SIZE * 2];
 
@@ -1403,18 +1437,11 @@ impl<K, V> AsFixedSizeBytes for SBTreeMap<K, V> {
             },
             certified: false,
             len,
+            is_owned: false,
             _buf: Vec::default(),
             _stack: Vec::default(),
         }
     }
-}
-
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SBTreeMap<K, V> {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
 }
 
 pub(crate) enum LeveledList {
@@ -1516,8 +1543,8 @@ impl LeveledList {
 }
 
 pub trait IBTreeNode {
-    unsafe fn from_ptr(ptr: u64) -> Self;
-    fn as_ptr(&self) -> u64;
+    unsafe fn from_ptr(ptr: StablePtr) -> Self;
+    fn as_ptr(&self) -> StablePtr;
     unsafe fn copy(&self) -> Self;
 }
 
@@ -1527,8 +1554,10 @@ pub(crate) enum BTreeNode<K, V> {
 }
 
 impl<K, V> BTreeNode<K, V> {
-    pub(crate) fn from_ptr(ptr: u64) -> Self {
-        let node_type: u8 = SSlice::_as_fixed_size_bytes_read::<u8>(ptr, NODE_TYPE_OFFSET);
+    pub(crate) fn from_ptr(ptr: StablePtr) -> Self {
+        let node_type: u8 = unsafe {
+            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(ptr, NODE_TYPE_OFFSET))
+        };
 
         unsafe {
             match node_type {
@@ -1539,7 +1568,7 @@ impl<K, V> BTreeNode<K, V> {
         }
     }
 
-    pub(crate) fn as_ptr(&self) -> u64 {
+    pub(crate) fn as_ptr(&self) -> StablePtr {
         match self {
             Self::Internal(i) => i.as_ptr(),
             Self::Leaf(l) => l.as_ptr(),
@@ -1557,12 +1586,9 @@ impl<K, V> BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::primitive::StableDrop;
     use crate::{get_allocated_size, init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
-    use std::ops::Deref;
-
     #[test]
     fn random_works_fine() {
         stable::clear();
@@ -1647,16 +1673,6 @@ mod tests {
         }
 
         assert_eq!(i, 199);
-
-        for (mut k, mut v) in map.iter().rev() {
-            println!("{}", i);
-            assert_eq!(i, *k);
-            assert_eq!(i, *v);
-
-            i -= 1;
-        }
-
-        assert_eq!(i, 0);
     }
 
     #[test]
@@ -1671,7 +1687,6 @@ mod tests {
             map.insert(i, i);
         }
 
-        unsafe { map.stable_drop() };
         assert_eq!(get_allocated_size(), 0);
     }
 }

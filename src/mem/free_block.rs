@@ -1,6 +1,6 @@
-use crate::collections::btree_map::internal_node::PtrRaw;
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, FREE, PTR_SIZE};
+use crate::mem::StablePtrBuf;
 use crate::{stable, SSlice};
 
 #[derive(Debug, Copy, Clone)]
@@ -125,7 +125,7 @@ impl FreeBlock {
     }
 
     pub fn get_prev_free_ptr(ptr: u64) -> u64 {
-        let mut buf = PtrRaw::new(u64::SIZE);
+        let mut buf = StablePtrBuf::new(u64::SIZE);
         stable::read(ptr + PTR_SIZE as u64, &mut buf);
 
         u64::from_fixed_size_bytes(&buf)
@@ -139,7 +139,7 @@ impl FreeBlock {
     }
 
     pub fn get_next_free_ptr(ptr: u64) -> u64 {
-        let mut buf = PtrRaw::new(u64::SIZE);
+        let mut buf = StablePtrBuf::new(u64::SIZE);
         stable::read(ptr + (PTR_SIZE * 2) as u64, &mut buf);
 
         u64::from_fixed_size_bytes(&buf)

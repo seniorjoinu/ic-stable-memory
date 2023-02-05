@@ -1,17 +1,17 @@
 use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
-use crate::encoding::{AsFixedSizeBytes, Buffer};
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::encoding::AsFixedSizeBytes;
+use crate::primitive::StableType;
 use std::borrow::Borrow;
 use std::hash::Hash;
 
 pub mod iter;
 
-pub struct SHashSet<T> {
+pub struct SHashSet<T: StableType + AsFixedSizeBytes + Hash + Eq> {
     map: SHashMap<T, ()>,
 }
 
-impl<T: StableAllocated + Hash + Eq> SHashSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -80,14 +80,14 @@ impl<T: StableAllocated + Hash + Eq> SHashSet<T> {
     }
 }
 
-impl<T: StableAllocated + Hash + Eq> Default for SHashSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Hash + Eq> Default for SHashSet<T> {
     #[inline]
     fn default() -> Self {
         SHashSet::new()
     }
 }
 
-impl<T> AsFixedSizeBytes for SHashSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Hash + Eq> AsFixedSizeBytes for SHashSet<T> {
     const SIZE: usize = SHashMap::<T, ()>::SIZE;
     type Buf = <SHashMap<T, ()> as AsFixedSizeBytes>::Buf;
 
@@ -103,32 +103,31 @@ impl<T> AsFixedSizeBytes for SHashSet<T> {
     }
 }
 
-impl<T: StableAllocated + Eq + Hash> StableAllocated for SHashSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Hash + Eq> StableType for SHashSet<T> {
     #[inline]
-    fn move_to_stable(&mut self) {
-        self.map.move_to_stable();
+    unsafe fn stable_memory_own(&mut self) {
+        self.map.stable_memory_own();
     }
 
     #[inline]
-    fn remove_from_stable(&mut self) {
-        self.map.remove_from_stable()
+    unsafe fn stable_memory_disown(&mut self) {
+        self.map.stable_memory_disown();
     }
-}
-
-impl<T: StableAllocated + Eq + Hash + StableDrop> StableDrop for SHashSet<T> {
-    type Output = ();
 
     #[inline]
-    unsafe fn stable_drop(self) {
-        self.map.stable_drop()
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.map.is_owned_by_stable_memory()
     }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::{StableAllocated, StableDrop};
+    use crate::primitive::StableType;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -153,10 +152,7 @@ mod tests {
         assert!(!set.remove(&100));
         assert!(set.remove(&10));
 
-        unsafe { set.stable_drop() };
-
         let set = SHashSet::<u64>::new_with_capacity(10);
-        unsafe { set.stable_drop() };
     }
 
     #[test]
@@ -204,10 +200,5 @@ mod tests {
         init_allocator(0);
 
         let mut set = SHashSet::<u32>::default();
-
-        set.move_to_stable();
-        set.remove_from_stable();
-
-        unsafe { set.stable_drop() };
     }
 }

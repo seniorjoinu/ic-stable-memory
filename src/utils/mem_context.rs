@@ -1,6 +1,4 @@
-use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 use std::cmp::min;
-use std::ptr::copy_nonoverlapping;
 
 pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
 
@@ -16,6 +14,9 @@ pub(crate) trait MemContext {
 
 #[derive(Clone)]
 pub(crate) struct StableMemContext;
+
+#[cfg(target_family = "wasm")]
+use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 
 #[cfg(target_family = "wasm")]
 impl MemContext for StableMemContext {

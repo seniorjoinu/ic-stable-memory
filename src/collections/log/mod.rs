@@ -1,10 +1,11 @@
 use crate::collections::log::iter::SLogIter;
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::AsFixedSizeBytes;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::s_slice::Side;
+use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use crate::{allocate, deallocate, SSlice};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -13,17 +14,30 @@ pub mod iter;
 
 pub(crate) const DEFAULT_CAPACITY: usize = 2;
 
-pub struct SLog<T> {
-    pub(crate) len: u64,
-    pub(crate) first_sector_ptr: u64,
-    pub(crate) cur_sector_ptr: u64,
-    pub(crate) cur_sector_last_item_offset: usize,
+pub struct SLog<T: StableType + AsFixedSizeBytes> {
+    len: u64,
+    first_sector_ptr: StablePtr,
+    cur_sector_ptr: StablePtr,
+    cur_sector_last_item_offset: usize,
     cur_sector_capacity: usize,
-    pub(crate) cur_sector_len: usize,
+    cur_sector_len: usize,
+    is_owned: bool,
     _marker: PhantomData<T>,
 }
 
-impl<T> SLog<T> {
+impl<T: StableType + AsFixedSizeBytes> Default for SLog<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: StableType + AsFixedSizeBytes> SLog<T> {
+    #[inline]
+    const fn max_capacity() -> usize {
+        2usize.pow(31) / T::SIZE
+    }
+
+    #[inline]
     pub fn new() -> Self {
         Self {
             len: 0,
@@ -32,29 +46,16 @@ impl<T> SLog<T> {
             cur_sector_last_item_offset: 0,
             cur_sector_capacity: DEFAULT_CAPACITY,
             cur_sector_len: 0,
+            is_owned: false,
             _marker: PhantomData::default(),
         }
     }
-}
 
-impl<T> Default for SLog<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: StableAllocated> SLog<T> {
-    #[inline]
-    const fn max_capacity() -> usize {
-        2usize.pow(31) / T::SIZE
-    }
-
-    pub fn push(&mut self, mut it: T) {
+    pub fn push(&mut self, it: T) {
         let mut sector = self.get_or_create_current_sector();
         self.move_to_next_sector_if_needed(&mut sector);
 
-        it.move_to_stable();
-        sector.write_element(self.cur_sector_last_item_offset, it);
+        sector.write_and_own_element(self.cur_sector_last_item_offset, it);
         self.cur_sector_last_item_offset += T::SIZE;
         self.cur_sector_len += 1;
         self.len += 1;
@@ -71,15 +72,19 @@ impl<T: StableAllocated> SLog<T> {
         self.cur_sector_len -= 1;
         self.len -= 1;
 
-        let mut it = sector.read_element(self.cur_sector_last_item_offset);
-        it.remove_from_stable();
+        let it = sector.read_and_disown_element(self.cur_sector_last_item_offset);
 
         self.move_to_prev_sector_if_needed(sector);
 
         Some(it)
     }
 
-    pub fn last(&self) -> Option<SRef<'_, T>> {
+    #[inline]
+    pub fn clear(&mut self) {
+        while let Some(_) = self.pop() {}
+    }
+
+    pub fn last(&self) -> Option<SRef<T>> {
         if self.len == 0 {
             return None;
         }
@@ -88,17 +93,6 @@ impl<T: StableAllocated> SLog<T> {
         let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE);
 
         Some(SRef::new(ptr))
-    }
-
-    pub fn last_mut(&mut self) -> Option<SRefMut<'_, T>> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let sector = self.get_current_sector()?;
-        let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE);
-
-        Some(SRefMut::new(ptr))
     }
 
     pub fn first(&self) -> Option<SRef<'_, T>> {
@@ -110,51 +104,6 @@ impl<T: StableAllocated> SLog<T> {
         let ptr = sector.get_element_ptr(0);
 
         Some(SRef::new(ptr))
-    }
-
-    pub fn first_mut(&mut self) -> Option<SRefMut<'_, T>> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let sector = self.get_first_sector()?;
-        let ptr = sector.get_element_ptr(0);
-
-        Some(SRefMut::new(ptr))
-    }
-
-    fn find_sector_for_idx(&self, idx: u64) -> Option<(Sector<T>, u64)> {
-        if idx >= self.len || self.len == 0 {
-            return None;
-        }
-
-        let mut sector = Sector::<T>::from_ptr(self.cur_sector_ptr);
-        let mut sector_len = self.cur_sector_len;
-
-        let mut len = self.len;
-
-        loop {
-            len -= sector_len as u64;
-            if len <= idx {
-                break;
-            }
-
-            sector_len = if sector.as_ptr() == self.cur_sector_ptr {
-                self.cur_sector_capacity / 2
-            } else {
-                sector_len / 2
-            };
-            sector = Sector::<T>::from_ptr(sector.read_prev_ptr());
-        }
-
-        Some((sector, len))
-    }
-
-    #[inline]
-    pub unsafe fn get_copy(&self, idx: u64) -> Option<T> {
-        let (sector, dif) = self.find_sector_for_idx(idx)?;
-
-        Some(sector.read_element((idx - dif) as usize * T::SIZE))
     }
 
     #[inline]
@@ -186,6 +135,33 @@ impl<T: StableAllocated> SLog<T> {
     #[inline]
     pub fn iter(&self) -> SLogIter<'_, T> {
         SLogIter::new(self)
+    }
+
+    fn find_sector_for_idx(&self, idx: u64) -> Option<(Sector<T>, u64)> {
+        if idx >= self.len || self.len == 0 {
+            return None;
+        }
+
+        let mut sector = Sector::<T>::from_ptr(self.cur_sector_ptr);
+        let mut sector_len = self.cur_sector_len;
+
+        let mut len = self.len;
+
+        loop {
+            len -= sector_len as u64;
+            if len <= idx {
+                break;
+            }
+
+            sector_len = if sector.as_ptr() == self.cur_sector_ptr {
+                self.cur_sector_capacity / 2
+            } else {
+                sector_len / 2
+            };
+            sector = Sector::<T>::from_ptr(sector.read_prev_ptr());
+        }
+
+        Some((sector, len))
     }
 
     fn get_or_create_current_sector(&mut self) -> Sector<T> {
@@ -231,6 +207,12 @@ impl<T: StableAllocated> SLog<T> {
             return;
         }
 
+        let cur_sector = Sector::<T>::from_ptr(self.cur_sector_ptr);
+        cur_sector.destroy();
+
+        let mut prev_sector = Sector::<T>::from_ptr(prev_sector_ptr);
+        prev_sector.write_next_ptr(EMPTY_PTR);
+
         self.cur_sector_capacity /= 2;
         self.cur_sector_len = self.cur_sector_capacity;
         self.cur_sector_ptr = prev_sector_ptr;
@@ -272,7 +254,7 @@ const ELEMENTS_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
 
 struct Sector<T>(u64, PhantomData<T>);
 
-impl<T: StableAllocated> Sector<T> {
+impl<T: StableType + AsFixedSizeBytes> Sector<T> {
     fn new(cap: usize, prev: u64) -> Self {
         let slice = allocate(u64::SIZE * 2 + cap * T::SIZE);
 
@@ -289,7 +271,7 @@ impl<T: StableAllocated> Sector<T> {
     }
 
     #[inline]
-    fn as_ptr(&self) -> u64 {
+    fn as_ptr(&self) -> StablePtr {
         self.0
     }
 
@@ -299,23 +281,37 @@ impl<T: StableAllocated> Sector<T> {
     }
 
     #[inline]
-    fn read_prev_ptr(&self) -> u64 {
-        SSlice::_as_fixed_size_bytes_read::<u64>(self.0, PREV_OFFSET)
+    fn read_prev_ptr(&self) -> StablePtr {
+        unsafe {
+            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(self.0, PREV_OFFSET))
+        }
     }
 
     #[inline]
-    fn write_prev_ptr(&mut self, ptr: u64) {
-        SSlice::_as_fixed_size_bytes_write::<u64>(self.0, PREV_OFFSET, ptr)
+    fn write_prev_ptr(&mut self, mut ptr: StablePtr) {
+        unsafe {
+            crate::mem::write_and_own_fixed(
+                SSlice::_make_ptr_by_offset(self.0, PREV_OFFSET),
+                &mut ptr,
+            )
+        }
     }
 
     #[inline]
-    fn read_next_ptr(&self) -> u64 {
-        SSlice::_as_fixed_size_bytes_read::<u64>(self.0, NEXT_OFFSET)
+    fn read_next_ptr(&self) -> StablePtr {
+        unsafe {
+            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(self.0, NEXT_OFFSET))
+        }
     }
 
     #[inline]
-    fn write_next_ptr(&mut self, ptr: u64) {
-        SSlice::_as_fixed_size_bytes_write::<u64>(self.0, NEXT_OFFSET, ptr)
+    fn write_next_ptr(&mut self, mut ptr: StablePtr) {
+        unsafe {
+            crate::mem::write_and_own_fixed(
+                SSlice::_make_ptr_by_offset(self.0, NEXT_OFFSET),
+                &mut ptr,
+            )
+        }
     }
 
     #[inline]
@@ -324,17 +320,43 @@ impl<T: StableAllocated> Sector<T> {
     }
 
     #[inline]
-    fn read_element(&self, offset: usize) -> T {
-        SSlice::_as_fixed_size_bytes_read::<T>(self.0, ELEMENTS_OFFSET + offset)
+    fn read_and_disown_element(&self, offset: usize) -> T {
+        unsafe {
+            crate::mem::read_and_disown_fixed(SSlice::_make_ptr_by_offset(
+                self.0,
+                ELEMENTS_OFFSET + offset,
+            ))
+        }
     }
 
     #[inline]
-    fn write_element(&self, offset: usize, element: T) {
-        SSlice::_as_fixed_size_bytes_write::<T>(self.0, ELEMENTS_OFFSET + offset, element)
+    fn get_element(&self, offset: usize) -> SRef<T> {
+        SRef::new(SSlice::_make_ptr_by_offset(
+            self.0,
+            ELEMENTS_OFFSET + offset,
+        ))
+    }
+
+    #[inline]
+    fn get_element_mut(&mut self, offset: usize) -> SRefMut<T> {
+        SRefMut::new(SSlice::_make_ptr_by_offset(
+            self.0,
+            ELEMENTS_OFFSET + offset,
+        ))
+    }
+
+    #[inline]
+    fn write_and_own_element(&self, offset: usize, mut element: T) {
+        unsafe {
+            crate::mem::write_and_own_fixed(
+                SSlice::_make_ptr_by_offset(self.0, ELEMENTS_OFFSET + offset),
+                &mut element,
+            )
+        };
     }
 }
 
-impl<T: StableAllocated + Debug> SLog<T> {
+impl<T: StableType + AsFixedSizeBytes + Debug> SLog<T> {
     pub fn debug_print(&self) {
         let mut sector = if let Some(s) = self.get_first_sector() {
             s
@@ -367,10 +389,10 @@ impl<T: StableAllocated + Debug> SLog<T> {
 
             let mut offset = 0;
             for i in 0..len {
-                let elem = sector.read_element(offset);
+                let elem = sector.get_element(offset);
                 offset += T::SIZE;
 
-                print!("{:?}", elem);
+                print!("{:?}", *elem);
                 if i < len - 1 {
                     print!(", ");
                 }
@@ -394,7 +416,7 @@ impl<T: StableAllocated + Debug> SLog<T> {
     }
 }
 
-impl<T> AsFixedSizeBytes for SLog<T> {
+impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
     const SIZE: usize = usize::SIZE * 3 + u64::SIZE * 3;
     type Buf = [u8; usize::SIZE * 3 + u64::SIZE * 3];
 
@@ -434,58 +456,45 @@ impl<T> AsFixedSizeBytes for SLog<T> {
             cur_sector_len,
             cur_sector_capacity,
             cur_sector_last_item_offset,
+            is_owned: false,
             _marker: PhantomData::default(),
         }
     }
 }
 
-impl<T: StableAllocated> StableAllocated for SLog<T> {
+impl<T: StableType + AsFixedSizeBytes> StableType for SLog<T> {
     #[inline]
-    fn move_to_stable(&mut self) {}
+    unsafe fn stable_memory_own(&mut self) {
+        self.is_owned = true;
+    }
 
     #[inline]
-    fn remove_from_stable(&mut self) {}
+    unsafe fn stable_memory_disown(&mut self) {
+        self.is_owned = false;
+    }
+
+    #[inline]
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.is_owned
+    }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {
+        self.clear();
+
+        if self.cur_sector_ptr != EMPTY_PTR {
+            let sector = Sector::<T>::from_ptr(self.cur_sector_ptr);
+            sector.destroy();
+        }
+    }
 }
 
-impl<T: StableAllocated + StableDrop> StableDrop for SLog<T> {
-    type Output = ();
-
-    unsafe fn stable_drop(self) {
-        let mut sector = if let Some(s) = self.get_first_sector() {
-            s
-        } else {
-            return;
-        };
-
-        let mut len = if sector.as_ptr() == self.cur_sector_ptr {
-            self.cur_sector_len
-        } else {
-            DEFAULT_CAPACITY * 2
-        };
-        let mut past = false;
-
-        loop {
-            for i in 0..len {
-                let it = sector.read_element(i * T::SIZE);
-                it.stable_drop();
+impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
+    fn drop(&mut self) {
+        if !self.is_owned_by_stable_memory() {
+            unsafe {
+                self.stable_drop();
             }
-
-            let next = sector.read_next_ptr();
-            sector.destroy();
-
-            if next == EMPTY_PTR {
-                break;
-            }
-
-            sector = Sector::from_ptr(next);
-            len = if sector.as_ptr() == self.cur_sector_ptr {
-                past = true;
-                self.cur_sector_len
-            } else if !past {
-                len * 2
-            } else {
-                0
-            };
         }
     }
 }
@@ -493,7 +502,7 @@ impl<T: StableAllocated + StableDrop> StableDrop for SLog<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::log::SLog;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{init_allocator, stable};
 
     #[test]
     fn works_fine() {
@@ -570,19 +579,13 @@ mod tests {
             log.push(i);
         }
 
-        let mut j = 0;
+        let mut j = 99;
+
         for mut i in log.iter() {
-            assert_eq!(*i, j);
-            j += 1;
-        }
-
-        j -= 1;
-
-        log.debug_print();
-
-        for mut i in log.iter().rev() {
             assert_eq!(*i, j);
             j -= 1;
         }
+
+        log.debug_print();
     }
 }

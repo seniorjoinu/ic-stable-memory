@@ -1,5 +1,5 @@
 use crate::encoding::AsFixedSizeBytes;
-use crate::SSlice;
+use crate::primitive::StableType;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -20,21 +20,21 @@ impl<'o, T> SRef<'o, T> {
     }
 }
 
-impl<'o, T: AsFixedSizeBytes> SRef<'o, T> {
-    fn read(&self) {
+impl<'o, T: StableType + AsFixedSizeBytes> SRef<'o, T> {
+    unsafe fn read(&self) {
         if self.inner.is_none() {
-            let it = SSlice::_as_fixed_size_bytes_read(self.ptr, 0);
-            unsafe { *(&self.inner as *const Option<T> as *mut Option<T>) = Some(it) };
+            let it = crate::mem::read_fixed_for_reference(self.ptr);
+            *(&self.inner as *const Option<T> as *mut Option<T>) = Some(it);
         }
     }
 }
 
-impl<'o, T: AsFixedSizeBytes> Deref for SRef<'o, T> {
+impl<'o, T: StableType + AsFixedSizeBytes> Deref for SRef<'o, T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        self.read();
+        unsafe { self.read() };
 
         self.inner.as_ref().unwrap()
     }

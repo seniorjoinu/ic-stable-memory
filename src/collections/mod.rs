@@ -1,4 +1,4 @@
-pub mod binary_heap;
+pub(crate) mod binary_heap;
 pub mod btree_map;
 pub mod btree_set;
 pub mod certified_btree_map;

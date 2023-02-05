@@ -1,18 +1,18 @@
 use crate::collections::binary_heap::iter::SBinaryHeapIter;
 use crate::collections::vec::SVec;
-use crate::encoding::{AsFixedSizeBytes, Buffer};
+use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
 
-pub struct SBinaryHeap<T> {
+pub struct SBinaryHeap<T: StableType + AsFixedSizeBytes> {
     inner: SVec<T>,
 }
 
 // Max heap
-impl<T> SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes> SBinaryHeap<T> {
     #[inline]
     pub fn new() -> Self {
         Self { inner: SVec::new() }
@@ -31,14 +31,14 @@ impl<T> SBinaryHeap<T> {
 
 // TODO: apply https://stackoverflow.com/questions/6531543/efficient-implementation-of-binary-heaps
 
-impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes + Ord> SBinaryHeap<T> {
     #[inline]
-    pub fn peek(&self) -> Option<SRef<'_, T>> {
-        self.inner.get(0)
+    pub fn peek(&self) -> Option<SRef<T>> {
+        self.get(0)
     }
 
     #[inline]
-    pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
+    pub fn get(&self, idx: usize) -> Option<SRef<T>> {
         self.inner.get(idx)
     }
 
@@ -50,23 +50,25 @@ impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
         }
 
         let mut idx = len - 1;
-        let elem = unsafe { self.inner.get_copy(idx).unwrap_unchecked() };
 
         loop {
+            // TODO: optimize
+            let elem = unsafe { self.inner.get(idx).unwrap_unchecked() };
+
             let parent_idx = idx / 2;
-            let parent = unsafe { self.inner.get_copy(parent_idx).unwrap_unchecked() };
+            let parent = unsafe { self.inner.get(parent_idx).unwrap_unchecked() };
 
-            if elem > parent {
-                // TODO: optimize this swap and the one in pop
-                self.inner.swap(idx, parent_idx);
-                idx = parent_idx;
-
-                if idx != 0 {
-                    continue;
-                }
+            if *elem <= *parent {
+                break;
             }
 
-            break;
+            // TODO: optimize this swap and the one in pop
+            self.inner.swap(idx, parent_idx);
+            idx = parent_idx;
+
+            if idx != 0 {
+                continue;
+            }
         }
     }
 
@@ -92,11 +94,11 @@ impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
                 return Some(elem);
             }
 
-            let parent = unsafe { self.inner.get_copy(idx).unwrap() };
-            let left_child = unsafe { self.inner.get_copy(left_child_idx).unwrap() };
+            let parent = self.inner.get(idx).unwrap();
+            let left_child = self.inner.get(left_child_idx).unwrap();
 
             if right_child_idx > last_idx {
-                if parent < left_child {
+                if *parent < *left_child {
                     self.inner.swap(idx, left_child_idx);
                 }
 
@@ -105,16 +107,16 @@ impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
                 return Some(elem);
             }
 
-            let right_child = unsafe { self.inner.get_copy(right_child_idx).unwrap() };
+            let right_child = self.inner.get(right_child_idx).unwrap();
 
-            if left_child >= right_child && left_child > parent {
+            if *left_child >= *right_child && *left_child > *parent {
                 self.inner.swap(idx, left_child_idx);
                 idx = left_child_idx;
 
                 continue;
             }
 
-            if right_child >= left_child && right_child > parent {
+            if *right_child >= *left_child && *right_child > *parent {
                 self.inner.swap(idx, right_child_idx);
                 idx = right_child_idx;
 
@@ -136,21 +138,21 @@ impl<'a, T: StableAllocated + StableDrop + Ord> SBinaryHeap<T> {
     }
 }
 
-impl<T: StableAllocated + StableDrop + Debug> Debug for SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes + Debug> Debug for SBinaryHeap<T> {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.inner.fmt(f)
     }
 }
 
-impl<T> Default for SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes> Default for SBinaryHeap<T> {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> AsFixedSizeBytes for SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SBinaryHeap<T> {
     const SIZE: usize = SVec::<T>::SIZE;
     type Buf = <SVec<T> as AsFixedSizeBytes>::Buf;
 
@@ -166,32 +168,31 @@ impl<T> AsFixedSizeBytes for SBinaryHeap<T> {
     }
 }
 
-impl<T: StableAllocated> StableAllocated for SBinaryHeap<T> {
+impl<T: StableType + AsFixedSizeBytes> StableType for SBinaryHeap<T> {
     #[inline]
-    fn move_to_stable(&mut self) {
-        self.inner.move_to_stable()
+    unsafe fn stable_memory_disown(&mut self) {
+        self.inner.stable_memory_disown();
     }
 
     #[inline]
-    fn remove_from_stable(&mut self) {
-        self.inner.remove_from_stable()
+    unsafe fn stable_memory_own(&mut self) {
+        self.inner.stable_memory_own();
     }
-}
-
-impl<T: StableAllocated + StableDrop> StableDrop for SBinaryHeap<T> {
-    type Output = ();
 
     #[inline]
-    unsafe fn stable_drop(self) {
-        self.inner.stable_drop();
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.inner.is_owned_by_stable_memory()
     }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::{StableAllocated, StableDrop};
+    use crate::primitive::StableType;
     use crate::{init_allocator, stable, stable_memory_init};
 
     #[test]
@@ -236,8 +237,6 @@ mod tests {
 
         // probe should be the same as example
         assert_eq!(probe, example, "Invalid elements order (max)");
-
-        unsafe { max_heap.stable_drop() };
     }
 
     #[test]
@@ -273,21 +272,9 @@ mod tests {
         heap.as_fixed_size_bytes(&mut buf);
         let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
 
-        assert_eq!(heap.inner.ptr, heap1.inner.ptr);
-        assert_eq!(heap.inner.len, heap1.inner.len);
-        assert_eq!(heap.inner.cap, heap1.inner.cap);
-
-        let ptr = heap.inner.ptr;
-        let len = heap.inner.len;
-        let cap = heap.inner.cap;
-
         let mut buf = <SBinaryHeap<u32> as AsFixedSizeBytes>::Buf::new(SBinaryHeap::<u32>::SIZE);
         heap.as_fixed_size_bytes(&mut buf);
         let heap1 = SBinaryHeap::<u32>::from_fixed_size_bytes(&buf);
-
-        assert_eq!(ptr, heap1.inner.ptr);
-        assert_eq!(len, heap1.inner.len);
-        assert_eq!(cap, heap1.inner.cap);
     }
 
     #[test]
@@ -297,8 +284,5 @@ mod tests {
         init_allocator(0);
 
         let mut heap = SBinaryHeap::<u32>::default();
-        heap.move_to_stable(); // does nothing
-        heap.remove_from_stable(); // does nothing
-        unsafe { heap.stable_drop() };
     }
 }

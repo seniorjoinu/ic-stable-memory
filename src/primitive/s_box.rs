@@ -1,6 +1,6 @@
-use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
 use crate::mem::s_slice::{SSlice, Side};
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes};
 use crate::utils::Anyway;
 use crate::{allocate, deallocate, reallocate};
@@ -10,17 +10,24 @@ use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 
-pub struct SBox<T> {
+pub struct SBox<T: AsDynSizeBytes + StableType> {
     slice: Option<SSlice>,
-    inner: T,
+    inner: Option<T>,
+    is_owned: bool,
 }
 
-impl<T> SBox<T> {
+impl<T: AsDynSizeBytes + StableType> SBox<T> {
     #[inline]
     pub fn new(it: T) -> Self {
+        let buf = it.as_dyn_size_bytes();
+        let slice = allocate(buf.len());
+
+        unsafe { crate::mem::write_bytes(slice.as_ptr(), &buf) };
+
         Self {
-            slice: None,
-            inner: it,
+            slice: Some(slice),
+            inner: Some(it),
+            is_owned: false,
         }
     }
 
@@ -30,21 +37,20 @@ impl<T> SBox<T> {
     }
 
     #[inline]
-    pub fn into_inner(self) -> T {
-        self.inner
+    pub fn into_inner(mut self) -> T {
+        self.inner.take().unwrap()
     }
-}
 
-impl<T: AsDynSizeBytes> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
 
         let mut buf = vec![0u8; slice.get_size_bytes()];
-        slice.read_bytes(0, &mut buf);
+        unsafe { crate::mem::read_bytes(slice.as_ptr(), &mut buf) };
 
-        let inner = T::from_dyn_size_bytes(&buf);
+        let inner = Some(T::from_dyn_size_bytes(&buf));
 
         Self {
+            is_owned: false,
             slice: Some(slice),
             inner,
         }
@@ -53,7 +59,7 @@ impl<T: AsDynSizeBytes> SBox<T> {
     pub unsafe fn get_cloned(&self) -> T {
         if let Some(slice) = self.slice {
             let mut buf = vec![0u8; slice.get_size_bytes()];
-            slice.read_bytes(0, &mut buf);
+            unsafe { crate::mem::read_bytes(slice.as_ptr(), &mut buf) };
 
             T::from_dyn_size_bytes(&buf)
         } else {
@@ -73,19 +79,19 @@ impl<T: AsDynSizeBytes> SBox<T> {
 
     fn repersist(&mut self) {
         if let Some(mut slice) = self.slice.take() {
-            let buf = self.inner.as_dyn_size_bytes();
+            let buf = self.inner.as_ref().unwrap().as_dyn_size_bytes();
 
             if slice.get_size_bytes() < buf.len() {
                 slice = reallocate(slice, buf.len()).anyway();
             }
 
-            slice.write_bytes(0, &buf);
+            unsafe { crate::mem::write_bytes(slice.as_ptr(), &buf) };
             self.slice = Some(slice);
         }
     }
 }
 
-impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBox<T> {
+impl<T: AsDynSizeBytes + StableType> AsFixedSizeBytes for SBox<T> {
     const SIZE: usize = u64::SIZE;
     type Buf = [u8; u64::SIZE];
 
@@ -102,94 +108,100 @@ impl<T: AsDynSizeBytes> AsFixedSizeBytes for SBox<T> {
     }
 }
 
-impl<T: AsDynSizeBytes> StableAllocated for SBox<T> {
-    fn move_to_stable(&mut self) {
-        if self.slice.is_none() {
-            let buf = self.inner.as_dyn_size_bytes();
-            let slice = allocate(buf.len());
-
-            slice.write_bytes(0, &buf);
-
-            self.slice = Some(slice);
-        }
+impl<T: AsDynSizeBytes + StableType> StableType for SBox<T> {
+    #[inline]
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.is_owned
     }
-
-    fn remove_from_stable(&mut self) {
-        if let Some(slice) = self.slice {
-            deallocate(slice);
-
-            self.slice = None;
-        }
-    }
-}
-
-impl<T: StableDrop> StableDrop for SBox<T> {
-    type Output = ();
 
     #[inline]
-    unsafe fn stable_drop(mut self) -> Self::Output {
-        if let Some(slice) = self.slice {
-            deallocate(slice);
+    unsafe fn stable_memory_own(&mut self) {
+        self.is_owned = true;
 
-            self.slice = None;
+        if let Some(it) = self.inner.as_mut() {
+            it.stable_memory_own();
         }
+    }
 
-        self.inner.stable_drop();
+    #[inline]
+    unsafe fn stable_memory_disown(&mut self) {
+        self.is_owned = false;
+
+        if let Some(it) = self.inner.as_mut() {
+            it.stable_memory_disown();
+        }
+    }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {
+        if let Some(slice) = self.slice.take() {
+            deallocate(slice);
+        }
     }
 }
 
-impl<T: AsHashableBytes> AsHashableBytes for SBox<T> {
+impl<T: AsDynSizeBytes + StableType> Drop for SBox<T> {
+    fn drop(&mut self) {
+        if !self.is_owned_by_stable_memory() {
+            unsafe {
+                self.stable_drop();
+            }
+        }
+    }
+}
+
+impl<T: AsHashableBytes + AsDynSizeBytes + StableType> AsHashableBytes for SBox<T> {
     #[inline]
     fn as_hashable_bytes(&self) -> Vec<u8> {
-        self.inner.as_hashable_bytes()
+        self.inner.as_ref().unwrap().as_hashable_bytes()
     }
 }
 
-impl<T: AsHashTree> AsHashTree for SBox<T> {
+impl<T: AsHashTree + AsDynSizeBytes + StableType> AsHashTree for SBox<T> {
     #[inline]
     fn root_hash(&self) -> crate::utils::certification::Hash {
-        self.inner.root_hash()
+        self.inner.as_ref().unwrap().root_hash()
     }
 }
 
-impl<T: PartialEq> PartialEq for SBox<T> {
+impl<T: PartialEq + AsDynSizeBytes + StableType> PartialEq for SBox<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.inner.eq(&other.inner)
     }
 }
 
-impl<T: PartialOrd> PartialOrd for SBox<T> {
+impl<T: PartialOrd + AsDynSizeBytes + StableType> PartialOrd for SBox<T> {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.inner.partial_cmp(&other.inner)
     }
 }
 
-impl<T: Eq + PartialEq> Eq for SBox<T> {}
+impl<T: Eq + PartialEq + AsDynSizeBytes + StableType> Eq for SBox<T> {}
 
-impl<T: Ord + PartialOrd> Ord for SBox<T> {
+impl<T: Ord + PartialOrd + AsDynSizeBytes + StableType> Ord for SBox<T> {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
         self.inner.cmp(&other.inner)
     }
 }
 
-impl<T: Default> Default for SBox<T> {
+impl<T: Default + AsDynSizeBytes + StableType> Default for SBox<T> {
     #[inline]
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
 
-impl<T: Hash> Hash for SBox<T> {
+impl<T: Hash + AsDynSizeBytes + StableType> Hash for SBox<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.inner.hash(state);
     }
 }
 
-impl<T: Debug> Debug for SBox<T> {
+impl<T: Debug + AsDynSizeBytes + StableType> Debug for SBox<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("SBox(")?;
 
@@ -199,55 +211,56 @@ impl<T: Debug> Debug for SBox<T> {
     }
 }
 
-impl<T: Clone> Clone for SBox<T> {
+impl<T: Clone + AsDynSizeBytes + StableType> Clone for SBox<T> {
     #[inline]
     fn clone(&self) -> Self {
         Self {
+            is_owned: false,
             slice: None,
             inner: self.inner.clone(),
         }
     }
 }
 
-impl<T> Borrow<T> for SBox<T> {
+impl<T: AsDynSizeBytes + StableType> Borrow<T> for SBox<T> {
     #[inline]
     fn borrow(&self) -> &T {
-        &self.inner
+        self.inner.as_ref().unwrap()
     }
 }
 
-pub struct SBoxRefMut<'a, T: AsDynSizeBytes>(&'a mut SBox<T>);
+pub struct SBoxRefMut<'a, T: AsDynSizeBytes + StableType>(&'a mut SBox<T>);
 
-impl<'a, T: AsDynSizeBytes> Deref for SBoxRefMut<'a, T> {
+impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRefMut<'a, T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.0.inner
+        self.0.inner.as_ref().unwrap()
     }
 }
 
-impl<'a, T: AsDynSizeBytes> DerefMut for SBoxRefMut<'a, T> {
+impl<'a, T: AsDynSizeBytes + StableType> DerefMut for SBoxRefMut<'a, T> {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0.inner
+        self.0.inner.as_mut().unwrap()
     }
 }
 
-impl<'a, T: AsDynSizeBytes> Drop for SBoxRefMut<'a, T> {
+impl<'a, T: AsDynSizeBytes + StableType> Drop for SBoxRefMut<'a, T> {
     fn drop(&mut self) {
         self.0.repersist();
     }
 }
 
-pub struct SBoxRef<'a, T: AsDynSizeBytes>(&'a SBox<T>);
+pub struct SBoxRef<'a, T: AsDynSizeBytes + StableType>(&'a SBox<T>);
 
-impl<'a, T: AsDynSizeBytes> Deref for SBoxRef<'a, T> {
+impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRef<'a, T> {
     type Target = T;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        &self.0.inner
+        self.0.inner.as_ref().unwrap()
     }
 }
 

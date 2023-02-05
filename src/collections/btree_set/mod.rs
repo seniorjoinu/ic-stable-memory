@@ -1,16 +1,16 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::encoding::AsFixedSizeBytes;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use std::borrow::Borrow;
 
 pub mod iter;
 
-pub struct SBTreeSet<T> {
+pub struct SBTreeSet<T: StableType + AsFixedSizeBytes + Ord> {
     map: SBTreeMap<T, ()>,
 }
 
-impl<T: Ord + StableAllocated> SBTreeSet<T> {
+impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -57,20 +57,21 @@ impl<T: Ord + StableAllocated> SBTreeSet<T> {
     }
 }
 
-impl<T: StableAllocated + StableDrop + Ord> SBTreeSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Ord> SBTreeSet<T> {
     #[inline]
     pub fn clear(&mut self) {
         self.map.clear();
     }
 }
 
-impl<T: Ord + StableAllocated> Default for SBTreeSet<T> {
+impl<T: Ord + StableType + AsFixedSizeBytes> Default for SBTreeSet<T> {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> AsFixedSizeBytes for SBTreeSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Ord> AsFixedSizeBytes for SBTreeSet<T> {
     const SIZE: usize = SBTreeMap::<T, ()>::SIZE;
     type Buf = <SBTreeMap<T, ()> as AsFixedSizeBytes>::Buf;
 
@@ -86,32 +87,31 @@ impl<T> AsFixedSizeBytes for SBTreeSet<T> {
     }
 }
 
-impl<T: StableAllocated + Ord> StableAllocated for SBTreeSet<T> {
+impl<T: StableType + AsFixedSizeBytes + Ord> StableType for SBTreeSet<T> {
     #[inline]
-    fn move_to_stable(&mut self) {
-        self.map.move_to_stable();
+    unsafe fn stable_memory_disown(&mut self) {
+        self.map.stable_memory_disown();
     }
 
     #[inline]
-    fn remove_from_stable(&mut self) {
-        self.map.remove_from_stable()
+    unsafe fn stable_memory_own(&mut self) {
+        self.map.stable_memory_own()
     }
-}
-
-impl<T: StableAllocated + Ord + StableDrop> StableDrop for SBTreeSet<T> {
-    type Output = ();
 
     #[inline]
-    unsafe fn stable_drop(self) {
-        self.map.stable_drop();
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.map.is_owned_by_stable_memory()
     }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::{StableAllocated, StableDrop};
+    use crate::primitive::StableType;
     use crate::{init_allocator, stable};
 
     #[test]
@@ -131,10 +131,7 @@ mod tests {
         assert!(set.remove(&10));
         assert!(!set.remove(&10));
 
-        unsafe { set.stable_drop() };
-
         let set = SBTreeSet::<u64>::new();
-        unsafe { set.stable_drop() };
     }
 
     #[test]
@@ -172,8 +169,5 @@ mod tests {
         init_allocator(0);
 
         let mut set = SBTreeSet::<u32>::default();
-        set.move_to_stable();
-        set.remove_from_stable();
-        unsafe { set.stable_drop() };
     }
 }

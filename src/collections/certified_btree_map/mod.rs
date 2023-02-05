@@ -2,19 +2,25 @@ use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::{BTreeNode, LeveledList, SBTreeMap};
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
-use crate::primitive::{StableAllocated, StableDrop};
+use crate::primitive::StableType;
 use crate::utils::certification::{empty_hash, AsHashTree, AsHashableBytes, Hash, HashTree};
 use std::borrow::Borrow;
 use std::fmt::Debug;
+use std::ops::Deref;
 
-pub struct SCertifiedBTreeMap<K, V> {
+pub struct SCertifiedBTreeMap<
+    K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+    V: StableType + AsFixedSizeBytes + AsHashTree,
+> {
     inner: SBTreeMap<K, V>,
     modified: LeveledList,
     frozen: bool,
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>
-    SCertifiedBTreeMap<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > SCertifiedBTreeMap<K, V>
 {
     #[inline]
     pub fn new() -> Self {
@@ -68,15 +74,6 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     #[inline]
-    pub unsafe fn get_copy<Q>(&self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Ord,
-    {
-        self.inner.get_copy(key)
-    }
-
-    #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<SRef<'_, V>>
     where
         K: Borrow<Q>,
@@ -110,13 +107,13 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     #[inline]
-    pub unsafe fn first_copy(&self) -> Option<(K, V)> {
-        self.inner.first_copy()
+    pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
+        self.inner.first()
     }
 
     #[inline]
-    pub unsafe fn last_copy(&self) -> Option<(K, V)> {
-        self.inner.last_copy()
+    pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
+        self.inner.last()
     }
 
     pub fn commit(&mut self) {
@@ -188,12 +185,12 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 
     pub fn as_hash_tree(&self) -> HashTree {
-        let e1 = unsafe { self.inner.first_copy() };
-        let e2 = unsafe { self.inner.last_copy() };
+        let e1 = self.inner.first();
+        let e2 = self.inner.last();
 
         match (e1, e2) {
             (None, None) => HashTree::Empty,
-            (Some((k1, _)), Some((k2, _))) => self.prove_range(&k1, &k2),
+            (Some((k1, _)), Some((k2, _))) => self.prove_range(k1.deref(), k2.deref()),
             _ => unreachable!(),
         }
     }
@@ -215,8 +212,10 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 }
 
-impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop>
-    SCertifiedBTreeMap<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > SCertifiedBTreeMap<K, V>
 {
     #[inline]
     pub fn clear(&mut self) {
@@ -227,8 +226,10 @@ impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop>
     }
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree> AsHashTree
-    for SCertifiedBTreeMap<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > AsHashTree for SCertifiedBTreeMap<K, V>
 {
     #[inline]
     fn root_hash(&self) -> Hash {
@@ -244,8 +245,8 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
 
 fn witness_node<
     Q,
-    K: StableAllocated + Ord + AsHashableBytes,
-    V: StableAllocated + AsHashTree,
+    K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+    V: StableType + AsFixedSizeBytes + AsHashTree,
     Fn: FnMut(&V) -> HashTree,
 >(
     node: &BTreeNode<K, V>,
@@ -265,7 +266,7 @@ where
             };
 
             let child =
-                BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&n.read_child_ptr(idx)));
+                BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&n.read_child_ptr_buf(idx)));
 
             n.witness_with_replacement::<V>(idx, witness_node(&child, k, f), len)
         }
@@ -274,25 +275,33 @@ where
 }
 
 impl<
-        K: StableAllocated + Ord + AsHashableBytes + Debug,
-        V: StableAllocated + AsHashableBytes + Debug,
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes + Debug,
+        V: StableType + AsFixedSizeBytes + AsHashTree + Debug,
     > SCertifiedBTreeMap<K, V>
 {
+    #[inline]
     pub fn debug_print(&self) {
         self.inner.debug_print();
         self.modified.debug_print();
     }
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree> Default
-    for SCertifiedBTreeMap<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > Default for SCertifiedBTreeMap<K, V>
 {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > AsFixedSizeBytes for SCertifiedBTreeMap<K, V>
+{
     const SIZE: usize = SBTreeMap::<K, V>::SIZE;
     type Buf = <SBTreeMap<K, V> as AsFixedSizeBytes>::Buf;
 
@@ -304,7 +313,7 @@ impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
 
     fn from_fixed_size_bytes(buf: &[u8]) -> Self {
         let mut inner = SBTreeMap::<K, V>::from_fixed_size_bytes(buf);
-        inner.certified = true;
+        inner.set_certified(true);
 
         Self {
             inner,
@@ -314,33 +323,37 @@ impl<K, V> AsFixedSizeBytes for SCertifiedBTreeMap<K, V> {
     }
 }
 
-impl<K: StableAllocated + Ord, V: StableAllocated> StableAllocated for SCertifiedBTreeMap<K, V> {
-    #[inline]
-    fn move_to_stable(&mut self) {}
-
-    #[inline]
-    fn remove_from_stable(&mut self) {}
-}
-
-impl<K: StableAllocated + Ord + StableDrop, V: StableAllocated + StableDrop> StableDrop
-    for SCertifiedBTreeMap<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > StableType for SCertifiedBTreeMap<K, V>
 {
-    type Output = ();
-
-    unsafe fn stable_drop(self) {
-        self.inner.stable_drop()
+    #[inline]
+    unsafe fn stable_memory_disown(&mut self) {
+        self.inner.stable_memory_disown();
     }
+
+    #[inline]
+    unsafe fn stable_memory_own(&mut self) {
+        self.inner.stable_memory_own();
+    }
+
+    #[inline]
+    fn is_owned_by_stable_memory(&self) -> bool {
+        self.inner.is_owned_by_stable_memory()
+    }
+
+    #[inline]
+    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
-    use crate::encoding::AsFixedSizeBytes;
-    use crate::primitive::StableAllocated;
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::{get_allocated_size, init_allocator, stable};
+    use crate::{init_allocator, stable};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 

@@ -1,13 +1,13 @@
-use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
+use crate::mem::StablePtr;
 use crate::utils::mem_context::stable;
-use std::mem::{size_of, MaybeUninit};
 use std::usize;
+use crate::encoding::AsFixedSizeBytes;
 
 pub(crate) const FREE: u64 = 2usize.pow(u32::BITS - 1) as u64 - 1; // first biggest bit set to 0, other set to 1
 pub(crate) const ALLOCATED: u64 = 2usize.pow(u32::BITS - 1) as u64; // first biggest bit set to 1, other set to 0
-pub(crate) const PTR_SIZE: usize = size_of::<u64>();
+pub(crate) const PTR_SIZE: usize = <StablePtr as AsFixedSizeBytes>::SIZE;
 pub(crate) const BLOCK_META_SIZE: usize = PTR_SIZE;
 pub(crate) const BLOCK_MIN_TOTAL_SIZE: usize = PTR_SIZE * 4;
 
@@ -21,12 +21,12 @@ pub(crate) enum Side {
 #[derive(Debug, Copy, Clone)]
 pub struct SSlice {
     // ptr is shifted by BLOCK_META_SIZE for faster computations
-    ptr: u64,
+    ptr: StablePtr,
     size: usize,
 }
 
 impl SSlice {
-    pub(crate) fn new(ptr: u64, size: usize, write_size: bool) -> Self {
+    pub(crate) fn new(ptr: StablePtr, size: usize, write_size: bool) -> Self {
         if write_size {
             Self::write_size(ptr, size);
         }
@@ -34,7 +34,7 @@ impl SSlice {
         Self { ptr, size }
     }
 
-    pub(crate) fn from_ptr(ptr: u64, side: Side) -> Option<Self> {
+    pub(crate) fn from_ptr(ptr: StablePtr, side: Side) -> Option<Self> {
         match side {
             Side::Start => {
                 let size_1 = Self::read_size(ptr)?;
@@ -73,17 +73,7 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn write_bytes(&self, offset: usize, data: &[u8]) {
-        Self::_write_bytes(self.ptr, offset, data);
-    }
-
-    #[inline]
-    pub fn read_bytes(&self, offset: usize, data: &mut [u8]) {
-        Self::_read_bytes(self.ptr, offset, data)
-    }
-
-    #[inline]
-    pub fn as_ptr(&self) -> u64 {
+    pub fn as_ptr(&self) -> StablePtr {
         self.ptr
     }
 
@@ -98,28 +88,18 @@ impl SSlice {
     }
 
     #[inline]
-    pub fn _make_ptr_by_offset(self_ptr: u64, offset: usize) -> u64 {
+    pub fn _make_ptr_by_offset(self_ptr: u64, offset: usize) -> StablePtr {
         debug_assert_ne!(self_ptr, EMPTY_PTR);
 
         self_ptr + (BLOCK_META_SIZE + offset) as u64
     }
 
     #[inline]
-    pub fn make_ptr_by_offset(&self, offset: usize) -> u64 {
+    pub fn make_ptr_by_offset(&self, offset: usize) -> StablePtr {
         Self::_make_ptr_by_offset(self.as_ptr(), offset)
     }
 
-    #[inline]
-    pub fn _write_bytes(ptr: u64, offset: usize, data: &[u8]) {
-        stable::write(ptr + (BLOCK_META_SIZE + offset) as u64, data);
-    }
-
-    #[inline]
-    pub fn _read_bytes(ptr: u64, offset: usize, data: &mut [u8]) {
-        stable::read(ptr + (BLOCK_META_SIZE + offset) as u64, data);
-    }
-
-    fn read_size(ptr: u64) -> Option<usize> {
+    fn read_size(ptr: StablePtr) -> Option<usize> {
         let mut meta = [0u8; BLOCK_META_SIZE as usize];
         stable::read(ptr, &mut meta);
 
@@ -140,45 +120,13 @@ impl SSlice {
         }
     }
 
-    fn write_size(ptr: u64, size: usize) {
+    fn write_size(ptr: StablePtr, size: usize) {
         let encoded_size = size as u64 | ALLOCATED;
 
         let meta = encoded_size.to_le_bytes();
 
         stable::write(ptr, &meta);
         stable::write(ptr + (BLOCK_META_SIZE + size) as u64, &meta);
-    }
-}
-
-impl SSlice {
-    pub fn _read_buffer_of_size<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T::Buf {
-        let mut buf = T::Buf::new(T::SIZE);
-        SSlice::_read_bytes(ptr, offset, buf._deref_mut());
-
-        buf
-    }
-
-    pub fn _as_fixed_size_bytes_read<T: AsFixedSizeBytes>(ptr: u64, offset: usize) -> T {
-        let mut buf = Self::_read_buffer_of_size::<T>(ptr, offset);
-        T::from_fixed_size_bytes(buf._deref_mut())
-    }
-
-    #[inline]
-    pub fn _as_fixed_size_bytes_write<T: AsFixedSizeBytes>(ptr: u64, offset: usize, it: T) {
-        let mut buf = T::Buf::new(T::SIZE);
-        it.as_fixed_size_bytes(buf._deref_mut());
-
-        SSlice::_write_bytes(ptr, offset, buf._deref())
-    }
-
-    #[inline]
-    pub fn as_fixed_size_bytes_read<T: AsFixedSizeBytes>(&self, offset: usize) -> T {
-        Self::_as_fixed_size_bytes_read::<T>(self.ptr, offset)
-    }
-
-    #[inline]
-    pub fn as_fixed_size_bytes_write<T: AsFixedSizeBytes>(&self, offset: usize, it: T) {
-        Self::_as_fixed_size_bytes_write::<T>(self.ptr, offset, it)
     }
 }
 
@@ -200,17 +148,17 @@ mod tests {
         let b = vec![1u8, 3, 3, 7];
         let c = vec![9u8, 8, 7, 6, 5, 4, 3, 2, 1];
 
-        m1.write_bytes(0, &a);
-        m1.write_bytes(8, &b);
-        m1.write_bytes(90, &c);
+        unsafe { crate::mem::write_bytes(m1.make_ptr_by_offset(0), &a) };
+        unsafe { crate::mem::write_bytes(m1.make_ptr_by_offset(8), &b) };
+        unsafe { crate::mem::write_bytes(m1.make_ptr_by_offset(90), &c) };
 
         let mut a1 = [0u8; 8];
         let mut b1 = [0u8; 4];
         let mut c1 = [0u8; 9];
 
-        m1.read_bytes(0, &mut a1);
-        m1.read_bytes(8, &mut b1);
-        m1.read_bytes(90, &mut c1);
+        unsafe { crate::mem::read_bytes(m1.make_ptr_by_offset(0), &mut a1) };
+        unsafe { crate::mem::read_bytes(m1.make_ptr_by_offset(8), &mut b1) };
+        unsafe { crate::mem::read_bytes(m1.make_ptr_by_offset(90), &mut c1) };
 
         assert_eq!(&a, &a1);
         assert_eq!(&b, &b1);

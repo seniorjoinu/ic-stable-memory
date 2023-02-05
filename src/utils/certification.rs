@@ -1,8 +1,8 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
-use crate::collections::btree_map::{BTreeNode, IBTreeNode};
+use crate::collections::btree_map::BTreeNode;
 use crate::encoding::AsFixedSizeBytes;
-use crate::primitive::StableAllocated;
+use crate::primitive::StableType;
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -245,8 +245,10 @@ impl AsHashTree for () {
     }
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree>
-    LeafBTreeNode<K, V>
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > LeafBTreeNode<K, V>
 {
     pub(crate) fn commit(&mut self) {
         let len = self.read_len();
@@ -254,7 +256,8 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         let mut hash = HashForker::default();
 
         for i in 0..len {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             hash.fork_with(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()));
         }
@@ -274,7 +277,8 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         let to = index;
 
         for i in 0..len {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             // it is safe to cast from to usize, since i can never reach 2**31
             let rh = if i == from as usize || i == to {
@@ -317,19 +321,22 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         let mut witness = WitnessForker::default();
 
         for i in 0..from_idx {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
         }
 
         for i in from_idx..(to_idx + 1).min(len) {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             witness.fork_with(labeled(k.as_hashable_bytes(), pruned(v.root_hash())));
         }
 
         for i in (to_idx + 1)..len {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
         }
@@ -358,7 +365,8 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
         let mut witness = WitnessForker::default();
 
         for i in 0..len {
-            let (k, v) = self.read_entry(i);
+            let k = self.get_key(i);
+            let v = self.get_value(i);
 
             let rh = if i == index {
                 labeled(k.as_hashable_bytes(), f(&v))
@@ -373,8 +381,8 @@ impl<K: StableAllocated + Ord + AsHashableBytes, V: StableAllocated + AsHashTree
     }
 }
 
-impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
-    pub(crate) fn commit<V: StableAllocated + AsHashTree>(&mut self) {
+impl<K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes> InternalBTreeNode<K> {
+    pub(crate) fn commit<V: StableType + AsFixedSizeBytes + AsHashTree>(&mut self) {
         let len = self.read_len();
         let mut hash = HashForker::default();
 
@@ -390,7 +398,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         self.read_root_hash(true)
     }
 
-    pub(crate) fn prove_absence<V: StableAllocated + AsHashTree, Q>(
+    pub(crate) fn prove_absence<V: StableType + AsFixedSizeBytes + AsHashTree, Q>(
         &self,
         key: &Q,
     ) -> Result<HashTree, HashTree>
@@ -415,7 +423,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
                 break;
             }
 
-            let mut ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i));
+            let mut ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i));
             let mut child = BTreeNode::<K, V>::from_ptr(ptr);
 
             let result = if i == index {
@@ -452,7 +460,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
                     }
 
                     // simply take from the next one
-                    ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i + 1));
+                    ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i + 1));
                     child = BTreeNode::<K, V>::from_ptr(ptr);
 
                     let rh = match child {
@@ -474,7 +482,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         Ok(witness.finish())
     }
 
-    pub(crate) fn prove_range<V: AsHashTree + StableAllocated, Q>(
+    pub(crate) fn prove_range<V: AsHashTree + StableType + AsFixedSizeBytes, Q>(
         &self,
         from: &Q,
         to: &Q,
@@ -504,7 +512,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         }
 
         for i in from_idx..(to_idx + 1).min(len + 1) {
-            let ptr = u64::from_fixed_size_bytes(&self.read_child_ptr(i));
+            let ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i));
             let child = BTreeNode::<K, V>::from_ptr(ptr);
 
             let rh = match child {
@@ -522,7 +530,7 @@ impl<K: StableAllocated + Ord + AsHashableBytes> InternalBTreeNode<K> {
         witness.finish()
     }
 
-    pub(crate) fn witness_with_replacement<V: StableAllocated + AsHashTree>(
+    pub(crate) fn witness_with_replacement<V: StableType + AsFixedSizeBytes + AsHashTree>(
         &self,
         index: usize,
         replace: HashTree,
