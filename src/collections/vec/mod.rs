@@ -385,7 +385,11 @@ mod tests {
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
-    use crate::{_debug_print_allocator, stable_memory_init};
+    use crate::{
+        _debug_print_allocator, _debug_validate_allocator, get_allocated_size, stable_memory_init,
+    };
+    use rand::seq::SliceRandom;
+    use rand::{thread_rng, Rng};
 
     #[derive(Copy, Clone, Debug)]
     struct Test {
@@ -618,6 +622,46 @@ mod tests {
         }
 
         assert_eq!(c, 100);
+    }
+
+    #[test]
+    fn random_works_fine() {
+        for i in 0..100 {
+            stable::clear();
+            stable_memory_init();
+
+            let mut svec = SVec::new();
+
+            let mut rng = thread_rng();
+            let iterations = 10_000;
+
+            let mut example = Vec::new();
+            for i in 0..iterations {
+                example.push(i);
+            }
+            example.shuffle(&mut rng);
+
+            for i in 0..iterations {
+                svec.push(example[i]);
+            }
+
+            for i in 0..iterations {
+                svec.insert(rng.gen_range(0..svec.len()), example[i]);
+            }
+
+            for _ in 0..iterations {
+                svec.pop().unwrap();
+            }
+
+            for i in 0..iterations {
+                svec.remove(rng.gen_range(0..(svec.len() - 1)));
+            }
+
+            assert!(svec.is_empty());
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]

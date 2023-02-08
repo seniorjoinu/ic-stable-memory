@@ -14,7 +14,7 @@ pub const ALLOCATOR_PTR: StablePtr = 0;
 pub const MIN_PTR: StablePtr = u64::SIZE as u64;
 pub const EMPTY_PTR: StablePtr = u64::MAX;
 
-#[derive(Debug, Default, CandidType, Deserialize, Eq, PartialEq)]
+#[derive(Debug, CandidType, Deserialize, Eq, PartialEq)]
 pub struct StableMemoryAllocator {
     free_blocks: BTreeMap<usize, Vec<FreeBlock>>,
     custom_data_pointers: HashMap<usize, StablePtr>,
@@ -24,7 +24,29 @@ pub struct StableMemoryAllocator {
 }
 
 impl StableMemoryAllocator {
-    pub(crate) fn allocate(&mut self, mut size: usize) -> SSlice {
+    pub fn init() -> Self {
+        let mut it = Self {
+            max_ptr: MIN_PTR,
+            free_blocks: BTreeMap::default(),
+            custom_data_pointers: HashMap::default(),
+            free_size: 0,
+            available_size: 0,
+        };
+
+        let real_max_ptr = stable::size_pages() * PAGE_SIZE_BYTES as u64;
+        if real_max_ptr > it.max_ptr {
+            let free_block =
+                FreeBlock::new_total_size(it.max_ptr, (real_max_ptr - it.max_ptr) as usize);
+            it.more_free_size(free_block.get_total_size_bytes());
+            it.more_available_size(free_block.get_total_size_bytes());
+
+            it.push_free_block(free_block);
+        }
+
+        it
+    }
+
+    pub fn allocate(&mut self, mut size: usize) -> SSlice {
         size = Self::pad_size(size);
 
         // searching for a free block that is equal or bigger in size, than asked
@@ -167,15 +189,29 @@ impl StableMemoryAllocator {
         mut free_block: FreeBlock,
         new_size: usize,
     ) -> Result<FreeBlock, FreeBlock> {
-        if let Some(next_neighbor) = free_block.next_neighbor_is_free(self.max_ptr) {
-            let merged_size = FreeBlock::merged_size(&free_block, &next_neighbor);
+        if let Some(mut next_neighbor) = free_block.next_neighbor_is_free(self.max_ptr) {
+            let mut merged_size = FreeBlock::merged_size(&free_block, &next_neighbor);
 
             if merged_size < new_size {
-                return Err(free_block);
+                if next_neighbor.get_next_neighbor_ptr() != self.max_ptr {
+                    return Err(free_block);
+                }
+
+                let fb = self.grow(new_size);
+
+                self.more_available_size(fb.get_total_size_bytes());
+                self.more_free_size(fb.get_total_size_bytes());
+
+                self.less_free_size(next_neighbor.get_total_size_bytes());
+                self.remove_free_block(&next_neighbor);
+
+                next_neighbor = FreeBlock::merge(next_neighbor, fb);
+                merged_size = FreeBlock::merged_size(&free_block, &next_neighbor);
+            } else {
+                self.less_free_size(next_neighbor.get_total_size_bytes());
+                self.remove_free_block(&next_neighbor);
             }
 
-            self.less_free_size(next_neighbor.get_total_size_bytes());
-            self.remove_free_block(&next_neighbor);
             free_block = FreeBlock::merge(free_block, next_neighbor);
 
             if !FreeBlock::can_split(merged_size, new_size) {
@@ -253,55 +289,19 @@ impl StableMemoryAllocator {
     }
 
     fn grow(&mut self, size: usize) -> FreeBlock {
-        let memory_grown = stable::size_pages() * PAGE_SIZE_BYTES as u64;
+        let pages_to_grow = ceil_div(size, PAGE_SIZE_BYTES);
 
-        if self.max_ptr == ALLOCATOR_PTR {
-            self.max_ptr = MIN_PTR;
-        }
-
-        let (block, new_max_ptr) = if self.max_ptr < memory_grown {
-            let available_memory = memory_grown - self.max_ptr;
-
-            if available_memory < (size + StablePtr::SIZE * 2) as u64 {
-                let memory_to_grow = (size + StablePtr::SIZE * 2) as u64 - available_memory;
-                let pages_to_grow = ceil_div(memory_to_grow as usize, PAGE_SIZE_BYTES);
-
-                let previous_pages = match stable::grow(pages_to_grow) {
-                    Ok(pp) => pp,
-                    Err(_) => panic!("Unable to grow stable memory - OutOfMemory"),
-                };
-
-                let new_max_ptr = (previous_pages + pages_to_grow) * PAGE_SIZE_BYTES as u64;
-
-                (
-                    FreeBlock::new_total_size(self.max_ptr, (new_max_ptr - self.max_ptr) as usize),
-                    new_max_ptr,
-                )
-            } else {
-                (
-                    FreeBlock::new_total_size(self.max_ptr, available_memory as usize),
-                    self.max_ptr + available_memory,
-                )
-            }
-        } else {
-            let pages_to_grow = ceil_div(size, PAGE_SIZE_BYTES);
-
-            let previous_pages = match stable::grow(pages_to_grow) {
-                Ok(pp) => pp,
-                Err(_) => panic!("Unable to grow stable memory - OutOfMemory"),
-            };
-
-            let new_max_ptr = (previous_pages + pages_to_grow) * PAGE_SIZE_BYTES as u64;
-
-            (
-                FreeBlock::new_total_size(self.max_ptr, (new_max_ptr - self.max_ptr) as usize),
-                new_max_ptr,
-            )
+        let previous_pages = match stable::grow(pages_to_grow) {
+            Ok(pp) => pp,
+            Err(_) => panic!("OutOfMemory"),
         };
+
+        let new_max_ptr = (previous_pages + pages_to_grow) * PAGE_SIZE_BYTES as u64;
+        let it = FreeBlock::new_total_size(self.max_ptr, (new_max_ptr - self.max_ptr) as usize);
 
         self.max_ptr = new_max_ptr;
 
-        block
+        it
     }
 
     pub fn debug_validate_free_blocks(&self) {
@@ -366,13 +366,15 @@ mod tests {
     use crate::mem::free_block::FreeBlock;
     use crate::utils::mem_context::stable;
     use crate::utils::Anyway;
+    use crate::SSlice;
+    use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
     use rand::{thread_rng, Rng};
     use std::mem;
 
     #[test]
     fn encoding_works_fine() {
-        let mut sma = StableMemoryAllocator::default();
+        let mut sma = StableMemoryAllocator::init();
         sma.allocate(100);
 
         let buf = sma.as_dyn_size_bytes();
@@ -390,7 +392,7 @@ mod tests {
         stable::grow(1).unwrap();
 
         unsafe {
-            let mut sma = StableMemoryAllocator::default();
+            let mut sma = StableMemoryAllocator::init();
             let slice = sma.allocate(100);
 
             assert_eq!(sma._free_blocks_count(), 1);
@@ -409,7 +411,7 @@ mod tests {
         stable::clear();
 
         unsafe {
-            let mut sma = StableMemoryAllocator::default();
+            let mut sma = StableMemoryAllocator::init();
             let slice = sma.allocate(100);
 
             assert_eq!(sma._free_blocks_count(), 1);
@@ -423,49 +425,116 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    enum Action {
+        Alloc(SSlice),
+        Dealloc(SSlice),
+        Realloc(SSlice, SSlice),
+    }
+
+    struct Fuzzer {
+        allocator: StableMemoryAllocator,
+        slices: Vec<SSlice>,
+        log: Vec<Action>,
+        total_allocated_size: u64,
+        rng: ThreadRng,
+    }
+
+    impl Fuzzer {
+        fn new() -> Self {
+            Self {
+                allocator: StableMemoryAllocator::init(),
+                slices: Vec::default(),
+                log: Vec::default(),
+                total_allocated_size: 0,
+                rng: thread_rng(),
+            }
+        }
+
+        fn next(&mut self) {
+            match self.rng.gen_range(0..100) {
+                // ALLOCATE ~ 50%
+                0..=50 => {
+                    let slice = self
+                        .allocator
+                        .allocate(self.rng.gen_range(0..(u16::MAX as usize * 2)));
+
+                    self.log.push(Action::Alloc(slice));
+                    self.slices.push(slice);
+
+                    let mut buf = vec![100u8; slice.get_size_bytes()];
+                    unsafe { crate::mem::write_bytes(slice.make_ptr_by_offset(0), &buf) };
+
+                    let mut buf2 = vec![0u8; slice.get_size_bytes()];
+                    unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf2) };
+
+                    assert_eq!(buf, buf2);
+
+                    self.total_allocated_size += slice.get_total_size_bytes() as u64;
+                }
+                // DEALLOCATE ~ 25%
+                51..=75 => {
+                    if self.slices.len() < 2 {
+                        return self.next();
+                    }
+
+                    let slice = self.slices.remove(self.rng.gen_range(0..self.slices.len()));
+                    self.log.push(Action::Dealloc(slice));
+
+                    self.total_allocated_size -= slice.get_total_size_bytes() as u64;
+
+                    self.allocator.deallocate(slice);
+                }
+                // REALLOCATE ~ 25%
+                _ => {
+                    if self.slices.len() < 2 {
+                        return self.next();
+                    }
+
+                    let slice = self.slices.remove(self.rng.gen_range(0..self.slices.len()));
+                    self.total_allocated_size -= slice.get_total_size_bytes() as u64;
+
+                    let slice1 = self
+                        .allocator
+                        .reallocate(slice, self.rng.gen_range(0..(u16::MAX as usize * 2)))
+                        .anyway();
+                    self.total_allocated_size += slice1.get_total_size_bytes() as u64;
+
+                    self.log.push(Action::Realloc(slice, slice1));
+                    self.slices.push(slice1);
+
+                    let mut buf = vec![100u8; slice1.get_size_bytes()];
+                    unsafe { crate::mem::write_bytes(slice1.make_ptr_by_offset(0), &buf) };
+
+                    let mut buf2 = vec![0u8; slice1.get_size_bytes()];
+                    unsafe { crate::mem::read_bytes(slice1.make_ptr_by_offset(0), &mut buf2) };
+
+                    assert_eq!(buf, buf2);
+                }
+            };
+
+            let res = std::panic::catch_unwind(|| {
+                self.allocator.debug_validate_free_blocks();
+                assert_eq!(
+                    self.allocator.get_allocated_size(),
+                    self.total_allocated_size
+                );
+            });
+
+            if res.is_err() {
+                panic!("Error happened: {:?}", self.log);
+            }
+        }
+    }
+
     #[test]
     fn random_works_fine() {
         stable::clear();
 
-        let mut sma = StableMemoryAllocator::default();
+        let mut fuzzer = Fuzzer::new();
 
-        let mut rng = thread_rng();
-        let iterations = 10_000;
-        let size_range = (0..(u16::MAX as usize * 2));
-
-        let mut total_allocated_mem = 0u64;
-
-        let mut slices = Vec::new();
-        for i in 0..iterations {
-            let size = rng.gen_range(size_range.clone());
-
-            let slice = sma.allocate(size);
-            total_allocated_mem += slice.get_total_size_bytes() as u64;
-            slices.push(slice);
-
-            sma.debug_validate_free_blocks();
-            assert_eq!(sma.get_allocated_size(), total_allocated_mem);
-        }
-        slices.shuffle(&mut rng);
-
-        for i in 0..slices.len() {
-            total_allocated_mem -= slices[i].get_total_size_bytes() as u64;
-            let new_size = rng.gen_range(size_range.clone());
-
-            slices[i] = sma.reallocate(slices[i], new_size).anyway();
-            total_allocated_mem += slices[i].get_total_size_bytes() as u64;
-
-            sma.debug_validate_free_blocks();
-            assert_eq!(sma.get_allocated_size(), total_allocated_mem);
-        }
-        slices.shuffle(&mut rng);
-
-        for i in 0..slices.len() {
-            total_allocated_mem -= slices[i].get_total_size_bytes() as u64;
-            sma.deallocate(slices[i]);
-
-            sma.debug_validate_free_blocks();
-            assert_eq!(sma.get_allocated_size(), total_allocated_mem);
+        for i in 0..10_000 {
+            fuzzer.next();
         }
     }
 
@@ -473,7 +542,7 @@ mod tests {
     fn allocation_works_fine() {
         stable::clear();
 
-        let mut sma = StableMemoryAllocator::default();
+        let mut sma = StableMemoryAllocator::init();
 
         let mut slices = vec![];
 
@@ -522,7 +591,7 @@ mod tests {
         unsafe {
             stable::clear();
 
-            let mut allocator = StableMemoryAllocator::default();
+            let mut allocator = StableMemoryAllocator::init();
             allocator.store();
 
             let mut allocator = StableMemoryAllocator::retrieve();

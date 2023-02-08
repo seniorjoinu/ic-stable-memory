@@ -25,7 +25,7 @@ thread_local! {
 pub fn init_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if it.borrow().is_none() {
-            let allocator = unsafe { StableMemoryAllocator::default() };
+            let allocator = StableMemoryAllocator::init();
 
             *it.borrow_mut() = Some(allocator);
         } else {
@@ -156,10 +156,21 @@ pub fn get_mem_metrics() -> MemMetrics {
 }
 
 #[inline]
+pub fn _debug_validate_allocator() {
+    STABLE_MEMORY_ALLOCATOR.with(|it: &RefCell<Option<StableMemoryAllocator>>| {
+        if let Some(alloc) = &*it.borrow() {
+            alloc.debug_validate_free_blocks();
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+#[inline]
 pub fn _debug_print_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &*it.borrow_mut() {
-            isoprint(format!("{:?}", alloc).as_str());
+            isoprint(format!("{alloc:?}").as_str());
         } else {
             unreachable!("StableMemoryAllocator is not initialized");
         }
