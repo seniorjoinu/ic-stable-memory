@@ -192,8 +192,7 @@ impl<T: StableType + AsFixedSizeBytes> StableType for SBinaryHeap<T> {
 mod tests {
     use crate::collections::binary_heap::SBinaryHeap;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::StableType;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn heap_sort_works_fine() {
@@ -251,7 +250,7 @@ mod tests {
         }
 
         let mut c = 0;
-        for mut i in heap.iter() {
+        for i in heap.iter() {
             c += 1;
 
             assert!(*i < 100);
@@ -280,6 +279,6 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut heap = SBinaryHeap::<u32>::default();
+        SBinaryHeap::<u32>::default();
     }
 }

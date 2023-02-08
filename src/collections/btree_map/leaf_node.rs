@@ -3,7 +3,6 @@ use crate::collections::btree_map::{
     IBTreeNode, B, CAPACITY, MIN_LEN_AFTER_SPLIT, NODE_TYPE_LEAF, NODE_TYPE_OFFSET,
 };
 use crate::encoding::{AsFixedSizeBytes, Buffer};
-use crate::mem::s_slice::Side;
 use crate::mem::{stable_ptr_buf, StablePtrBuf};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
@@ -69,7 +68,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn destroy(self) {
-        let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(self.ptr).unwrap();
         deallocate(slice);
     }
 
@@ -512,7 +511,7 @@ mod tests {
     use crate::collections::btree_map::leaf_node::LeafBTreeNode;
     use crate::collections::btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
     use crate::encoding::AsFixedSizeBytes;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn works_fine() {

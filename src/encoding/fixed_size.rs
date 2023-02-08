@@ -58,10 +58,10 @@ impl AsFixedSizeBytes for () {
     type Buf = [u8; 0];
 
     #[inline]
-    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {}
+    fn as_fixed_size_bytes(&self, _: &mut [u8]) {}
 
     #[inline]
-    fn from_fixed_size_bytes(buf: &[u8]) -> Self {}
+    fn from_fixed_size_bytes(_: &[u8]) -> Self {}
 }
 
 impl AsFixedSizeBytes for bool {
@@ -114,10 +114,10 @@ impl<const N: usize> AsFixedSizeBytes for [(); N] {
     type Buf = [u8; 0];
 
     #[inline]
-    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {}
+    fn as_fixed_size_bytes(&self, _: &mut [u8]) {}
 
     #[inline]
-    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
+    fn from_fixed_size_bytes(_: &[u8]) -> Self {
         [(); N]
     }
 }

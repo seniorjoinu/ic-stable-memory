@@ -1,7 +1,6 @@
 use crate::collections::hash_map::iter::SHashMapIter;
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::s_slice::Side;
 use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
@@ -112,7 +111,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
                         let res = new.insert(key, value);
 
-                        let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+                        let slice = SSlice::from_ptr(self.table_ptr).unwrap();
                         deallocate(slice);
 
                         // dirty hack to make it not call stable_drop() when it is dropped
@@ -460,7 +459,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         if self.table_ptr != EMPTY_PTR {
             self.clear();
 
-            let slice = SSlice::from_ptr(self.table_ptr, Side::Start).unwrap();
+            let slice = SSlice::from_ptr(self.table_ptr).unwrap();
             deallocate(slice);
         }
     }
@@ -484,8 +483,8 @@ mod tests {
     use crate::encoding::AsFixedSizeBytes;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
+    use crate::stable_memory_init;
     use crate::utils::mem_context::stable;
-    use crate::{init_allocator, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
@@ -677,7 +676,7 @@ mod tests {
         }
 
         let mut c = 0;
-        for (mut k, v) in map.iter() {
+        for (mut k, _) in map.iter() {
             c += 1;
 
             assert!(*k < 100);

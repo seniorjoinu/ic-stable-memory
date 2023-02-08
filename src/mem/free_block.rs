@@ -1,157 +1,161 @@
 use crate::encoding::{AsFixedSizeBytes, Buffer};
-use crate::mem::s_slice::{Side, ALLOCATED, BLOCK_META_SIZE, FREE};
-use crate::mem::StablePtrBuf;
-use crate::{stable, SSlice, StablePtr};
+use crate::mem::allocator::MIN_PTR;
+use crate::mem::s_slice::{SSlice, ALLOCATED, FREE};
+use crate::mem::StablePtr;
+use crate::stable;
+use candid::{CandidType, Deserialize};
+use std::cmp::Ordering;
 
-#[derive(Debug, Copy, Clone)]
+// Layout is:
+// size + allocated flag (combined): u64
+// data: [u8; size]
+// size + allocate flag (dublicate): u64
+
+#[derive(Debug, Copy, Clone, CandidType, Deserialize)]
 pub(crate) struct FreeBlock {
-    pub ptr: u64,
-    pub size: usize,
-    pub transient: bool,
+    ptr: u64,    // always points to the first size+flag word position
+    size: usize, // available size
 }
 
 impl FreeBlock {
     #[inline]
-    pub fn new(ptr: StablePtr, size: usize, transient: bool) -> Self {
-        Self {
-            ptr,
-            size,
-            transient,
-        }
+    pub fn new(ptr: StablePtr, size: usize) -> Self {
+        Self { ptr, size }
     }
 
     #[inline]
     pub fn new_total_size(ptr: StablePtr, total_size: usize) -> Self {
-        Self::new(ptr, total_size - BLOCK_META_SIZE * 2, true)
+        Self::new(ptr, total_size - StablePtr::SIZE * 2)
     }
 
     #[inline]
     pub fn to_allocated(self) -> SSlice {
-        SSlice::new(self.ptr, self.size, true)
+        SSlice::new(self.as_ptr(), self.get_size_bytes(), true)
     }
 
-    pub fn from_ptr(ptr: StablePtr, side: Side, size_1_opt: Option<usize>) -> Option<Self> {
-        match side {
-            Side::Start => {
-                let size_1 = if let Some(s) = size_1_opt {
-                    s
-                } else {
-                    Self::read_size(ptr)?
-                };
+    // when side == Side::End, ptr is the "rear" ptr - the one at the end
+    pub fn from_ptr(ptr: StablePtr) -> Option<Self> {
+        let size = Self::read_size(ptr)?;
 
-                Some(Self::new(ptr, size_1, false))
-            }
-            Side::End => {
-                let size_1 = if let Some(s) = size_1_opt {
-                    s
-                } else {
-                    Self::read_size(ptr - BLOCK_META_SIZE as u64)?
-                };
+        Some(Self::new(ptr, size))
+    }
 
-                let it_ptr = ptr - (BLOCK_META_SIZE * 2 + size_1) as u64;
-                let it = Self::new(it_ptr, size_1, false);
+    pub fn from_rear_ptr(ptr: StablePtr) -> Option<Self> {
+        let size = Self::read_size(ptr)?;
 
-                Some(it)
-            }
-        }
+        let it_ptr = ptr - (StablePtr::SIZE + size) as u64;
+        let it = Self::new(it_ptr, size);
+
+        Some(it)
     }
 
     #[inline]
-    pub(crate) fn validate(&self) -> Option<()> {
-        let size_2 = Self::read_size(self.ptr + (BLOCK_META_SIZE + self.size) as u64)?;
+    pub(crate) fn persist(&mut self) {
+        Self::write_size(self.as_ptr(), self.get_size_bytes());
+    }
 
-        if self.size == size_2 {
-            Some(())
+    #[inline]
+    pub fn get_next_neighbor_ptr(&self) -> StablePtr {
+        self.as_ptr() + (StablePtr::SIZE * 2 + self.get_size_bytes()) as u64
+    }
+
+    #[inline]
+    pub fn get_prev_neighbor_rear_ptr(&self) -> StablePtr {
+        self.as_ptr() - StablePtr::SIZE as u64
+    }
+
+    #[inline]
+    pub fn next_neighbor_is_free(&self, max_ptr: StablePtr) -> Option<FreeBlock> {
+        let next_neighbor_ptr = self.get_next_neighbor_ptr();
+
+        if next_neighbor_ptr < max_ptr {
+            Self::read_size(next_neighbor_ptr).map(|size| Self::new(next_neighbor_ptr, size))
         } else {
             None
         }
     }
 
     #[inline]
-    pub(crate) fn persist(&mut self) {
-        if self.transient {
-            Self::write_size(self.ptr, self.size);
+    pub fn prev_neighbor_is_free(&self) -> Option<FreeBlock> {
+        let prev_neighbor_rear_ptr = self.get_prev_neighbor_rear_ptr();
 
-            self.transient = false;
+        if prev_neighbor_rear_ptr >= MIN_PTR {
+            Self::read_size(prev_neighbor_rear_ptr).map(|size| {
+                let it_ptr = prev_neighbor_rear_ptr - (StablePtr::SIZE + size) as u64;
+
+                Self::new(it_ptr, size)
+            })
+        } else {
+            None
         }
     }
 
     #[inline]
-    pub fn get_next_neighbor_ptr(&self) -> StablePtr {
-        self.ptr + (BLOCK_META_SIZE * 2 + self.size) as u64
+    pub fn merged_size(a: &Self, b: &Self) -> usize {
+        a.get_size_bytes() + b.get_size_bytes() + StablePtr::SIZE * 2
+    }
+
+    /// returns transient free block
+    #[inline]
+    pub fn merge(a: Self, b: Self) -> Self {
+        debug_assert!(a.as_ptr() < b.as_ptr());
+        debug_assert_eq!(a.as_ptr() + a.get_total_size_bytes() as u64, b.as_ptr());
+
+        FreeBlock::new(a.as_ptr(), Self::merged_size(&a, &b))
+    }
+
+    /// returns transient free blocks
+    #[inline]
+    pub fn split(self, size_first: usize) -> (Self, Self) {
+        debug_assert!(Self::can_split(self.get_size_bytes(), size_first));
+
+        let a = FreeBlock::new(self.as_ptr(), size_first);
+        let b = FreeBlock::new(
+            a.get_next_neighbor_ptr(),
+            self.get_total_size_bytes() - size_first - StablePtr::SIZE * 4,
+        );
+
+        (a, b)
     }
 
     #[inline]
-    pub fn get_prev_neighbor_ptr(&self) -> StablePtr {
+    pub fn can_split(self_size: usize, size_first: usize) -> bool {
+        (Self::to_total_size(self_size) > size_first + StablePtr::SIZE * 4)
+            && (Self::to_total_size(self_size) - size_first - StablePtr::SIZE * 4
+                >= StablePtr::SIZE * 2)
+    }
+
+    #[inline]
+    pub fn to_total_size(size: usize) -> usize {
+        size + StablePtr::SIZE * 2
+    }
+
+    #[inline]
+    pub fn get_total_size_bytes(&self) -> usize {
+        Self::to_total_size(self.size)
+    }
+
+    #[inline]
+    pub fn get_size_bytes(&self) -> usize {
+        self.size
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> StablePtr {
         self.ptr
     }
 
-    pub fn check_neighbor_is_also_free(
-        &self,
-        side: Side,
-        min_ptr: StablePtr,
-        max_ptr: StablePtr,
-    ) -> Option<usize> {
-        match side {
-            Side::Start => {
-                let prev_neighbor_ptr = self.get_prev_neighbor_ptr();
-
-                if prev_neighbor_ptr >= min_ptr {
-                    Self::read_size(prev_neighbor_ptr)
-                } else {
-                    None
-                }
-            }
-            Side::End => {
-                let next_neighbor_ptr = self.get_next_neighbor_ptr();
-
-                if next_neighbor_ptr < max_ptr {
-                    Self::read_size(next_neighbor_ptr)
-                } else {
-                    None
-                }
-            }
-        }
+    #[inline]
+    pub fn as_rear_ptr(&self) -> StablePtr {
+        self.as_ptr() + (self.get_size_bytes() + StablePtr::SIZE) as StablePtr
     }
 
-    pub fn set_free_ptrs(ptr: StablePtr, prev_ptr: StablePtr, next_ptr: StablePtr) {
-        let mut buf = [0u8; 2 * StablePtr::SIZE];
-        prev_ptr.as_fixed_size_bytes(&mut buf[0..StablePtr::SIZE]);
-        next_ptr.as_fixed_size_bytes(&mut buf[StablePtr::SIZE..StablePtr::SIZE * 2]);
+    pub fn debug_validate(&self) {
+        let size_1 = Self::read_size(self.as_ptr()).unwrap();
+        let size_2 = Self::read_size(self.as_rear_ptr()).unwrap();
 
-        stable::write(ptr + StablePtr::SIZE as u64, &buf);
-    }
-
-    pub fn set_prev_free_ptr(ptr: StablePtr, prev_ptr: StablePtr) {
-        stable::write(
-            ptr + StablePtr::SIZE as u64,
-            prev_ptr.as_new_fixed_size_bytes()._deref(),
-        );
-    }
-
-    pub fn get_prev_free_ptr(ptr: StablePtr) -> StablePtr {
-        let mut buf = StablePtrBuf::new(StablePtr::SIZE);
-        stable::read(ptr + StablePtr::SIZE as u64, &mut buf);
-
-        u64::from_fixed_size_bytes(&buf)
-    }
-
-    pub fn set_next_free_ptr(ptr: StablePtr, next_ptr: StablePtr) {
-        stable::write(
-            ptr + (StablePtr::SIZE * 2) as u64,
-            &next_ptr.as_new_fixed_size_bytes(),
-        );
-    }
-
-    pub fn get_next_free_ptr(ptr: StablePtr) -> u64 {
-        let mut buf = StablePtrBuf::new(u64::SIZE);
-        stable::read(ptr + (StablePtr::SIZE * 2) as u64, &mut buf);
-
-        u64::from_fixed_size_bytes(&buf)
-    }
-
-    pub fn get_total_size_bytes(&self) -> usize {
-        self.size + BLOCK_META_SIZE * 2
+        assert_eq!(size_1, size_2);
+        assert_eq!(size_1, self.size);
     }
 
     fn read_size(ptr: StablePtr) -> Option<usize> {
@@ -185,20 +189,115 @@ impl FreeBlock {
     }
 }
 
+impl Ord for FreeBlock {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.ptr.cmp(&other.ptr)
+    }
+}
+
+impl PartialOrd for FreeBlock {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.ptr.partial_cmp(&other.ptr)
+    }
+}
+
+impl Eq for FreeBlock {}
+
+impl PartialEq for FreeBlock {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.ptr.eq(&other.ptr)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::mem::allocator::MIN_PTR;
     use crate::mem::free_block::FreeBlock;
-    use crate::mem::free_block::Side;
     use crate::utils::mem_context::stable;
 
     #[test]
-    fn read_write_work_fine() {
+    fn basic_flow_works_fine() {
         stable::clear();
         stable::grow(1).expect("Unable to grow");
 
-        let mut m1 = FreeBlock::new(0, 100, true);
+        let mut m1 = FreeBlock::new(MIN_PTR, 100);
         m1.persist();
 
-        let m1 = FreeBlock::from_ptr(m1.get_total_size_bytes() as u64, Side::End, None).unwrap();
+        assert!(m1.prev_neighbor_is_free().is_none());
+        assert!(m1
+            .next_neighbor_is_free(m1.get_next_neighbor_ptr())
+            .is_none());
+
+        m1 = FreeBlock::from_rear_ptr(m1.get_total_size_bytes() as u64).unwrap();
+
+        assert_eq!(m1.get_total_size_bytes(), 116);
+
+        assert_eq!(m1.get_prev_neighbor_rear_ptr(), 0);
+        assert_eq!(m1.get_next_neighbor_ptr(), 124);
+
+        let mut m2 = FreeBlock::new(124, 100);
+        m2.persist();
+
+        assert_eq!(m2.get_total_size_bytes(), 116);
+
+        assert_eq!(m2.get_prev_neighbor_rear_ptr(), 116);
+        assert_eq!(m2.get_next_neighbor_ptr(), 240);
+
+        assert!(m1.prev_neighbor_is_free().is_none());
+        let m1_next = m1
+            .next_neighbor_is_free(m2.get_next_neighbor_ptr())
+            .unwrap();
+        assert_eq!(m1_next.as_ptr(), m2.as_ptr());
+        assert_eq!(m1_next.get_size_bytes(), m2.get_size_bytes());
+
+        assert!(m2
+            .next_neighbor_is_free(m2.get_next_neighbor_ptr())
+            .is_none());
+        let m2_prev = m2.prev_neighbor_is_free().unwrap();
+        assert_eq!(m2_prev.as_ptr(), m1.as_ptr());
+        assert_eq!(m2_prev.get_size_bytes(), m1.get_size_bytes());
+
+        // join
+        let mut m3 = FreeBlock::merge(m1, m2);
+        m3.persist();
+
+        assert_eq!(m3.get_prev_neighbor_rear_ptr(), 0);
+        assert_eq!(m3.get_next_neighbor_ptr(), 240);
+
+        assert_eq!(m3.get_size_bytes(), 216);
+        assert_eq!(m3.get_total_size_bytes(), 232);
+
+        // split
+        (m1, m2) = m3.split(50);
+        m1.persist();
+        m2.persist();
+
+        assert_eq!(m1.get_prev_neighbor_rear_ptr(), 0);
+        assert_eq!(m1.get_next_neighbor_ptr(), 74);
+        assert_eq!(m1.get_size_bytes(), 50);
+        assert_eq!(m1.get_total_size_bytes(), 66);
+
+        assert_eq!(m2.as_ptr(), 74);
+        assert_eq!(m2.get_prev_neighbor_rear_ptr(), 66);
+        assert_eq!(m2.get_next_neighbor_ptr(), 240);
+        assert_eq!(m2.get_size_bytes(), 150);
+        assert_eq!(m2.get_total_size_bytes(), 166);
+
+        assert!(m1.prev_neighbor_is_free().is_none());
+        let m1_next = m1
+            .next_neighbor_is_free(m2.get_next_neighbor_ptr())
+            .unwrap();
+        assert_eq!(m1_next.as_ptr(), m2.as_ptr());
+        assert_eq!(m1_next.get_size_bytes(), m2.get_size_bytes());
+
+        assert!(m2
+            .next_neighbor_is_free(m2.get_next_neighbor_ptr())
+            .is_none());
+        let m2_prev = m2.prev_neighbor_is_free().unwrap();
+        assert_eq!(m2_prev.as_ptr(), m1.as_ptr());
+        assert_eq!(m2_prev.get_size_bytes(), m1.get_size_bytes());
     }
 }

@@ -1,7 +1,6 @@
 use crate::collections::log::iter::SLogIter;
 use crate::encoding::AsFixedSizeBytes;
 use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::s_slice::Side;
 use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
@@ -266,7 +265,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
     }
 
     fn destroy(self) {
-        let slice = SSlice::from_ptr(self.0, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(self.0).unwrap();
         deallocate(slice);
     }
 
@@ -486,7 +485,7 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::log::SLog;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn works_fine() {

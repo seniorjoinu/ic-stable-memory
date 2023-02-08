@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod vec_benchmark {
     use crate::collections::vec::SVec;
-    use crate::{init_allocator, stable};
+    use crate::{stable};
     use crate::{measure, stable_memory_init};
 
     const ITERATIONS: usize = 1_000_000;

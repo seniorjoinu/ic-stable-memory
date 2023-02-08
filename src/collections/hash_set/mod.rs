@@ -127,8 +127,7 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> StableType for SHashSet<T> {
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::StableType;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn basic_flow_works_fine() {
@@ -151,7 +150,7 @@ mod tests {
         assert!(!set.remove(&100));
         assert!(set.remove(&10));
 
-        let set = SHashSet::<u64>::new_with_capacity(10);
+        SHashSet::<u64>::new_with_capacity(10);
     }
 
     #[test]
@@ -166,7 +165,7 @@ mod tests {
         }
 
         let mut c = 0;
-        for i in set.iter() {
+        for _ in set.iter() {
             c += 1;
         }
 
@@ -195,6 +194,6 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut set = SHashSet::<u32>::default();
+        SHashSet::<u32>::default();
     }
 }

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod btree_map_benchmark {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::{init_allocator, measure, stable, stable_memory_init};
+    use crate::{measure, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     use std::collections::BTreeMap;

@@ -560,7 +560,7 @@ mod tests {
         domain_sep, empty, fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned, Hash,
         EMPTY_HASH,
     };
-    use serde_test::{assert_ser_tokens, assert_tokens, Token};
+    use serde_test::{assert_ser_tokens, Token};
     use sha2::Digest;
 
     #[test]

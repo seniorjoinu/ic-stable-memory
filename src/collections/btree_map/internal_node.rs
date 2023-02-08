@@ -4,7 +4,6 @@ use crate::collections::btree_map::{
     NODE_TYPE_INTERNAL, NODE_TYPE_OFFSET,
 };
 use crate::encoding::{AsFixedSizeBytes, Buffer};
-use crate::mem::s_slice::Side;
 use crate::mem::{stable_ptr_buf, StablePtr, StablePtrBuf};
 use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, EMPTY_HASH};
@@ -79,7 +78,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
 
     #[inline]
     pub fn destroy(self) {
-        let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(self.ptr).unwrap();
         deallocate(slice);
     }
 
@@ -470,7 +469,7 @@ mod tests {
         B, CAPACITY, CHILDREN_MIN_LEN_AFTER_SPLIT, MIN_LEN_AFTER_SPLIT,
     };
     use crate::encoding::AsFixedSizeBytes;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn works_fine() {

@@ -1,7 +1,7 @@
 use crate::collections::vec::iter::SVecIter;
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::s_slice::{SSlice, Side};
+use crate::mem::s_slice::SSlice;
 use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
@@ -66,7 +66,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
 
         if self.len() == self.capacity() {
             self.cap *= 2;
-            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+            let slice = SSlice::from_ptr(self.ptr).unwrap();
 
             self.ptr = reallocate(slice, self.cap * T::SIZE).anyway().as_ptr();
         }
@@ -361,7 +361,7 @@ impl<T: StableType + AsFixedSizeBytes> StableType for SVec<T> {
         if self.ptr != EMPTY_PTR {
             self.clear();
 
-            let slice = SSlice::from_ptr(self.ptr, Side::Start).unwrap();
+            let slice = SSlice::from_ptr(self.ptr).unwrap();
 
             deallocate(slice);
         }
@@ -385,7 +385,7 @@ mod tests {
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
-    use crate::{_debug_print_allocator, init_allocator, stable_memory_init};
+    use crate::{_debug_print_allocator, stable_memory_init};
 
     #[derive(Copy, Clone, Debug)]
     struct Test {
@@ -628,11 +628,8 @@ mod tests {
         {
             let mut vec = SVec::new();
 
-            for i in 0..100 {
-                vec.debug_print();
+            for _ in 0..100 {
                 let b = SBox::new(10);
-
-                println!("{}", b.as_ptr());
 
                 vec.push(b);
             }

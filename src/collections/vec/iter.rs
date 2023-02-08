@@ -1,7 +1,6 @@
 use crate::collections::vec::SVec;
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
-use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
 use crate::SSlice;
 

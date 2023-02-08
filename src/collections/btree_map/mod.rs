@@ -1586,7 +1586,7 @@ impl<K, V> BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::{get_allocated_size, init_allocator, stable, stable_memory_init};
+    use crate::{get_allocated_size, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     #[test]

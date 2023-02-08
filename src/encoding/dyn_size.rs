@@ -9,6 +9,8 @@ pub trait AsDynSizeBytes {
 
 #[cfg(not(feature = "custom_dyn_encoding"))]
 use crate::encoding::AsFixedSizeBytes;
+
+#[cfg(not(feature = "custom_dyn_encoding"))]
 use crate::primitive::s_box::SBox;
 
 #[cfg(not(feature = "custom_dyn_encoding"))]

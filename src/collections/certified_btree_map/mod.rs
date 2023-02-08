@@ -353,7 +353,7 @@ mod tests {
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 

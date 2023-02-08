@@ -25,7 +25,7 @@ thread_local! {
 pub fn init_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if it.borrow().is_none() {
-            let allocator = unsafe { StableMemoryAllocator::init() };
+            let allocator = unsafe { StableMemoryAllocator::default() };
 
             *it.borrow_mut() = Some(allocator);
         } else {
@@ -114,7 +114,7 @@ pub fn get_free_size() -> u64 {
 }
 
 #[inline]
-pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) {
+pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) -> Option<StablePtr> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
             alloc.set_custom_data_ptr(idx, data_ptr)
@@ -125,7 +125,7 @@ pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) {
 }
 
 #[inline]
-pub fn get_custom_data_ptr(idx: usize) -> StablePtr {
+pub fn get_custom_data_ptr(idx: usize) -> Option<StablePtr> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &*it.borrow() {
             alloc.get_custom_data_ptr(idx)
@@ -179,7 +179,7 @@ mod tests {
         get_free_size, get_mem_metrics, init_allocator, reallocate, set_custom_data_ptr,
         stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
     };
-    use crate::{deinit_allocator, reinit_allocator, stable, SSlice};
+    use crate::{deinit_allocator, reinit_allocator, SSlice};
 
     #[test]
     fn basic_flow_works_fine() {
@@ -196,9 +196,9 @@ mod tests {
 
         _debug_print_allocator();
 
-        assert_eq!(get_custom_data_ptr(1), EMPTY_PTR);
+        assert_eq!(get_custom_data_ptr(1), None);
         set_custom_data_ptr(1, 100);
-        assert_eq!(get_custom_data_ptr(1), 100);
+        assert_eq!(get_custom_data_ptr(1), Some(100));
 
         let m = get_mem_metrics();
         assert!(m.allocated > 0);

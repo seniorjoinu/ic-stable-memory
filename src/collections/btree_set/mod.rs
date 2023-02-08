@@ -111,8 +111,7 @@ impl<T: StableType + AsFixedSizeBytes + Ord> StableType for SBTreeSet<T> {
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::primitive::StableType;
-    use crate::{init_allocator, stable, stable_memory_init};
+    use crate::{stable, stable_memory_init};
 
     #[test]
     fn it_works_fine() {

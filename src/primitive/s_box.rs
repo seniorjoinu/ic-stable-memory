@@ -1,5 +1,5 @@
 use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
-use crate::mem::s_slice::{SSlice, Side};
+use crate::mem::s_slice::SSlice;
 use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes};
 use crate::utils::Anyway;
@@ -42,7 +42,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
     }
 
     pub unsafe fn from_ptr(ptr: u64) -> Self {
-        let slice = SSlice::from_ptr(ptr, Side::Start).unwrap();
+        let slice = SSlice::from_ptr(ptr).unwrap();
 
         let mut buf = vec![0u8; slice.get_size_bytes()];
         unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf) };

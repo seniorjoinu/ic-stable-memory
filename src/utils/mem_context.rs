@@ -206,6 +206,44 @@ pub mod stable {
 #[cfg(test)]
 mod tests {
     use crate::{stable, PAGE_SIZE_BYTES};
+    use rand::seq::SliceRandom;
+    use rand::{thread_rng, Rng};
+
+    #[test]
+    fn random_works_fine() {
+        for _ in 0..100 {
+            stable::clear();
+            stable::grow(1000).unwrap();
+
+            let mut rng = thread_rng();
+            let iterations = 500usize;
+            let size_range = (0..(u16::MAX as usize * 2));
+
+            let mut sizes = Vec::new();
+            let mut cur_ptr = 0;
+            for i in 0..iterations {
+                let size = rng.gen_range(size_range.clone());
+                let buf = vec![(i % 256) as u8; size];
+
+                stable::write(cur_ptr, &buf);
+
+                sizes.push(size);
+                cur_ptr += size as u64;
+
+                let mut c_ptr = 0u64;
+                for j in 0..i {
+                    let size = sizes[j];
+                    let mut buf = vec![0u8; size];
+
+                    stable::read(c_ptr, &mut buf);
+
+                    assert_eq!(buf, vec![(j % 256) as u8; size]);
+
+                    c_ptr += size as u64;
+                }
+            }
+        }
+    }
 
     #[test]
     fn big_reads_writes_work_fine() {
