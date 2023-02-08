@@ -114,6 +114,17 @@ pub fn get_free_size() -> u64 {
 }
 
 #[inline]
+pub fn get_available_size() -> u64 {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &*it.borrow() {
+            alloc.get_available_size()
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+#[inline]
 pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) -> Option<StablePtr> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
@@ -138,7 +149,7 @@ pub fn get_custom_data_ptr(idx: usize) -> Option<StablePtr> {
 #[inline]
 pub fn get_mem_metrics() -> MemMetrics {
     MemMetrics {
-        available: stable::size_pages() * PAGE_SIZE_BYTES as u64,
+        available: get_available_size(),
         free: get_free_size(),
         allocated: get_allocated_size(),
     }
@@ -191,7 +202,7 @@ mod tests {
         let b = reallocate(b, 200).anyway();
         deallocate(b);
 
-        assert!(get_allocated_size() > 0);
+        assert_eq!(get_allocated_size(), 0);
         assert!(get_free_size() > 0);
 
         _debug_print_allocator();
@@ -201,7 +212,7 @@ mod tests {
         assert_eq!(get_custom_data_ptr(1), Some(100));
 
         let m = get_mem_metrics();
-        assert!(m.allocated > 0);
+        assert_eq!(m.allocated, 0);
         assert!(m.free > 0);
         assert!(m.available > 0);
 

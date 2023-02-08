@@ -113,16 +113,22 @@ impl SSlice {
 
 #[cfg(test)]
 mod tests {
+    use crate::encoding::AsFixedSizeBytes;
+    use crate::mem::allocator::MIN_PTR;
     use crate::mem::s_slice::SSlice;
     use crate::utils::mem_context::stable;
+    use crate::StablePtr;
 
     #[test]
     fn read_write_work_fine() {
         stable::clear();
         stable::grow(10).expect("Unable to grow");
 
-        let m1 = SSlice::new(0, 100, true);
-        let m1 = SSlice::from_rear_ptr(m1.get_total_size_bytes() as u64).unwrap();
+        let m1 = SSlice::new(MIN_PTR, 100, true);
+        let m1 = SSlice::from_rear_ptr(
+            MIN_PTR + m1.get_total_size_bytes() as u64 - StablePtr::SIZE as u64,
+        )
+        .unwrap();
 
         let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let b = vec![1u8, 3, 3, 7];

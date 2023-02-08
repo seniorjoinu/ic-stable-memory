@@ -195,16 +195,12 @@ impl StableMemoryAllocator {
 
     fn try_merge_with_neighbors(&mut self, mut free_block: FreeBlock) -> FreeBlock {
         if let Some(prev_neighbor) = free_block.prev_neighbor_is_free() {
-            prev_neighbor.debug_validate();
-
             self.remove_free_block(&prev_neighbor);
 
             free_block = FreeBlock::merge(prev_neighbor, free_block);
         };
 
         if let Some(next_neighbor) = free_block.next_neighbor_is_free(self.max_ptr) {
-            next_neighbor.debug_validate();
-
             self.remove_free_block(&next_neighbor);
 
             free_block = FreeBlock::merge(free_block, next_neighbor);
@@ -215,8 +211,6 @@ impl StableMemoryAllocator {
 
     fn push_free_block(&mut self, mut free_block: FreeBlock) {
         free_block.persist();
-
-        free_block.debug_validate();
 
         let blocks = self
             .free_blocks
@@ -239,8 +233,6 @@ impl StableMemoryAllocator {
         if blocks.is_empty() {
             self.free_blocks.remove(&actual_size);
         }
-
-        free_block.debug_validate();
 
         Some(free_block)
     }
