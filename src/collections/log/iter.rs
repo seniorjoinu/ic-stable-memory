@@ -7,8 +7,8 @@ use crate::primitive::StableType;
 
 struct CurSector {
     ptr: StablePtr,
-    len: usize,
-    idx: usize,
+    len: u64,
+    idx: u64,
 }
 
 pub struct SLogIter<'a, T: StableType + AsFixedSizeBytes> {
@@ -62,7 +62,7 @@ impl<'a, T: StableType + AsFixedSizeBytes> Iterator for SLogIter<'a, T> {
         }
 
         let sector = Sector::<T>::from_ptr(cur_sector.ptr);
-        let ptr = sector.get_element_ptr(cur_sector.idx * T::SIZE);
+        let ptr = sector.get_element_ptr(cur_sector.idx * T::SIZE as u64);
 
         if cur_sector.idx == 0 {
             cur_sector.len = if cur_sector.ptr == p {

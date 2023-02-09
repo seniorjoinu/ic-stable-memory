@@ -13,19 +13,19 @@ use std::cmp::Ordering;
 
 #[derive(Debug, Copy, Clone, CandidType, Deserialize)]
 pub(crate) struct FreeBlock {
-    ptr: u64,    // always points to the first size+flag word position
-    size: usize, // available size
+    ptr: u64,  // always points to the first size+flag word position
+    size: u64, // available size
 }
 
 impl FreeBlock {
     #[inline]
-    pub fn new(ptr: StablePtr, size: usize) -> Self {
+    pub fn new(ptr: StablePtr, size: u64) -> Self {
         Self { ptr, size }
     }
 
     #[inline]
-    pub fn new_total_size(ptr: StablePtr, total_size: usize) -> Self {
-        Self::new(ptr, total_size - StablePtr::SIZE * 2)
+    pub fn new_total_size(ptr: StablePtr, total_size: u64) -> Self {
+        Self::new(ptr, total_size - (StablePtr::SIZE * 2) as u64)
     }
 
     #[inline]
@@ -43,7 +43,7 @@ impl FreeBlock {
     pub fn from_rear_ptr(ptr: StablePtr) -> Option<Self> {
         let size = Self::read_size(ptr)?;
 
-        let it_ptr = ptr - (StablePtr::SIZE + size) as u64;
+        let it_ptr = ptr - (StablePtr::SIZE as u64) - size;
         let it = Self::new(it_ptr, size);
 
         Some(it)
@@ -56,7 +56,7 @@ impl FreeBlock {
 
     #[inline]
     pub fn get_next_neighbor_ptr(&self) -> StablePtr {
-        self.as_ptr() + (StablePtr::SIZE * 2 + self.get_size_bytes()) as u64
+        self.as_ptr() + (StablePtr::SIZE * 2) as u64 + self.get_size_bytes()
     }
 
     #[inline]
@@ -81,7 +81,7 @@ impl FreeBlock {
 
         if prev_neighbor_rear_ptr >= MIN_PTR {
             Self::read_size(prev_neighbor_rear_ptr).map(|size| {
-                let it_ptr = prev_neighbor_rear_ptr - (StablePtr::SIZE + size) as u64;
+                let it_ptr = prev_neighbor_rear_ptr - (StablePtr::SIZE as u64) - size;
 
                 Self::new(it_ptr, size)
             })
@@ -91,52 +91,52 @@ impl FreeBlock {
     }
 
     #[inline]
-    pub fn merged_size(a: &Self, b: &Self) -> usize {
-        a.get_size_bytes() + b.get_size_bytes() + StablePtr::SIZE * 2
+    pub fn merged_size(a: &Self, b: &Self) -> u64 {
+        a.get_size_bytes() + b.get_size_bytes() + (StablePtr::SIZE * 2) as u64
     }
 
     /// returns transient free block
     #[inline]
     pub fn merge(a: Self, b: Self) -> Self {
         debug_assert!(a.as_ptr() < b.as_ptr());
-        debug_assert_eq!(a.as_ptr() + a.get_total_size_bytes() as u64, b.as_ptr());
+        debug_assert_eq!(a.as_ptr() + a.get_total_size_bytes(), b.as_ptr());
 
         FreeBlock::new(a.as_ptr(), Self::merged_size(&a, &b))
     }
 
     /// returns transient free blocks
     #[inline]
-    pub fn split(self, size_first: usize) -> (Self, Self) {
+    pub fn split(self, size_first: u64) -> (Self, Self) {
         debug_assert!(Self::can_split(self.get_size_bytes(), size_first));
 
         let a = FreeBlock::new(self.as_ptr(), size_first);
         let b = FreeBlock::new(
             a.get_next_neighbor_ptr(),
-            self.get_total_size_bytes() - size_first - StablePtr::SIZE * 4,
+            self.get_total_size_bytes() - size_first - (StablePtr::SIZE * 4) as u64,
         );
 
         (a, b)
     }
 
     #[inline]
-    pub fn can_split(self_size: usize, size_first: usize) -> bool {
-        (Self::to_total_size(self_size) > size_first + StablePtr::SIZE * 4)
-            && (Self::to_total_size(self_size) - size_first - StablePtr::SIZE * 4
-                >= StablePtr::SIZE * 2)
+    pub fn can_split(self_size: u64, size_first: u64) -> bool {
+        (Self::to_total_size(self_size) > size_first + (StablePtr::SIZE * 4) as u64)
+            && (Self::to_total_size(self_size) - size_first - (StablePtr::SIZE * 4) as u64
+                >= (StablePtr::SIZE * 2) as u64)
     }
 
     #[inline]
-    pub fn to_total_size(size: usize) -> usize {
-        size + StablePtr::SIZE * 2
+    pub fn to_total_size(size: u64) -> u64 {
+        size + (StablePtr::SIZE * 2) as u64
     }
 
     #[inline]
-    pub fn get_total_size_bytes(&self) -> usize {
+    pub fn get_total_size_bytes(&self) -> u64 {
         Self::to_total_size(self.size)
     }
 
     #[inline]
-    pub fn get_size_bytes(&self) -> usize {
+    pub fn get_size_bytes(&self) -> u64 {
         self.size
     }
 
@@ -147,7 +147,7 @@ impl FreeBlock {
 
     #[inline]
     pub fn as_rear_ptr(&self) -> StablePtr {
-        self.as_ptr() + (self.get_size_bytes() + StablePtr::SIZE) as StablePtr
+        self.as_ptr() + self.get_size_bytes() + (StablePtr::SIZE) as StablePtr
     }
 
     pub fn debug_validate(&self) {
@@ -158,7 +158,7 @@ impl FreeBlock {
         assert_eq!(size_1, self.size);
     }
 
-    fn read_size(ptr: StablePtr) -> Option<usize> {
+    fn read_size(ptr: StablePtr) -> Option<u64> {
         let mut meta = [0u8; u64::SIZE];
         stable::read(ptr, &mut meta);
 
@@ -175,17 +175,17 @@ impl FreeBlock {
         if allocated {
             None
         } else {
-            Some(size as usize)
+            Some(size)
         }
     }
 
-    fn write_size(ptr: StablePtr, size: usize) {
-        let encoded_size = size as u64 & FREE;
+    fn write_size(ptr: StablePtr, size: u64) {
+        let encoded_size = size & FREE;
 
         let meta = encoded_size.to_le_bytes();
 
         stable::write(ptr, &meta);
-        stable::write(ptr + (StablePtr::SIZE + size) as u64, &meta);
+        stable::write(ptr + (StablePtr::SIZE as u64) + size, &meta);
     }
 }
 

@@ -2,6 +2,7 @@ use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableType;
+use crate::OutOfMemory;
 use std::borrow::Borrow;
 
 pub mod iter;
@@ -29,8 +30,8 @@ impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
     }
 
     #[inline]
-    pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(value, ()).is_some()
+    pub fn insert(&mut self, value: T) -> Result<bool, OutOfMemory> {
+        self.map.insert(value, ()).map(|it| it.is_some())
     }
 
     #[inline]

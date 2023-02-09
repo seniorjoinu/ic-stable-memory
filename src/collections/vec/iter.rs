@@ -31,7 +31,7 @@ impl<'a, T: StableType + AsFixedSizeBytes> Iterator for SVecIter<'a, T> {
             return None;
         }
 
-        let ptr = SSlice::_make_ptr_by_offset(self.svec.ptr, self.offset);
+        let ptr = SSlice::_offset(self.svec.ptr, self.offset as u64);
         self.offset += T::SIZE;
 
         Some(SRef::new(ptr))

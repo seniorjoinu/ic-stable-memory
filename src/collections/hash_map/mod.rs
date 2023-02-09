@@ -5,7 +5,7 @@ use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -13,7 +13,7 @@ use zwohash::ZwoHasher;
 
 pub mod iter;
 
-// BY DEFAULT:
+// Layout:
 // KEYS: [K; CAPACITY] = [zeroed(K); CAPACITY]
 // VALUES: [V; CAPACITY] = [zeroed(V); CAPACITY]
 
@@ -46,6 +46,11 @@ pub struct SHashMap<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType 
 impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
     SHashMap<K, V>
 {
+    #[inline]
+    pub const fn max_capacity() -> usize {
+        u32::MAX as usize / (K::SIZE + V::SIZE)
+    }
+
     fn hash<T: Hash>(val: &T) -> KeyHash {
         let mut hasher = ZwoHasher::default();
         val.hash(&mut hasher);
@@ -59,6 +64,8 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     }
 
     pub fn new_with_capacity(capacity: usize) -> Self {
+        assert!(capacity <= Self::max_capacity());
+
         Self {
             table_ptr: EMPTY_PTR,
             len: 0,
@@ -69,13 +76,13 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
-            let table = allocate(size);
+            let table = allocate(size as u64)?;
 
             let zeroed = vec![0u8; size];
-            unsafe { crate::mem::write_bytes(table.make_ptr_by_offset(0), &zeroed) };
+            unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
 
             self.table_ptr = table.as_ptr();
         }
@@ -90,7 +97,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                         let prev_value = self.read_and_disown_val(i);
                         self.write_and_own_val(i, value);
 
-                        return Some(prev_value);
+                        return Ok(Some(prev_value));
                     } else {
                         i = (i + 1) % self.capacity();
 
@@ -99,17 +106,18 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                 }
                 None => {
                     if self.is_full() {
-                        let mut new = Self::new_with_capacity(self.capacity() * 2 - 1);
+                        let mut new =
+                            Self::new_with_capacity(self.capacity().checked_mul(2).unwrap() - 1);
 
                         for i in 0..self.cap {
                             if let Some(k) = self.read_and_disown_key(i) {
                                 let v = self.read_and_disown_val(i);
 
-                                new.insert(k, v);
+                                new.insert(k, v).unwrap();
                             }
                         }
 
-                        let res = new.insert(key, value);
+                        let res = new.insert(key, value).unwrap();
 
                         let slice = SSlice::from_ptr(self.table_ptr).unwrap();
                         deallocate(slice);
@@ -121,7 +129,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
                         *self = new;
 
-                        return res;
+                        return Ok(res);
                     }
 
                     self.write_and_own_key(i, Some(key));
@@ -129,7 +137,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
                     self.len += 1;
 
-                    return None;
+                    return Ok(None);
                 }
             }
         }
@@ -350,20 +358,23 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
     #[inline]
     fn get_value_ptr(&self, idx: usize) -> StablePtr {
-        SSlice::_make_ptr_by_offset(
+        SSlice::_offset(
             self.table_ptr,
-            values_offset::<K>(self.capacity()) + V::SIZE * idx,
+            (values_offset::<K>(self.capacity()) + V::SIZE * idx) as u64,
         )
     }
 
     #[inline]
     fn get_key_flag_ptr(&self, idx: usize) -> StablePtr {
-        SSlice::_make_ptr_by_offset(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * idx)
+        SSlice::_offset(self.table_ptr, (KEYS_OFFSET + (1 + K::SIZE) * idx) as u64)
     }
 
     #[inline]
     fn get_key_data_ptr(&self, idx: usize) -> StablePtr {
-        SSlice::_make_ptr_by_offset(self.table_ptr, KEYS_OFFSET + (1 + K::SIZE) * idx + 1)
+        SSlice::_offset(
+            self.table_ptr,
+            (KEYS_OFFSET + (1 + K::SIZE) * idx + 1) as u64,
+        )
     }
 
     pub fn debug_print(&self) {
@@ -553,11 +564,11 @@ mod tests {
         assert!(map.remove(&10).is_none());
         assert!(map.get(&10).is_none());
 
-        let it = map.insert(1, 1);
+        let it = map.insert(1, 1).unwrap();
         assert!(it.is_none());
-        assert!(map.insert(2, 2).is_none());
-        assert!(map.insert(3, 3).is_none());
-        assert_eq!(map.insert(1, 10).unwrap(), 1);
+        assert!(map.insert(2, 2).unwrap().is_none());
+        assert!(map.insert(3, 3).unwrap().is_none());
+        assert_eq!(map.insert(1, 10).unwrap().unwrap(), 1);
 
         assert!(map.remove(&5).is_none());
         assert_eq!(map.remove(&1).unwrap(), 10);
@@ -569,7 +580,7 @@ mod tests {
 
         let mut map = SHashMap::default();
         for i in 0..100 {
-            assert!(map.insert(i, i).is_none());
+            assert!(map.insert(i, i).unwrap().is_none());
         }
 
         for i in 0..100 {
@@ -693,14 +704,14 @@ mod tests {
         let mut map = SHashMap::new();
 
         for i in 0..100 {
-            map.insert(SBox::new(i), i);
+            map.insert(SBox::new(i).unwrap(), i).unwrap();
         }
 
         println!("sbox mut");
         let mut map = SHashMap::new();
 
         for i in 0..100 {
-            map.insert(SBox::new(i), i);
+            map.insert(SBox::new(i).unwrap(), i).unwrap();
         }
     }
 }

@@ -5,21 +5,21 @@ use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
 pub mod iter;
 
-pub(crate) const DEFAULT_CAPACITY: usize = 2;
+pub(crate) const DEFAULT_CAPACITY: u64 = 2;
 
 pub struct SLog<T: StableType + AsFixedSizeBytes> {
     len: u64,
     first_sector_ptr: StablePtr,
     cur_sector_ptr: StablePtr,
-    cur_sector_last_item_offset: usize,
-    cur_sector_capacity: usize,
-    cur_sector_len: usize,
+    cur_sector_last_item_offset: u64,
+    cur_sector_capacity: u64,
+    cur_sector_len: u64,
     is_owned: bool,
     _marker: PhantomData<T>,
 }
@@ -31,11 +31,6 @@ impl<T: StableType + AsFixedSizeBytes> Default for SLog<T> {
 }
 
 impl<T: StableType + AsFixedSizeBytes> SLog<T> {
-    #[inline]
-    const fn max_capacity() -> usize {
-        2usize.pow(31) / T::SIZE
-    }
-
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -50,14 +45,16 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         }
     }
 
-    pub fn push(&mut self, it: T) {
-        let mut sector = self.get_or_create_current_sector();
-        self.move_to_next_sector_if_needed(&mut sector);
+    pub fn push(&mut self, it: T) -> Result<(), OutOfMemory> {
+        let mut sector = self.get_or_create_current_sector()?;
+        self.move_to_next_sector_if_needed(&mut sector)?;
 
         sector.write_and_own_element(self.cur_sector_last_item_offset, it);
-        self.cur_sector_last_item_offset += T::SIZE;
+        self.cur_sector_last_item_offset += T::SIZE as u64;
         self.cur_sector_len += 1;
         self.len += 1;
+
+        Ok(())
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -67,7 +64,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
 
         let sector = self.get_current_sector()?;
 
-        self.cur_sector_last_item_offset -= T::SIZE;
+        self.cur_sector_last_item_offset -= T::SIZE as u64;
         self.cur_sector_len -= 1;
         self.len -= 1;
 
@@ -80,7 +77,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
 
     #[inline]
     pub fn clear(&mut self) {
-        while let Some(_) = self.pop() {}
+        while self.pop().is_some() {}
     }
 
     pub fn last(&self) -> Option<SRef<T>> {
@@ -89,7 +86,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         }
 
         let sector = self.get_current_sector()?;
-        let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE);
+        let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE as u64);
 
         Some(SRef::new(ptr))
     }
@@ -108,7 +105,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
     #[inline]
     pub fn get(&self, idx: u64) -> Option<SRef<'_, T>> {
         let (sector, dif) = self.find_sector_for_idx(idx)?;
-        let ptr = sector.get_element_ptr((idx - dif) as usize * T::SIZE);
+        let ptr = sector.get_element_ptr((idx - dif) * T::SIZE as u64);
 
         Some(SRef::new(ptr))
     }
@@ -116,7 +113,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
     #[inline]
     pub fn get_mut(&mut self, idx: u64) -> Option<SRefMut<'_, T>> {
         let (sector, dif) = self.find_sector_for_idx(idx)?;
-        let ptr = sector.get_element_ptr((idx - dif) as usize * T::SIZE);
+        let ptr = sector.get_element_ptr((idx - dif) * T::SIZE as u64);
 
         Some(SRefMut::new(ptr))
     }
@@ -147,34 +144,30 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         let mut len = self.len;
 
         loop {
-            len -= sector_len as u64;
+            len -= sector_len;
             if len <= idx {
                 break;
             }
 
-            sector_len = if sector.as_ptr() == self.cur_sector_ptr {
-                self.cur_sector_capacity / 2
-            } else {
-                sector_len / 2
-            };
             sector = Sector::<T>::from_ptr(sector.read_prev_ptr());
+            sector_len = sector.read_capacity();
         }
 
         Some((sector, len))
     }
 
-    fn get_or_create_current_sector(&mut self) -> Sector<T> {
+    fn get_or_create_current_sector(&mut self) -> Result<Sector<T>, OutOfMemory> {
         if self.cur_sector_ptr == EMPTY_PTR {
             self.cur_sector_capacity *= 2;
 
-            let it = Sector::<T>::new(self.cur_sector_capacity, EMPTY_PTR);
+            let it = Sector::<T>::new(self.cur_sector_capacity, EMPTY_PTR)?;
 
             self.first_sector_ptr = it.as_ptr();
             self.cur_sector_ptr = it.as_ptr();
 
-            it
+            Ok(it)
         } else {
-            Sector::<T>::from_ptr(self.cur_sector_ptr)
+            Ok(Sector::<T>::from_ptr(self.cur_sector_ptr))
         }
     }
 
@@ -212,56 +205,63 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         let mut prev_sector = Sector::<T>::from_ptr(prev_sector_ptr);
         prev_sector.write_next_ptr(EMPTY_PTR);
 
-        self.cur_sector_capacity /= 2;
+        self.cur_sector_capacity = prev_sector.read_capacity();
         self.cur_sector_len = self.cur_sector_capacity;
         self.cur_sector_ptr = prev_sector_ptr;
-        self.cur_sector_last_item_offset = self.cur_sector_capacity * T::SIZE;
+        self.cur_sector_last_item_offset = self.cur_sector_capacity * T::SIZE as u64;
     }
 
-    fn move_to_next_sector_if_needed(&mut self, sector: &mut Sector<T>) {
-        if self.cur_sector_len != self.cur_sector_capacity {
-            return;
+    fn move_to_next_sector_if_needed(&mut self, sector: &mut Sector<T>) -> Result<(), OutOfMemory> {
+        if self.cur_sector_len < self.cur_sector_capacity {
+            return Ok(());
         }
 
-        let next_sector_ptr = sector.read_next_ptr();
+        let mut next_sector_capacity = self.cur_sector_capacity.checked_mul(2).unwrap();
+        let mut new_sector = loop {
+            if next_sector_capacity <= DEFAULT_CAPACITY {
+                return Err(OutOfMemory);
+            }
 
-        if self.cur_sector_capacity < Self::max_capacity() {
-            self.cur_sector_capacity *= 2;
-        }
-
-        let next_sector = if next_sector_ptr == EMPTY_PTR {
-            let mut new_sector = Sector::<T>::new(self.cur_sector_capacity, sector.as_ptr());
-            sector.write_next_ptr(new_sector.as_ptr());
-            new_sector.write_prev_ptr(sector.as_ptr());
-
-            new_sector
-        } else {
-            Sector::<T>::from_ptr(next_sector_ptr)
+            match Sector::<T>::new(next_sector_capacity, sector.as_ptr()) {
+                Ok(s) => break s,
+                Err(_) => {
+                    next_sector_capacity /= 2;
+                    continue;
+                }
+            };
         };
 
-        self.cur_sector_ptr = next_sector.as_ptr();
+        sector.write_next_ptr(new_sector.as_ptr());
+        new_sector.write_prev_ptr(sector.as_ptr());
+
+        self.cur_sector_capacity = next_sector_capacity;
+        self.cur_sector_ptr = new_sector.as_ptr();
         self.cur_sector_len = 0;
         self.cur_sector_last_item_offset = 0;
 
-        *sector = next_sector;
+        *sector = new_sector;
+
+        Ok(())
     }
 }
 
-const PREV_OFFSET: usize = 0;
-const NEXT_OFFSET: usize = PREV_OFFSET + u64::SIZE;
-const ELEMENTS_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
+const PREV_OFFSET: u64 = 0;
+const NEXT_OFFSET: u64 = PREV_OFFSET + u64::SIZE as u64;
+const CAPACITY_OFFSET: u64 = NEXT_OFFSET + u64::SIZE as u64;
+const ELEMENTS_OFFSET: u64 = CAPACITY_OFFSET + u64::SIZE as u64;
 
 struct Sector<T>(u64, PhantomData<T>);
 
 impl<T: StableType + AsFixedSizeBytes> Sector<T> {
-    fn new(cap: usize, prev: u64) -> Self {
-        let slice = allocate(u64::SIZE * 2 + cap * T::SIZE);
+    fn new(cap: u64, prev: StablePtr) -> Result<Self, OutOfMemory> {
+        let slice = allocate(u64::SIZE as u64 * 3 + cap * T::SIZE as u64)?;
 
         let mut it = Self(slice.as_ptr(), PhantomData::default());
         it.write_prev_ptr(prev);
         it.write_next_ptr(EMPTY_PTR);
+        it.write_capacity(cap);
 
-        it
+        Ok(it)
     }
 
     fn destroy(self) {
@@ -281,60 +281,58 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn read_prev_ptr(&self) -> StablePtr {
-        unsafe {
-            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(self.0, PREV_OFFSET))
-        }
+        unsafe { crate::mem::read_fixed_for_reference(SSlice::_offset(self.0, PREV_OFFSET)) }
     }
 
     #[inline]
     fn write_prev_ptr(&mut self, mut ptr: StablePtr) {
-        unsafe {
-            crate::mem::write_and_own_fixed(
-                SSlice::_make_ptr_by_offset(self.0, PREV_OFFSET),
-                &mut ptr,
-            )
-        }
+        unsafe { crate::mem::write_and_own_fixed(SSlice::_offset(self.0, PREV_OFFSET), &mut ptr) }
     }
 
     #[inline]
     fn read_next_ptr(&self) -> StablePtr {
-        unsafe {
-            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(self.0, NEXT_OFFSET))
-        }
+        unsafe { crate::mem::read_fixed_for_reference(SSlice::_offset(self.0, NEXT_OFFSET)) }
     }
 
     #[inline]
     fn write_next_ptr(&mut self, mut ptr: StablePtr) {
+        unsafe { crate::mem::write_and_own_fixed(SSlice::_offset(self.0, NEXT_OFFSET), &mut ptr) }
+    }
+
+    #[inline]
+    fn read_capacity(&self) -> u64 {
+        unsafe { crate::mem::read_fixed_for_reference(SSlice::_offset(self.0, CAPACITY_OFFSET)) }
+    }
+
+    #[inline]
+    fn write_capacity(&mut self, mut cap: u64) {
         unsafe {
-            crate::mem::write_and_own_fixed(
-                SSlice::_make_ptr_by_offset(self.0, NEXT_OFFSET),
-                &mut ptr,
-            )
+            crate::mem::write_and_own_fixed(SSlice::_offset(self.0, CAPACITY_OFFSET), &mut cap)
         }
     }
 
     #[inline]
-    fn get_element_ptr(&self, offset: usize) -> u64 {
-        SSlice::_make_ptr_by_offset(self.0, ELEMENTS_OFFSET + offset)
+    fn get_element_ptr(&self, offset: u64) -> u64 {
+        SSlice::_offset(self.0, ELEMENTS_OFFSET + offset)
     }
 
     #[inline]
-    fn read_and_disown_element(&self, offset: usize) -> T {
+    fn read_and_disown_element(&self, offset: u64) -> T {
         unsafe { crate::mem::read_and_disown_fixed(self.get_element_ptr(offset)) }
     }
 
     #[inline]
-    fn get_element(&self, offset: usize) -> SRef<T> {
+    fn get_element(&self, offset: u64) -> SRef<T> {
         SRef::new(self.get_element_ptr(offset))
     }
 
     #[inline]
-    fn get_element_mut(&mut self, offset: usize) -> SRefMut<T> {
+    fn get_element_mut(&mut self, offset: u64) -> SRefMut<T> {
         SRefMut::new(self.get_element_ptr(offset))
     }
 
     #[inline]
-    fn write_and_own_element(&self, offset: usize, mut element: T) {
+    fn write_and_own_element(&self, offset: u64, mut element: T) {
         unsafe { crate::mem::write_and_own_fixed(self.get_element_ptr(offset), &mut element) };
     }
 }
@@ -373,7 +371,7 @@ impl<T: StableType + AsFixedSizeBytes + Debug> SLog<T> {
             let mut offset = 0;
             for i in 0..len {
                 let elem = sector.get_element(offset);
-                offset += T::SIZE;
+                offset += T::SIZE as u64;
 
                 print!("{:?}", *elem);
                 if i < len - 1 {
@@ -400,8 +398,8 @@ impl<T: StableType + AsFixedSizeBytes + Debug> SLog<T> {
 }
 
 impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
-    const SIZE: usize = usize::SIZE * 3 + u64::SIZE * 3;
-    type Buf = [u8; usize::SIZE * 3 + u64::SIZE * 3];
+    const SIZE: usize = u64::SIZE * 6;
+    type Buf = [u8; u64::SIZE * 6];
 
     fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
         self.len.as_fixed_size_bytes(&mut buf[0..u64::SIZE]);
@@ -424,11 +422,11 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
         let first_sector_ptr = u64::from_fixed_size_bytes(&buf[u64::SIZE..(u64::SIZE * 2)]);
         let cur_sector_ptr = u64::from_fixed_size_bytes(&buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
         let cur_sector_last_item_offset =
-            usize::from_fixed_size_bytes(&buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
-        let cur_sector_capacity = usize::from_fixed_size_bytes(
+            u64::from_fixed_size_bytes(&buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
+        let cur_sector_capacity = u64::from_fixed_size_bytes(
             &buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)],
         );
-        let cur_sector_len = usize::from_fixed_size_bytes(
+        let cur_sector_len = u64::from_fixed_size_bytes(
             &buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)],
         );
 

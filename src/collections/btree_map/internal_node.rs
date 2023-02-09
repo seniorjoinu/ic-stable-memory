@@ -7,7 +7,7 @@ use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::{stable_ptr_buf, StablePtr, StablePtrBuf};
 use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, Hash, EMPTY_HASH};
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -20,12 +20,12 @@ use std::marker::PhantomData;
 // keys: [K; CAPACITY]
 // root_hash: Hash -- ONLY IF certified == true
 
-const LEN_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
-const CHILDREN_OFFSET: usize = LEN_OFFSET + usize::SIZE;
-const KEYS_OFFSET: usize = CHILDREN_OFFSET + u64::SIZE * CHILDREN_CAPACITY;
+const LEN_OFFSET: u64 = NODE_TYPE_OFFSET + u8::SIZE as u64;
+const CHILDREN_OFFSET: u64 = LEN_OFFSET + usize::SIZE as u64;
+const KEYS_OFFSET: u64 = CHILDREN_OFFSET + (u64::SIZE * CHILDREN_CAPACITY) as u64;
 
-const fn root_hash_offset<K: AsFixedSizeBytes>() -> usize {
-    KEYS_OFFSET + K::SIZE * CAPACITY
+const fn root_hash_offset<K: AsFixedSizeBytes>() -> u64 {
+    KEYS_OFFSET + (K::SIZE * CAPACITY) as u64
 }
 
 pub struct InternalBTreeNode<K> {
@@ -35,18 +35,18 @@ pub struct InternalBTreeNode<K> {
 
 impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     #[inline]
-    const fn calc_byte_size(certified: bool) -> usize {
+    pub const fn calc_byte_size(certified: bool) -> u64 {
         let mut size = root_hash_offset::<K>();
 
         if certified {
-            size += Hash::SIZE
+            size += Hash::SIZE as u64
         }
 
         size
     }
 
-    pub fn create_empty(certified: bool) -> Self {
-        let slice = allocate(Self::calc_byte_size(certified));
+    pub fn create_empty(certified: bool) -> Result<Self, OutOfMemory> {
+        let slice = allocate(Self::calc_byte_size(certified))?;
         let mut it = Self {
             ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
@@ -55,11 +55,16 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         it.write_len(0);
         it.init_node_type();
 
-        it
+        Ok(it)
     }
 
-    pub fn create(key: &K::Buf, lcp: &StablePtrBuf, rcp: &StablePtrBuf, certified: bool) -> Self {
-        let slice = allocate(Self::calc_byte_size(certified));
+    pub fn create(
+        key: &K::Buf,
+        lcp: &StablePtrBuf,
+        rcp: &StablePtrBuf,
+        certified: bool,
+    ) -> Result<Self, OutOfMemory> {
+        let slice = allocate(Self::calc_byte_size(certified))?;
         let mut it = Self {
             ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
@@ -73,7 +78,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         it.write_child_ptr_buf(0, lcp);
         it.write_child_ptr_buf(1, rcp);
 
-        it
+        Ok(it)
     }
 
     #[inline]
@@ -92,7 +97,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         let mut mid = (max - min) / 2;
 
         loop {
-            let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + mid * K::SIZE);
+            let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (mid * K::SIZE) as u64);
             let key: K = unsafe { crate::mem::read_fixed_for_reference(ptr) };
 
             match key.borrow().cmp(k) {
@@ -190,8 +195,8 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         &mut self,
         buf: &mut Vec<u8>,
         certified: bool,
-    ) -> (InternalBTreeNode<K>, K::Buf) {
-        let mut right = InternalBTreeNode::<K>::create_empty(certified);
+    ) -> Result<(InternalBTreeNode<K>, K::Buf), OutOfMemory> {
+        let mut right = InternalBTreeNode::<K>::create_empty(certified)?;
 
         self.read_many_keys_to_buf(B, MIN_LEN_AFTER_SPLIT, buf);
         right.write_many_keys_from_buf(0, buf);
@@ -199,7 +204,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         self.read_many_child_ptrs_to_buf(B, CHILDREN_MIN_LEN_AFTER_SPLIT, buf);
         right.write_many_child_ptrs_from_buf(0, buf);
 
-        (right, self.read_key_buf(MIN_LEN_AFTER_SPLIT))
+        Ok((right, self.read_key_buf(MIN_LEN_AFTER_SPLIT)))
     }
 
     pub fn merge_min_len(&mut self, mid: &K::Buf, right: InternalBTreeNode<K>, buf: &mut Vec<u8>) {
@@ -295,7 +300,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     #[inline]
     pub fn read_key_buf(&self, idx: usize) -> K::Buf {
         let mut b = K::Buf::new(K::SIZE);
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + idx * K::SIZE);
+        let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (idx * K::SIZE) as u64);
 
         unsafe { crate::mem::read_bytes(ptr, b._deref_mut()) }
 
@@ -305,7 +310,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     #[inline]
     fn read_many_keys_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
         buf.resize(len * K::SIZE, 0);
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + from_idx * K::SIZE);
+        let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (from_idx * K::SIZE) as u64);
 
         unsafe { crate::mem::read_bytes(ptr, buf) }
     }
@@ -313,7 +318,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     #[inline]
     pub fn read_child_ptr_buf(&self, idx: usize) -> StablePtrBuf {
         let mut b = stable_ptr_buf();
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE);
+        let ptr = SSlice::_offset(self.ptr, CHILDREN_OFFSET + (idx * u64::SIZE) as u64);
 
         unsafe { crate::mem::read_bytes(ptr, b._deref_mut()) };
 
@@ -323,34 +328,34 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     #[inline]
     fn read_many_child_ptrs_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
         buf.resize(len * u64::SIZE, 0);
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, CHILDREN_OFFSET + from_idx * u64::SIZE);
+        let ptr = SSlice::_offset(self.ptr, CHILDREN_OFFSET + (from_idx * u64::SIZE) as u64);
 
         unsafe { crate::mem::read_bytes(ptr, buf) };
     }
 
     #[inline]
     pub fn write_key_buf(&mut self, idx: usize, key: &K::Buf) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + idx * K::SIZE);
+        let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (idx * K::SIZE) as u64);
         unsafe { crate::mem::write_bytes(ptr, key._deref()) };
     }
 
     #[inline]
     fn write_many_keys_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + from_idx * K::SIZE);
+        let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (from_idx * K::SIZE) as u64);
 
         unsafe { crate::mem::write_bytes(ptr, buf) };
     }
 
     #[inline]
     pub fn write_child_ptr_buf(&mut self, idx: usize, child_ptr: &StablePtrBuf) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, CHILDREN_OFFSET + idx * u64::SIZE);
+        let ptr = SSlice::_offset(self.ptr, CHILDREN_OFFSET + (idx * u64::SIZE) as u64);
 
         unsafe { crate::mem::write_bytes(ptr, child_ptr) };
     }
 
     #[inline]
     fn write_many_child_ptrs_from_buf(&mut self, from_idx: usize, buf: &Vec<u8>) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, CHILDREN_OFFSET + from_idx * u64::SIZE);
+        let ptr = SSlice::_offset(self.ptr, CHILDREN_OFFSET + (from_idx * u64::SIZE) as u64);
 
         unsafe { crate::mem::write_bytes(ptr, buf) };
     }
@@ -359,7 +364,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     pub fn write_root_hash(&mut self, root_hash: &Hash, certified: bool) {
         debug_assert!(certified);
 
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, root_hash_offset::<K>());
+        let ptr = SSlice::_offset(self.ptr, root_hash_offset::<K>());
         unsafe { crate::mem::write_bytes(ptr, root_hash) };
     }
 
@@ -368,7 +373,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         debug_assert!(certified);
 
         let mut buf = EMPTY_HASH;
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, root_hash_offset::<K>());
+        let ptr = SSlice::_offset(self.ptr, root_hash_offset::<K>());
         unsafe { crate::mem::read_bytes(ptr, &mut buf) };
 
         buf
@@ -376,21 +381,21 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
 
     #[inline]
     pub fn write_len(&mut self, mut len: usize) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, LEN_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
         unsafe { crate::mem::write_and_own_fixed(ptr, &mut len) };
     }
 
     #[inline]
     pub fn read_len(&self) -> usize {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, LEN_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
         unsafe { crate::mem::read_fixed_for_reference(ptr) }
     }
 
     #[inline]
     fn init_node_type(&mut self) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, NODE_TYPE_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, NODE_TYPE_OFFSET);
 
         unsafe { crate::mem::write_and_own_fixed(ptr, &mut NODE_TYPE_INTERNAL) };
     }
@@ -476,7 +481,7 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut node = InternalBTreeNode::<u64>::create_empty(false);
+        let mut node = InternalBTreeNode::<u64>::create_empty(false).unwrap();
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
@@ -511,7 +516,7 @@ mod tests {
         println!("{}", node.to_string());
         println!();
 
-        let (mut right, mid) = node.split_max_len(&mut buf, false);
+        let (mut right, mid) = node.split_max_len(&mut buf, false).unwrap();
 
         node.write_len(MIN_LEN_AFTER_SPLIT);
         right.write_len(MIN_LEN_AFTER_SPLIT);

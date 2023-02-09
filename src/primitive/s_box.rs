@@ -2,8 +2,7 @@ use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
 use crate::mem::s_slice::SSlice;
 use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes};
-use crate::utils::Anyway;
-use crate::{allocate, deallocate, reallocate};
+use crate::{allocate, deallocate, reallocate, OutOfMemory};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
@@ -18,17 +17,17 @@ pub struct SBox<T: AsDynSizeBytes + StableType> {
 
 impl<T: AsDynSizeBytes + StableType> SBox<T> {
     #[inline]
-    pub fn new(it: T) -> Self {
+    pub fn new(it: T) -> Result<Self, OutOfMemory> {
         let buf = it.as_dyn_size_bytes();
-        let slice = allocate(buf.len());
+        let slice = allocate(buf.len() as u64)?;
 
-        unsafe { crate::mem::write_bytes(slice.make_ptr_by_offset(0), &buf) };
+        unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
 
-        Self {
+        Ok(Self {
             slice: Some(slice),
             inner: Some(it),
             is_owned: false,
-        }
+        })
     }
 
     #[inline]
@@ -44,8 +43,8 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr).unwrap();
 
-        let mut buf = vec![0u8; slice.get_size_bytes()];
-        unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf) };
+        let mut buf = vec![0u8; slice.get_size_bytes() as usize];
+        unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf) };
 
         let inner = Some(T::from_dyn_size_bytes(&buf));
 
@@ -56,12 +55,21 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         }
     }
 
+    /// Safety: it is safe, if T doesn't contain any other stable structure inside (any collection
+    /// or other SBox) - in that case, this function will return return a complete copy of the underlying data.
+    /// But if T contains any stable structure, these won't be copies - modifying them will also modify
+    /// the data that lies in stable memory.
+    /// For example, if T is SHashMap<_, _>, then by accuiring a copy via get_cloned() you accuire
+    /// a pointer to the original SHashMap which can lead to unexpected behaviour.
     pub unsafe fn get_cloned(&self) -> T {
         if let Some(slice) = self.slice {
-            let mut buf = vec![0u8; slice.get_size_bytes()];
-            unsafe { crate::mem::read_bytes(slice.make_ptr_by_offset(0), &mut buf) };
+            let mut buf = vec![0u8; slice.get_size_bytes() as usize];
+            unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf) };
 
-            T::from_dyn_size_bytes(&buf)
+            let mut it = T::from_dyn_size_bytes(&buf);
+            it.assume_owned_by_stable_memory();
+
+            it
         } else {
             unreachable!()
         }
@@ -73,21 +81,28 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
     }
 
     #[inline]
-    pub fn get_mut(&mut self) -> SBoxRefMut<'_, T> {
-        SBoxRefMut(self)
+    pub fn update(&mut self, it: T) -> Result<(), OutOfMemory> {
+        self.inner = Some(it);
+
+        self.repersist()
     }
 
-    fn repersist(&mut self) {
+    fn repersist(&mut self) -> Result<(), OutOfMemory> {
         if let Some(mut slice) = self.slice.take() {
             let buf = self.inner.as_ref().unwrap().as_dyn_size_bytes();
 
-            if slice.get_size_bytes() < buf.len() {
-                slice = reallocate(slice, buf.len()).anyway();
+            if slice.get_size_bytes() < buf.len() as u64 {
+                // safe, since buf.len() is always less or equal to usize::MAX
+                unsafe {
+                    slice = reallocate(slice, buf.len() as u64)?;
+                }
             }
 
-            unsafe { crate::mem::write_bytes(slice.make_ptr_by_offset(0), &buf) };
+            unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
             self.slice = Some(slice);
         }
+
+        Ok(())
     }
 }
 
@@ -187,13 +202,6 @@ impl<T: Ord + PartialOrd + AsDynSizeBytes + StableType> Ord for SBox<T> {
     }
 }
 
-impl<T: Default + AsDynSizeBytes + StableType> Default for SBox<T> {
-    #[inline]
-    fn default() -> Self {
-        Self::new(Default::default())
-    }
-}
-
 impl<T: Hash + AsDynSizeBytes + StableType> Hash for SBox<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -229,30 +237,6 @@ impl<T: AsDynSizeBytes + StableType> Borrow<T> for SBox<T> {
     }
 }
 
-pub struct SBoxRefMut<'a, T: AsDynSizeBytes + StableType>(&'a mut SBox<T>);
-
-impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRefMut<'a, T> {
-    type Target = T;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.0.inner.as_ref().unwrap()
-    }
-}
-
-impl<'a, T: AsDynSizeBytes + StableType> DerefMut for SBoxRefMut<'a, T> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.inner.as_mut().unwrap()
-    }
-}
-
-impl<'a, T: AsDynSizeBytes + StableType> Drop for SBoxRefMut<'a, T> {
-    fn drop(&mut self) {
-        self.0.repersist();
-    }
-}
-
 pub struct SBoxRef<'a, T: AsDynSizeBytes + StableType>(&'a SBox<T>);
 
 impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRef<'a, T> {
@@ -276,9 +260,9 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut sbox1 = SBox::new(10);
-        let mut sbox11 = SBox::new(10);
-        let mut sbox2 = SBox::new(20);
+        let mut sbox1 = SBox::new(10).unwrap();
+        let mut sbox11 = SBox::new(10).unwrap();
+        let mut sbox2 = SBox::new(20).unwrap();
 
         assert_eq!(sbox1.get().deref(), &10);
         assert_eq!(*sbox1.get(), 10);
@@ -289,7 +273,7 @@ mod tests {
 
         println!("{:?}", sbox1);
 
-        let sbox = SBox::<i32>::default();
+        let sbox = SBox::<i32>::new(i32::default()).unwrap();
         assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
     }
 }

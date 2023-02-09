@@ -8,7 +8,7 @@ use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
 use crate::utils::certification::{Hash, EMPTY_HASH};
-use crate::{allocate, deallocate, SSlice};
+use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -22,16 +22,16 @@ use std::marker::PhantomData;
 // values: [V; CAPACITY]
 // root_hash: Hash -- only when certified == true
 
-const PREV_OFFSET: usize = NODE_TYPE_OFFSET + u8::SIZE;
-const NEXT_OFFSET: usize = PREV_OFFSET + u64::SIZE;
-const LEN_OFFSET: usize = NEXT_OFFSET + u64::SIZE;
-const KEYS_OFFSET: usize = LEN_OFFSET + usize::SIZE;
+const PREV_OFFSET: u64 = NODE_TYPE_OFFSET + u8::SIZE as u64;
+const NEXT_OFFSET: u64 = PREV_OFFSET + u64::SIZE as u64;
+const LEN_OFFSET: u64 = NEXT_OFFSET + u64::SIZE as u64;
+const KEYS_OFFSET: u64 = LEN_OFFSET + usize::SIZE as u64;
 
-const fn values_offset<K: AsFixedSizeBytes>() -> usize {
-    KEYS_OFFSET + K::SIZE * CAPACITY
+const fn values_offset<K: AsFixedSizeBytes>() -> u64 {
+    KEYS_OFFSET + (K::SIZE * CAPACITY) as u64
 }
-const fn root_hash_offset<K: AsFixedSizeBytes, V: AsFixedSizeBytes>() -> usize {
-    values_offset::<K>() + V::SIZE * CAPACITY
+const fn root_hash_offset<K: AsFixedSizeBytes, V: AsFixedSizeBytes>() -> u64 {
+    values_offset::<K>() + (V::SIZE * CAPACITY) as u64
 }
 
 pub struct LeafBTreeNode<K, V> {
@@ -42,18 +42,18 @@ pub struct LeafBTreeNode<K, V> {
 
 impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> LeafBTreeNode<K, V> {
     #[inline]
-    const fn calc_size(certified: bool) -> usize {
+    pub const fn calc_size_bytes(certified: bool) -> u64 {
         let mut size = root_hash_offset::<K, V>();
 
         if certified {
-            size += Hash::SIZE;
+            size += Hash::SIZE as u64;
         }
 
         size
     }
 
-    pub fn create(certified: bool) -> Self {
-        let slice = allocate(Self::calc_size(certified));
+    pub fn create(certified: bool) -> Result<Self, OutOfMemory> {
+        let slice = allocate(Self::calc_size_bytes(certified))?;
         let mut it = unsafe { Self::from_ptr(slice.as_ptr()) };
 
         it.init_node_type();
@@ -63,7 +63,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         it.write_prev_ptr_buf(&b);
         it.write_next_ptr_buf(&b);
 
-        it
+        Ok(it)
     }
 
     #[inline]
@@ -86,7 +86,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         let mut mid = (max - min) / 2;
 
         loop {
-            let ptr = SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + mid * K::SIZE);
+            let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (mid * K::SIZE) as u64);
             let key: K = unsafe { crate::mem::read_fixed_for_reference(ptr) };
 
             match key.borrow().cmp(k) {
@@ -180,8 +180,8 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         right_biased: bool,
         buf: &mut Vec<u8>,
         certified: bool,
-    ) -> Self {
-        let mut right = Self::create(certified);
+    ) -> Result<Self, OutOfMemory> {
+        let mut right = Self::create(certified)?;
 
         let min_idx = if right_biased { MIN_LEN_AFTER_SPLIT } else { B };
 
@@ -201,7 +201,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         right.write_prev_ptr_buf(&buf);
         right.write_next_ptr_buf(&self_next);
 
-        right
+        Ok(right)
     }
 
     pub fn merge_min_len(&mut self, right: Self, buf: &mut Vec<u8>) {
@@ -334,7 +334,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     fn get_key_ptr(&self, idx: usize) -> u64 {
-        SSlice::_make_ptr_by_offset(self.ptr, KEYS_OFFSET + idx * K::SIZE)
+        SSlice::_offset(self.ptr, KEYS_OFFSET + (idx * K::SIZE) as u64)
     }
 
     #[inline]
@@ -365,7 +365,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     fn get_value_ptr(&self, idx: usize) -> u64 {
-        SSlice::_make_ptr_by_offset(self.ptr, values_offset::<K>() + idx * V::SIZE)
+        SSlice::_offset(self.ptr, values_offset::<K>() + (idx * V::SIZE) as u64)
     }
 
     #[inline]
@@ -385,14 +385,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn write_prev_ptr_buf(&mut self, prev: &StablePtrBuf) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, PREV_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, PREV_OFFSET);
 
         unsafe { crate::mem::write_bytes(ptr, prev) };
     }
 
     #[inline]
     pub fn read_prev_ptr_buf(&self) -> StablePtrBuf {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, PREV_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, PREV_OFFSET);
         let mut b = stable_ptr_buf();
 
         unsafe { crate::mem::read_bytes(ptr, &mut b) };
@@ -402,14 +402,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn write_next_ptr_buf(&mut self, next: &StablePtrBuf) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, NEXT_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, NEXT_OFFSET);
 
         unsafe { crate::mem::write_bytes(ptr, next) };
     }
 
     #[inline]
     pub fn read_next_ptr_buf(&self) -> StablePtrBuf {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, NEXT_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, NEXT_OFFSET);
         let mut b = stable_ptr_buf();
 
         unsafe { crate::mem::read_bytes(ptr, &mut b) };
@@ -421,7 +421,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     pub fn write_root_hash(&mut self, root_hash: &Hash, certified: bool) {
         debug_assert!(certified);
 
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, root_hash_offset::<K, V>());
+        let ptr = SSlice::_offset(self.ptr, root_hash_offset::<K, V>());
         unsafe { crate::mem::write_bytes(ptr, root_hash) };
     }
 
@@ -429,7 +429,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     pub fn read_root_hash(&self, certified: bool) -> Hash {
         debug_assert!(certified);
 
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, root_hash_offset::<K, V>());
+        let ptr = SSlice::_offset(self.ptr, root_hash_offset::<K, V>());
         let mut buf = EMPTY_HASH;
 
         unsafe { crate::mem::read_bytes(ptr, &mut buf) };
@@ -439,21 +439,21 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn write_len(&mut self, mut len: usize) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, LEN_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
         unsafe { crate::mem::write_and_own_fixed(ptr, &mut len) };
     }
 
     #[inline]
     pub fn read_len(&self) -> usize {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, LEN_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
         unsafe { crate::mem::read_fixed_for_reference(ptr) }
     }
 
     #[inline]
     fn init_node_type(&mut self) {
-        let ptr = SSlice::_make_ptr_by_offset(self.ptr, NODE_TYPE_OFFSET);
+        let ptr = SSlice::_offset(self.ptr, NODE_TYPE_OFFSET);
 
         unsafe { crate::mem::write_and_own_fixed(ptr, &mut NODE_TYPE_LEAF) };
     }
@@ -518,7 +518,7 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut node = LeafBTreeNode::<u64, u64>::create(false);
+        let mut node = LeafBTreeNode::<u64, u64>::create(false).unwrap();
         let mut buf = Vec::default();
 
         for i in 0..CAPACITY {
@@ -566,7 +566,7 @@ mod tests {
             node.insert_value(i, &v, CAPACITY - 1, &mut buf);
         }
 
-        let right = node.split_max_len(true, &mut buf, false);
+        let right = node.split_max_len(true, &mut buf, false).unwrap();
 
         for i in 0..MIN_LEN_AFTER_SPLIT {
             let k = node.read_key_buf(i);

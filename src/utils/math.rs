@@ -1,7 +1,7 @@
 use std::num::Wrapping;
 
-pub fn ceil_div(a: usize, b: usize) -> u64 {
-    (a as u64 + b as u64 - 1) / b as u64
+pub fn ceil_div(a: u64, b: u64) -> u64 {
+    (a + b - 1) / b
 }
 
 const TAB64: [u64; 64] = [

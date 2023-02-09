@@ -2,6 +2,7 @@ use crate::collections::hash_map::SHashMap;
 use crate::collections::hash_set::iter::SHashSetIter;
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableType;
+use crate::OutOfMemory;
 use std::borrow::Borrow;
 use std::hash::Hash;
 
@@ -27,8 +28,8 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
     }
 
     #[inline]
-    pub fn insert(&mut self, value: T) -> bool {
-        self.map.insert(value, ()).is_some()
+    pub fn insert(&mut self, value: T) -> Result<bool, OutOfMemory> {
+        self.map.insert(value, ()).map(|it| it.is_some())
     }
 
     #[inline]
@@ -138,9 +139,9 @@ mod tests {
 
         assert!(set.is_empty());
 
-        assert!(!set.insert(10));
-        assert!(!set.insert(20));
-        assert!(set.insert(10));
+        assert!(!set.insert(10).unwrap());
+        assert!(!set.insert(20).unwrap());
+        assert!(set.insert(10).unwrap());
 
         assert!(set.contains(&10));
         assert!(!set.contains(&100));

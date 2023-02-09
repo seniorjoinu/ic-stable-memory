@@ -4,6 +4,7 @@ use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::StableType;
 use crate::utils::certification::{empty_hash, AsHashTree, AsHashableBytes, Hash, HashTree};
+use crate::OutOfMemory;
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::ops::Deref;
@@ -32,7 +33,7 @@ impl<
     }
 
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
         if !self.frozen {
             self.frozen = true;
         }
@@ -41,11 +42,11 @@ impl<
     }
 
     #[inline]
-    pub fn insert_and_commit(&mut self, key: K, value: V) -> Option<V> {
-        let it = self.insert(key, value);
+    pub fn insert_and_commit(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
+        let it = self.insert(key, value)?;
         self.commit();
 
-        it
+        Ok(it)
     }
 
     #[inline]
@@ -384,7 +385,7 @@ mod tests {
         example.shuffle(&mut thread_rng());
 
         for i in 0..iterations {
-            assert!(map.insert(example[i], example[i]).is_none());
+            assert!(map.insert(example[i], example[i]).unwrap().is_none());
             map.inner.debug_print();
 
             map.modified.debug_print();
@@ -410,8 +411,8 @@ mod tests {
         println!();
         println!();
 
-        assert_eq!(map.insert(0, 1).unwrap(), 0);
-        assert_eq!(map.insert(0, 0).unwrap(), 1);
+        assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
+        assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
 
         example.shuffle(&mut thread_rng());
         for i in 0..iterations {

@@ -3,11 +3,12 @@ use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
+use crate::mem::free_block::FreeBlock;
 use crate::mem::{StablePtr, StablePtrBuf};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
-use crate::{isoprint, SSlice};
+use crate::{isoprint, make_sure_can_allocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::mem;
@@ -21,7 +22,7 @@ pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
 
 pub const NODE_TYPE_INTERNAL: u8 = 127;
 pub const NODE_TYPE_LEAF: u8 = 255;
-pub const NODE_TYPE_OFFSET: usize = 0;
+pub const NODE_TYPE_OFFSET: u64 = 0;
 
 pub(crate) mod internal_node;
 pub mod iter;
@@ -64,12 +65,17 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     }
 
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
         self._insert(key, value, &mut LeveledList::None)
     }
 
-    pub(crate) fn _insert(&mut self, key: K, value: V, modified: &mut LeveledList) -> Option<V> {
-        let mut node = self.get_or_create_root();
+    pub(crate) fn _insert(
+        &mut self,
+        key: K,
+        value: V,
+        modified: &mut LeveledList,
+    ) -> Result<Option<V>, OutOfMemory> {
+        let mut node = self.get_or_create_root()?;
 
         let mut leaf = loop {
             match unsafe { node.copy() } {
@@ -89,11 +95,13 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             }
         };
 
-        let right_leaf = match self.insert_leaf(&mut leaf, key, value, modified) {
+        // this call makes sure there is enough free stable memory to allocate everything else
+        // if it returns Ok - every other allocation after that should simply .unwrap()
+        let right_leaf = match self.insert_leaf(&mut leaf, key, value, modified)? {
             Ok(v) => {
                 self.clear_stack(modified);
 
-                return Some(v);
+                return Ok(Some(v));
             }
             Err(right_leaf_opt) => {
                 if let Some(right_leaf) = right_leaf_opt {
@@ -102,7 +110,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
                     self.clear_stack(modified);
                     self.len += 1;
 
-                    return None;
+                    return Ok(None);
                 }
             }
         };
@@ -126,7 +134,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
                 self.clear_stack(modified);
                 self.len += 1;
 
-                return None;
+                return Ok(None);
             }
         }
 
@@ -137,14 +145,15 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             &node.as_ptr().as_new_fixed_size_bytes(),
             &ptr.as_new_fixed_size_bytes(),
             self.certified,
-        );
+        )
+        .unwrap();
 
         modified.insert_root(new_root.as_ptr());
 
         self.root = Some(BTreeNode::Internal(new_root));
         self.len += 1;
 
-        None
+        Ok(None)
     }
 
     #[inline]
@@ -161,7 +170,11 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         K: Borrow<Q>,
         Q: Ord,
     {
-        let mut node = self.get_or_create_root();
+        if self.root.is_none() {
+            return None;
+        }
+
+        let mut node = unsafe { self.get_or_create_root().unwrap_unchecked() };
         let mut found_internal_node = None;
 
         // lookup for the leaf that may contain the key
@@ -389,7 +402,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         mut key: K,
         mut value: V,
         modified: &mut LeveledList,
-    ) -> Result<V, Option<LeafBTreeNode<K, V>>> {
+    ) -> Result<Result<V, Option<LeafBTreeNode<K, V>>>, OutOfMemory> {
         let leaf_node_len = leaf_node.read_len();
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
             Ok(existing_idx) => {
@@ -399,7 +412,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
 
                 modified.push(self.current_depth(), leaf_node.as_ptr());
 
-                return Ok(prev_value);
+                return Ok(Ok(prev_value));
             }
             Err(idx) => idx,
         };
@@ -419,23 +432,36 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
 
             modified.push(self.current_depth(), leaf_node.as_ptr());
 
-            return Err(None);
+            return Ok(Err(None));
         }
 
         // try passing an element to a neighbor, to make room for a new one
         if self.pass_elem_to_sibling_leaf(leaf_node, &k, &v, insert_idx, modified) {
-            return Err(None);
+            return Ok(Err(None));
+        }
+
+        // cheking if it is possible to allocate worst-case scenario amount of memory
+        let memory_to_allocate = (self._stack.len() + 1) as u64
+            * FreeBlock::to_total_size(InternalBTreeNode::<K>::calc_byte_size(self.certified))
+            + FreeBlock::to_total_size(LeafBTreeNode::<K, V>::calc_size_bytes(self.certified));
+
+        if !make_sure_can_allocate(memory_to_allocate) {
+            return Err(OutOfMemory);
         }
 
         // split the leaf and insert so both leaves now have length of B
         let mut right = if insert_idx < B {
-            let right = leaf_node.split_max_len(true, &mut self._buf, self.certified);
+            let right = leaf_node
+                .split_max_len(true, &mut self._buf, self.certified)
+                .unwrap();
             leaf_node.insert_key(insert_idx, &k, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             leaf_node.insert_value(insert_idx, &v, MIN_LEN_AFTER_SPLIT, &mut self._buf);
 
             right
         } else {
-            let mut right = leaf_node.split_max_len(false, &mut self._buf, self.certified);
+            let mut right = leaf_node
+                .split_max_len(false, &mut self._buf, self.certified)
+                .unwrap();
             right.insert_key(insert_idx - B, &k, MIN_LEN_AFTER_SPLIT, &mut self._buf);
             right.insert_value(insert_idx - B, &v, MIN_LEN_AFTER_SPLIT, &mut self._buf);
 
@@ -448,7 +474,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         modified.push(self.current_depth(), leaf_node.as_ptr());
         modified.push(self.current_depth(), right.as_ptr());
 
-        Err(Some(right))
+        Ok(Err(Some(right)))
     }
 
     fn insert_internal(
@@ -476,7 +502,9 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         }
 
         // TODO: possible to optimize when idx == MIN_LEN_AFTER_SPLIT
-        let (mut right, mid) = internal_node.split_max_len(&mut self._buf, self.certified);
+        let (mut right, mid) = internal_node
+            .split_max_len(&mut self._buf, self.certified)
+            .unwrap();
 
         if idx <= MIN_LEN_AFTER_SPLIT {
             internal_node.insert_key_buf(idx, &key, MIN_LEN_AFTER_SPLIT, &mut self._buf);
@@ -1238,14 +1266,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             .map(|(n, l, i)| (unsafe { n.copy() }, *l, *i))
     }
 
-    fn get_or_create_root(&mut self) -> BTreeNode<K, V> {
+    fn get_or_create_root(&mut self) -> Result<BTreeNode<K, V>, OutOfMemory> {
         match &self.root {
-            Some(r) => unsafe { r.copy() },
+            Some(r) => unsafe { Ok(r.copy()) },
             None => {
-                let new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified));
+                let new_root = BTreeNode::<K, V>::Leaf(LeafBTreeNode::create(self.certified)?);
 
                 self.root = Some(new_root);
-                unsafe { self.root.as_ref().unwrap_unchecked().copy() }
+                unsafe { Ok(self.root.as_ref().unwrap_unchecked().copy()) }
             }
         }
     }
@@ -1555,9 +1583,8 @@ pub(crate) enum BTreeNode<K, V> {
 
 impl<K, V> BTreeNode<K, V> {
     pub(crate) fn from_ptr(ptr: StablePtr) -> Self {
-        let node_type: u8 = unsafe {
-            crate::mem::read_fixed_for_reference(SSlice::_make_ptr_by_offset(ptr, NODE_TYPE_OFFSET))
-        };
+        let node_type: u8 =
+            unsafe { crate::mem::read_fixed_for_reference(SSlice::_offset(ptr, NODE_TYPE_OFFSET)) };
 
         unsafe {
             match node_type {
@@ -1606,7 +1633,7 @@ mod tests {
         for i in 0..iterations {
             map.debug_print_stack();
             assert!(map._stack.is_empty());
-            assert!(map.insert(example[i], example[i]).is_none());
+            assert!(map.insert(example[i], example[i]).unwrap().is_none());
 
             for j in 0..i {
                 assert!(
@@ -1623,8 +1650,8 @@ mod tests {
             }
         }
 
-        assert_eq!(map.insert(0, 1).unwrap(), 0);
-        assert_eq!(map.insert(0, 0).unwrap(), 1);
+        assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
+        assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
 
         map.debug_print();
 
