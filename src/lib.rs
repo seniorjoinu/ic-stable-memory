@@ -11,12 +11,11 @@ pub mod mem;
 pub mod primitive;
 pub mod utils;
 
-/// ФРОМ МЕТОДЫ
 /// ПРОВЕРИТЬ МЕМОРИ ЛИКИ
 /// ПРОВЕРИТЬ ТУДУХИ
 /// ФАЗЗЕРЫ ДЛЯ ВСЕГО
 /// ПРОВЕРИТЬ СЕРТИФАЙД АССЕТС
-/// НАПИСАТЬ ДОКУМЕНТАЦИЮ
+/// НАПИСАТЬ ДОКУМЕНТАЦИЮ + ПОМЕТИТЬ ФИКСМИ
 use crate::mem::StablePtr;
 pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 

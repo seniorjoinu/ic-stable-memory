@@ -354,7 +354,7 @@ mod tests {
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
 
@@ -375,62 +375,67 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let iterations = 1000;
-        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+        {
+            let iterations = 1000;
+            let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
-        let mut example = Vec::new();
-        for i in 0..iterations {
-            example.push(i as u64);
-        }
-        example.shuffle(&mut thread_rng());
+            let mut example = Vec::new();
+            for i in 0..iterations {
+                example.push(i as u64);
+            }
+            example.shuffle(&mut thread_rng());
 
-        for i in 0..iterations {
-            assert!(map.insert(example[i], example[i]).unwrap().is_none());
-            map.inner.debug_print();
+            for i in 0..iterations {
+                assert!(map.insert(example[i], example[i]).unwrap().is_none());
+                map.inner.debug_print();
 
-            map.modified.debug_print();
-            map.commit();
-            map.modified.debug_print();
+                map.modified.debug_print();
+                map.commit();
+                map.modified.debug_print();
+                println!();
+
+                for j in 0..i {
+                    let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
+                    assert_eq!(
+                        wit.reconstruct(),
+                        map.root_hash(),
+                        "invalid witness {:?}",
+                        wit
+                    );
+                }
+            }
+
+            assert_eq!(map.len(), iterations as u64);
+            assert_eq!(map.is_empty(), false);
+
+            map.debug_print();
+            println!();
             println!();
 
-            for j in 0..i {
-                let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
-                assert_eq!(
-                    wit.reconstruct(),
-                    map.root_hash(),
-                    "invalid witness {:?}",
-                    wit
-                );
+            assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
+            assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
+
+            example.shuffle(&mut thread_rng());
+            for i in 0..iterations {
+                assert_eq!(map.remove_and_commit(&example[i]), Some(example[i]));
+
+                for j in (i + 1)..iterations {
+                    let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
+                    assert_eq!(
+                        wit.reconstruct(),
+                        map.root_hash(),
+                        "invalid witness of {}: {:?}",
+                        example[j],
+                        wit
+                    );
+                }
             }
+
+            map.debug_print();
         }
-
-        assert_eq!(map.len(), iterations as u64);
-        assert_eq!(map.is_empty(), false);
-
-        map.debug_print();
-        println!();
-        println!();
-
-        assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
-        assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
-
-        example.shuffle(&mut thread_rng());
-        for i in 0..iterations {
-            assert_eq!(map.remove_and_commit(&example[i]), Some(example[i]));
-
-            for j in (i + 1)..iterations {
-                let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
-                assert_eq!(
-                    wit.reconstruct(),
-                    map.root_hash(),
-                    "invalid witness of {}: {:?}",
-                    example[j],
-                    wit
-                );
-            }
-        }
-
-        map.debug_print();
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -438,50 +443,55 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let iterations = 10;
-        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+        {
+            let iterations = 10;
+            let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
-        let mut example = Vec::new();
-        for i in 0..(iterations * 100) {
-            example.push(i as u64);
+            let mut example = Vec::new();
+            for i in 0..(iterations * 100) {
+                example.push(i as u64);
+            }
+            example.shuffle(&mut thread_rng());
+
+            for i in 0..iterations {
+                for j in (i * 100)..((i + 1) * 100) {
+                    map.insert(example[j], example[j]);
+                }
+
+                map.commit();
+
+                for j in 0..((i + 1) * 100) {
+                    let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
+                    assert_eq!(
+                        wit.reconstruct(),
+                        map.root_hash(),
+                        "invalid witness {:?}",
+                        wit
+                    );
+                }
+            }
+
+            for i in 0..iterations {
+                for j in (i * 100)..((i + 1) * 100) {
+                    map.remove(&example[j]);
+                }
+
+                map.commit();
+
+                for j in ((i + 1) * 100)..(iterations * 100) {
+                    let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
+                    assert_eq!(
+                        wit.reconstruct(),
+                        map.root_hash(),
+                        "invalid witness {:?}",
+                        wit
+                    );
+                }
+            }
         }
-        example.shuffle(&mut thread_rng());
-
-        for i in 0..iterations {
-            for j in (i * 100)..((i + 1) * 100) {
-                map.insert(example[j], example[j]);
-            }
-
-            map.commit();
-
-            for j in 0..((i + 1) * 100) {
-                let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
-                assert_eq!(
-                    wit.reconstruct(),
-                    map.root_hash(),
-                    "invalid witness {:?}",
-                    wit
-                );
-            }
-        }
-
-        for i in 0..iterations {
-            for j in (i * 100)..((i + 1) * 100) {
-                map.remove(&example[j]);
-            }
-
-            map.commit();
-
-            for j in ((i + 1) * 100)..(iterations * 100) {
-                let wit = map.witness_with(&example[j], |it| leaf(it.as_hashable_bytes()));
-                assert_eq!(
-                    wit.reconstruct(),
-                    map.root_hash(),
-                    "invalid witness {:?}",
-                    wit
-                );
-            }
-        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     fn hash_tree_to_labeled_leaves(t: HashTree) -> Vec<HashTree> {
@@ -503,42 +513,11 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let iterations = 100;
-        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+        {
+            let iterations = 100;
+            let mut map = SCertifiedBTreeMap::<u64, u64>::default();
 
-        let proof = map.prove_absence(&0);
-
-        assert_eq!(
-            proof.reconstruct(),
-            map.root_hash(),
-            "invalid proof {:?}",
-            proof
-        );
-
-        let leaves = hash_tree_to_labeled_leaves(proof);
-        assert_eq!(leaves.len(), 0);
-
-        for i in 1..iterations {
-            map.insert(i * 2, i * 2);
-        }
-
-        map.commit();
-        map.debug_print();
-
-        let proof = map.prove_absence(&0);
-
-        assert_eq!(
-            proof.reconstruct(),
-            map.root_hash(),
-            "invalid proof {:?}",
-            proof
-        );
-
-        let leaves = hash_tree_to_labeled_leaves(proof);
-        assert_eq!(leaves.len(), 1);
-
-        for i in 1..(iterations - 1) {
-            let proof = map.prove_absence(&(i * 2 + 1));
+            let proof = map.prove_absence(&0);
 
             assert_eq!(
                 proof.reconstruct(),
@@ -548,58 +527,29 @@ mod tests {
             );
 
             let leaves = hash_tree_to_labeled_leaves(proof);
-            assert_eq!(leaves.len(), 2);
-        }
+            assert_eq!(leaves.len(), 0);
 
-        let proof = map.prove_absence(&300);
+            for i in 1..iterations {
+                map.insert(i * 2, i * 2);
+            }
 
-        assert_eq!(
-            proof.reconstruct(),
-            map.root_hash(),
-            "invalid proof {:?}",
-            proof
-        );
+            map.commit();
+            map.debug_print();
 
-        let leaves = hash_tree_to_labeled_leaves(proof);
-        assert_eq!(leaves.len(), 1);
+            let proof = map.prove_absence(&0);
 
-        for i in 1..iterations {
-            map.remove(&(i * 2));
-        }
+            assert_eq!(
+                proof.reconstruct(),
+                map.root_hash(),
+                "invalid proof {:?}",
+                proof
+            );
 
-        map.commit();
+            let leaves = hash_tree_to_labeled_leaves(proof);
+            assert_eq!(leaves.len(), 1);
 
-        let proof = map.prove_absence(&0);
-
-        assert_eq!(
-            proof.reconstruct(),
-            map.root_hash(),
-            "invalid proof {:?}",
-            proof
-        );
-
-        let leaves = hash_tree_to_labeled_leaves(proof);
-        assert!(leaves.is_empty());
-    }
-
-    #[test]
-    fn range_proofs_work_fine() {
-        stable::clear();
-        stable_memory_init();
-
-        let iterations = 100;
-        let mut map = SCertifiedBTreeMap::<u64, u64>::default();
-
-        for i in 0..iterations {
-            map.insert(i, i);
-        }
-
-        map.commit();
-        map.debug_print();
-
-        for i in 0..iterations {
-            for j in i..iterations {
-                let proof = map.prove_range(&i, &j);
+            for i in 1..(iterations - 1) {
+                let proof = map.prove_absence(&(i * 2 + 1));
 
                 assert_eq!(
                     proof.reconstruct(),
@@ -609,9 +559,79 @@ mod tests {
                 );
 
                 let leaves = hash_tree_to_labeled_leaves(proof);
-                assert_eq!(leaves.len() as u64, j - i + 1, "{} {}", i, j);
+                assert_eq!(leaves.len(), 2);
+            }
+
+            let proof = map.prove_absence(&300);
+
+            assert_eq!(
+                proof.reconstruct(),
+                map.root_hash(),
+                "invalid proof {:?}",
+                proof
+            );
+
+            let leaves = hash_tree_to_labeled_leaves(proof);
+            assert_eq!(leaves.len(), 1);
+
+            for i in 1..iterations {
+                map.remove(&(i * 2));
+            }
+
+            map.commit();
+
+            let proof = map.prove_absence(&0);
+
+            assert_eq!(
+                proof.reconstruct(),
+                map.root_hash(),
+                "invalid proof {:?}",
+                proof
+            );
+
+            let leaves = hash_tree_to_labeled_leaves(proof);
+            assert!(leaves.is_empty());
+        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn range_proofs_work_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let iterations = 100;
+            let mut map = SCertifiedBTreeMap::<u64, u64>::default();
+
+            for i in 0..iterations {
+                map.insert(i, i);
+            }
+
+            map.commit();
+            map.debug_print();
+
+            for i in 0..iterations {
+                for j in i..iterations {
+                    let proof = map.prove_range(&i, &j);
+
+                    assert_eq!(
+                        proof.reconstruct(),
+                        map.root_hash(),
+                        "invalid proof {:?}",
+                        proof
+                    );
+
+                    let leaves = hash_tree_to_labeled_leaves(proof);
+                    assert_eq!(leaves.len() as u64, j - i + 1, "{} {}", i, j);
+                }
             }
         }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -619,63 +639,68 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SCertifiedBTreeMap::<u64, SCertifiedBTreeMap<u64, u64>>::default();
+        {
+            let mut map = SCertifiedBTreeMap::<u64, SCertifiedBTreeMap<u64, u64>>::default();
 
-        let mut nested_map_1 = SCertifiedBTreeMap::default();
-        let mut nested_map_2 = SCertifiedBTreeMap::default();
+            let mut nested_map_1 = SCertifiedBTreeMap::default();
+            let mut nested_map_2 = SCertifiedBTreeMap::default();
 
-        nested_map_1.insert(1, 1);
-        nested_map_1.commit();
+            nested_map_1.insert(1, 1);
+            nested_map_1.commit();
 
-        nested_map_2.insert(2, 2);
-        nested_map_2.commit();
+            nested_map_2.insert(2, 2);
+            nested_map_2.commit();
 
-        map.insert(1, nested_map_1);
-        map.insert(2, nested_map_2);
+            map.insert(1, nested_map_1);
+            map.insert(2, nested_map_2);
 
-        map.commit();
+            map.commit();
 
-        let composite_witness = map.witness_with(&1, |it| {
-            it.witness_with(&1, |it1| leaf(it1.as_hashable_bytes()))
-        });
+            let composite_witness = map.witness_with(&1, |it| {
+                it.witness_with(&1, |it1| leaf(it1.as_hashable_bytes()))
+            });
 
-        assert_eq!(
-            composite_witness.reconstruct(),
-            map.root_hash(),
-            "invalid witness {:?}",
-            composite_witness
-        );
+            assert_eq!(
+                composite_witness.reconstruct(),
+                map.root_hash(),
+                "invalid witness {:?}",
+                composite_witness
+            );
 
-        let mut label_1_met = false;
-        let mut label_2_met = false;
-        let mut leave_met = false;
+            let mut label_1_met = false;
+            let mut label_2_met = false;
+            let mut leave_met = false;
 
-        traverse_hashtree(&composite_witness, &mut |it| match it {
-            HashTree::Labeled(l, _) => {
-                assert!(1u64.as_hashable_bytes().eq(l));
+            traverse_hashtree(&composite_witness, &mut |it| match it {
+                HashTree::Labeled(l, _) => {
+                    assert!(1u64.as_hashable_bytes().eq(l));
 
-                if !label_1_met {
-                    label_1_met = true;
-                } else if !label_2_met {
-                    label_2_met = true;
-                } else {
-                    panic!("Extra label met");
+                    if !label_1_met {
+                        label_1_met = true;
+                    } else if !label_2_met {
+                        label_2_met = true;
+                    } else {
+                        panic!("Extra label met");
+                    }
                 }
-            }
-            HashTree::Leaf(l) => {
-                if !leave_met {
-                    leave_met = true;
-                } else {
-                    panic!("Extra leave met");
+                HashTree::Leaf(l) => {
+                    if !leave_met {
+                        leave_met = true;
+                    } else {
+                        panic!("Extra leave met");
+                    }
+
+                    assert!(1u64.as_hashable_bytes().eq(l));
                 }
+                _ => {}
+            });
 
-                assert!(1u64.as_hashable_bytes().eq(l));
-            }
-            _ => {}
-        });
+            assert!(label_1_met);
+            assert!(label_2_met);
+            assert!(leave_met);
+        }
 
-        assert!(label_1_met);
-        assert!(label_2_met);
-        assert!(leave_met);
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

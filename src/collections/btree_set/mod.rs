@@ -112,25 +112,30 @@ impl<T: StableType + AsFixedSizeBytes + Ord> StableType for SBTreeSet<T> {
 mod tests {
     use crate::collections::btree_set::SBTreeSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
 
     #[test]
     fn it_works_fine() {
         stable::clear();
         stable_memory_init();
 
-        let mut set = SBTreeSet::default();
-        set.insert(10);
-        set.insert(20);
+        {
+            let mut set = SBTreeSet::default();
+            set.insert(10);
+            set.insert(20);
 
-        assert!(set.contains(&10));
-        assert_eq!(set.len(), 2);
-        assert!(!set.is_empty());
+            assert!(set.contains(&10));
+            assert_eq!(set.len(), 2);
+            assert!(!set.is_empty());
 
-        assert!(set.remove(&10));
-        assert!(!set.remove(&10));
+            assert!(set.remove(&10));
+            assert!(!set.remove(&10));
 
-        let set = SBTreeSet::<u64>::new();
+            let set = SBTreeSet::<u64>::new();
+        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -138,10 +143,15 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let set = SBTreeSet::<u32>::new();
+        {
+            let set = SBTreeSet::<u32>::new();
 
-        let buf = set.as_new_fixed_size_bytes();
-        SBTreeSet::<u32>::from_fixed_size_bytes(buf._deref());
+            let buf = set.as_new_fixed_size_bytes();
+            SBTreeSet::<u32>::from_fixed_size_bytes(buf._deref());
+        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -149,21 +159,18 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut set = SBTreeSet::<u32>::default();
-        for i in 0..100 {
-            set.insert(i);
+        {
+            let mut set = SBTreeSet::<u32>::default();
+            for i in 0..100 {
+                set.insert(i);
+            }
+
+            for (idx, mut i) in set.iter().enumerate() {
+                assert_eq!(idx as u32, *i);
+            }
         }
-
-        for (idx, mut i) in set.iter().enumerate() {
-            assert_eq!(idx as u32, *i);
-        }
-    }
-
-    #[test]
-    fn helpers_work_fine() {
-        stable::clear();
-        stable_memory_init();
-
-        let mut set = SBTreeSet::<u32>::default();
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

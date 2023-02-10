@@ -128,30 +128,35 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> StableType for SHashSet<T> {
 mod tests {
     use crate::collections::hash_set::SHashSet;
     use crate::encoding::{AsFixedSizeBytes, Buffer};
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
 
     #[test]
     fn basic_flow_works_fine() {
         stable::clear();
         stable_memory_init();
 
-        let mut set = SHashSet::default();
+        {
+            let mut set = SHashSet::default();
 
-        assert!(set.is_empty());
+            assert!(set.is_empty());
 
-        assert!(!set.insert(10).unwrap());
-        assert!(!set.insert(20).unwrap());
-        assert!(set.insert(10).unwrap());
+            assert!(!set.insert(10).unwrap());
+            assert!(!set.insert(20).unwrap());
+            assert!(set.insert(10).unwrap());
 
-        assert!(set.contains(&10));
-        assert!(!set.contains(&100));
+            assert!(set.contains(&10));
+            assert!(!set.contains(&100));
 
-        assert_eq!(set.len(), 2);
+            assert_eq!(set.len(), 2);
 
-        assert!(!set.remove(&100));
-        assert!(set.remove(&10));
+            assert!(!set.remove(&100));
+            assert!(set.remove(&10));
 
-        SHashSet::<u64>::new_with_capacity(10);
+            SHashSet::<u64>::new_with_capacity(10);
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -159,18 +164,23 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut set = SHashSet::default();
+        {
+            let mut set = SHashSet::default();
 
-        for i in 0..100 {
-            set.insert(i);
+            for i in 0..100 {
+                set.insert(i);
+            }
+
+            let mut c = 0;
+            for _ in set.iter() {
+                c += 1;
+            }
+
+            assert_eq!(c, 100);
         }
 
-        let mut c = 0;
-        for _ in set.iter() {
-            c += 1;
-        }
-
-        assert_eq!(c, 100);
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -178,23 +188,20 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let set = SHashSet::<u32>::default();
+        {
+            let set = SHashSet::<u32>::default();
 
-        let len = set.len();
-        let cap = set.capacity();
+            let len = set.len();
+            let cap = set.capacity();
 
-        let buf = set.as_new_fixed_size_bytes();
-        let set1 = SHashSet::<u32>::from_fixed_size_bytes(buf._deref());
+            let buf = set.as_new_fixed_size_bytes();
+            let set1 = SHashSet::<u32>::from_fixed_size_bytes(buf._deref());
 
-        assert_eq!(len, set1.len());
-        assert_eq!(cap, set1.capacity());
-    }
-
-    #[test]
-    fn helpers_work_fine() {
-        stable::clear();
-        stable_memory_init();
-
-        SHashSet::<u32>::default();
+            assert_eq!(len, set1.len());
+            assert_eq!(cap, set1.capacity());
+        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

@@ -1613,7 +1613,7 @@ impl<K, V> BTreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use crate::collections::btree_map::SBTreeMap;
-    use crate::{get_allocated_size, stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     #[test]
@@ -1621,87 +1621,69 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let iterations = 1000;
-        let mut map = SBTreeMap::<u64, u64>::default();
+        {
+            let iterations = 1000;
+            let mut map = SBTreeMap::<u64, u64>::default();
 
-        let mut example = Vec::new();
-        for i in 0..iterations {
-            example.push(i as u64);
-        }
-        example.shuffle(&mut thread_rng());
+            let mut example = Vec::new();
+            for i in 0..iterations {
+                example.push(i as u64);
+            }
+            example.shuffle(&mut thread_rng());
 
-        for i in 0..iterations {
-            map.debug_print_stack();
-            assert!(map._stack.is_empty());
-            assert!(map.insert(example[i], example[i]).unwrap().is_none());
+            for i in 0..iterations {
+                map.debug_print_stack();
+                assert!(map._stack.is_empty());
+                assert!(map.insert(example[i], example[i]).unwrap().is_none());
 
-            for j in 0..i {
-                assert!(
-                    map.contains_key(&example[j]),
-                    "don't contain {}",
-                    example[j]
-                );
-                assert_eq!(
-                    *map.get(&example[j]).unwrap(),
-                    example[j],
-                    "unable to get {}",
-                    example[j]
-                );
+                for j in 0..i {
+                    assert!(
+                        map.contains_key(&example[j]),
+                        "don't contain {}",
+                        example[j]
+                    );
+                    assert_eq!(
+                        *map.get(&example[j]).unwrap(),
+                        example[j],
+                        "unable to get {}",
+                        example[j]
+                    );
+                }
+            }
+
+            assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
+            assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
+
+            map.debug_print();
+
+            example.shuffle(&mut thread_rng());
+            for i in 0..iterations {
+                assert!(map._stack.is_empty());
+
+                assert_eq!(map.remove(&example[i]), Some(example[i]));
+
+                for j in (i + 1)..iterations {
+                    assert!(
+                        map.contains_key(&example[j]),
+                        "don't contain {}",
+                        example[j]
+                    );
+                    assert_eq!(
+                        *map.get(&example[j]).unwrap(),
+                        example[j],
+                        "unable to get {}",
+                        example[j]
+                    );
+                }
             }
         }
-
-        assert_eq!(map.insert(0, 1).unwrap().unwrap(), 0);
-        assert_eq!(map.insert(0, 0).unwrap().unwrap(), 1);
-
-        map.debug_print();
-
-        example.shuffle(&mut thread_rng());
-        for i in 0..iterations {
-            assert!(map._stack.is_empty());
-
-            assert_eq!(map.remove(&example[i]), Some(example[i]));
-
-            for j in (i + 1)..iterations {
-                assert!(
-                    map.contains_key(&example[j]),
-                    "don't contain {}",
-                    example[j]
-                );
-                assert_eq!(
-                    *map.get(&example[j]).unwrap(),
-                    example[j],
-                    "unable to get {}",
-                    example[j]
-                );
-            }
-        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
     fn iters_work_fine() {
-        stable::clear();
-        stable_memory_init();
-
-        let mut map = SBTreeMap::<u64, u64>::default();
-
-        for i in 0..200 {
-            map.insert(i, i);
-        }
-
-        let mut i = 0u64;
-
-        for (mut k, mut v) in map.iter() {
-            assert_eq!(i, *k);
-            assert_eq!(i, *v);
-
-            i += 1;
-        }
-
-        assert_eq!(i, 199);
-    }
-
-    #[test]
-    fn stable_drop_work_fine() {
         stable::clear();
         stable_memory_init();
 
@@ -1711,8 +1693,20 @@ mod tests {
             for i in 0..200 {
                 map.insert(i, i);
             }
-        }
 
+            let mut i = 0u64;
+
+            for (mut k, mut v) in map.iter() {
+                assert_eq!(i, *k);
+                assert_eq!(i, *v);
+
+                i += 1;
+            }
+
+            assert_eq!(i, 199);
+        }
+        
+        _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }
 }

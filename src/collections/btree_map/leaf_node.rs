@@ -511,93 +511,100 @@ mod tests {
     use crate::collections::btree_map::leaf_node::LeafBTreeNode;
     use crate::collections::btree_map::{B, CAPACITY, MIN_LEN_AFTER_SPLIT};
     use crate::encoding::AsFixedSizeBytes;
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
 
     #[test]
     fn works_fine() {
         stable::clear();
         stable_memory_init();
 
-        let mut node = LeafBTreeNode::<u64, u64>::create(false).unwrap();
-        let mut buf = Vec::default();
+        {
+            let mut node = LeafBTreeNode::<u64, u64>::create(false).unwrap();
+            let mut buf = Vec::default();
 
-        for i in 0..CAPACITY {
-            node.push_key(&(i as u64).as_new_fixed_size_bytes(), i);
-            node.push_value(&(i as u64).as_new_fixed_size_bytes(), i);
+            for i in 0..CAPACITY {
+                node.push_key(&(i as u64).as_new_fixed_size_bytes(), i);
+                node.push_value(&(i as u64).as_new_fixed_size_bytes(), i);
+            }
+
+            for i in 0..CAPACITY {
+                let k = node.read_key_buf(CAPACITY - i - 1);
+                let v = node.read_value_buf(CAPACITY - i - 1);
+
+                assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
+                assert_eq!(v, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
+            }
+
+            for i in (0..CAPACITY).rev() {
+                node.insert_key(
+                    0,
+                    &(i as u64).as_new_fixed_size_bytes(),
+                    CAPACITY - i - 1,
+                    &mut buf,
+                );
+                node.insert_value(
+                    0,
+                    &(i as u64).as_new_fixed_size_bytes(),
+                    CAPACITY - i - 1,
+                    &mut buf,
+                );
+            }
+
+            node.write_len(CAPACITY);
+            println!("{}", node.to_string());
+
+            for i in 0..CAPACITY {
+                let k = node.read_key_buf(i);
+                let v = node.read_value_buf(i);
+
+                node.remove_key(i, CAPACITY, &mut buf);
+                node.remove_value(i, CAPACITY, &mut buf);
+
+                assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+                assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
+
+                node.insert_key(i, &k, CAPACITY - 1, &mut buf);
+                node.insert_value(i, &v, CAPACITY - 1, &mut buf);
+            }
+
+            let right = node.split_max_len(true, &mut buf, false).unwrap();
+
+            for i in 0..MIN_LEN_AFTER_SPLIT {
+                let k = node.read_key_buf(i);
+                let v = node.read_value_buf(i);
+
+                assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+                assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
+            }
+
+            for i in 0..B {
+                let k = right.read_key_buf(i);
+                let v = right.read_value_buf(i);
+
+                assert_eq!(
+                    k,
+                    ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
+                );
+                assert_eq!(
+                    v,
+                    ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
+                );
+            }
+
+            node.merge_min_len(right, &mut buf);
+
+            for i in 0..CAPACITY {
+                let k = node.read_key_buf(i);
+                let v = node.read_value_buf(i);
+
+                assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
+                assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
+            }
+            
+            node.destroy();
         }
-
-        for i in 0..CAPACITY {
-            let k = node.read_key_buf(CAPACITY - i - 1);
-            let v = node.read_value_buf(CAPACITY - i - 1);
-
-            assert_eq!(k, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
-            assert_eq!(v, ((CAPACITY - i - 1) as u64).as_new_fixed_size_bytes());
-        }
-
-        for i in (0..CAPACITY).rev() {
-            node.insert_key(
-                0,
-                &(i as u64).as_new_fixed_size_bytes(),
-                CAPACITY - i - 1,
-                &mut buf,
-            );
-            node.insert_value(
-                0,
-                &(i as u64).as_new_fixed_size_bytes(),
-                CAPACITY - i - 1,
-                &mut buf,
-            );
-        }
-
-        node.write_len(CAPACITY);
-        println!("{}", node.to_string());
-
-        for i in 0..CAPACITY {
-            let k = node.read_key_buf(i);
-            let v = node.read_value_buf(i);
-
-            node.remove_key(i, CAPACITY, &mut buf);
-            node.remove_value(i, CAPACITY, &mut buf);
-
-            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
-
-            node.insert_key(i, &k, CAPACITY - 1, &mut buf);
-            node.insert_value(i, &v, CAPACITY - 1, &mut buf);
-        }
-
-        let right = node.split_max_len(true, &mut buf, false).unwrap();
-
-        for i in 0..MIN_LEN_AFTER_SPLIT {
-            let k = node.read_key_buf(i);
-            let v = node.read_value_buf(i);
-
-            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
-        }
-
-        for i in 0..B {
-            let k = right.read_key_buf(i);
-            let v = right.read_value_buf(i);
-
-            assert_eq!(
-                k,
-                ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
-            );
-            assert_eq!(
-                v,
-                ((i + MIN_LEN_AFTER_SPLIT) as u64).as_new_fixed_size_bytes()
-            );
-        }
-
-        node.merge_min_len(right, &mut buf);
-
-        for i in 0..CAPACITY {
-            let k = node.read_key_buf(i);
-            let v = node.read_value_buf(i);
-
-            assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
-            assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
-        }
+        
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

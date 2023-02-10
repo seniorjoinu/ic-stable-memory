@@ -129,8 +129,18 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> SLogIter<'_, T> {
+    pub fn rev_iter(&self) -> SLogIter<'_, T> {
         SLogIter::new(self)
+    }
+
+    pub fn from_std(mut vec: Vec<T>) -> Result<Self, OutOfMemory> {
+        let mut slog = Self::new();
+
+        for _ in 0..vec.len() {
+            slog.push(vec.remove(0))?;
+        }
+
+        Ok(slog)
     }
 
     fn find_sector_for_idx(&self, idx: u64) -> Option<(Sector<T>, u64)> {
@@ -242,6 +252,18 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         *sector = new_sector;
 
         Ok(())
+    }
+}
+
+impl<T: StableType + AsFixedSizeBytes> From<SLog<T>> for Vec<T> {
+    fn from(mut slog: SLog<T>) -> Self {
+        let mut vec = Self::new();
+
+        while let Some(it) = slog.pop() {
+            vec.insert(0, it);
+        }
+
+        vec
     }
 }
 
@@ -483,68 +505,73 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::log::SLog;
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
 
     #[test]
     fn works_fine() {
         stable::clear();
         stable_memory_init();
 
-        let mut log = SLog::new();
+        {
+            let mut log = SLog::new();
 
-        assert!(log.is_empty());
+            assert!(log.is_empty());
 
-        println!();
-        println!("PUSHES");
+            println!();
+            println!("PUSHES");
 
-        for i in 0..100 {
-            log.debug_print();
+            for i in 0..100 {
+                log.debug_print();
 
-            log.push(i);
+                log.push(i);
 
-            for j in 0..i {
-                assert_eq!(*log.get(j).unwrap(), j);
+                for j in 0..i {
+                    assert_eq!(*log.get(j).unwrap(), j);
+                }
             }
-        }
 
-        log.debug_print();
-
-        assert_eq!(log.len(), 100);
-        for i in 0..100 {
-            assert_eq!(*log.get(i).unwrap(), i);
-        }
-
-        println!();
-        println!("POPS");
-
-        for i in (20..100).rev() {
-            assert_eq!(log.pop().unwrap(), i);
             log.debug_print();
+
+            assert_eq!(log.len(), 100);
+            for i in 0..100 {
+                assert_eq!(*log.get(i).unwrap(), i);
+            }
+
+            println!();
+            println!("POPS");
+
+            for i in (20..100).rev() {
+                assert_eq!(log.pop().unwrap(), i);
+                log.debug_print();
+            }
+
+            println!();
+            println!("PUSHES again");
+
+            assert_eq!(log.len(), 20);
+            for i in 20..100 {
+                log.push(i);
+                log.debug_print();
+            }
+
+            for i in 0..100 {
+                assert_eq!(*log.get(i).unwrap(), i);
+            }
+
+            println!();
+            println!("POPS again");
+
+            for i in (0..100).rev() {
+                assert_eq!(log.pop().unwrap(), i);
+                log.debug_print();
+            }
+
+            assert!(log.pop().is_none());
+            assert!(log.is_empty());
         }
 
-        println!();
-        println!("PUSHES again");
-
-        assert_eq!(log.len(), 20);
-        for i in 20..100 {
-            log.push(i);
-            log.debug_print();
-        }
-
-        for i in 0..100 {
-            assert_eq!(*log.get(i).unwrap(), i);
-        }
-
-        println!();
-        println!("POPS again");
-
-        for i in (0..100).rev() {
-            assert_eq!(log.pop().unwrap(), i);
-            log.debug_print();
-        }
-
-        assert!(log.pop().is_none());
-        assert!(log.is_empty());
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -552,21 +579,26 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut log = SLog::new();
+        {
+            let mut log = SLog::new();
 
-        for i in 0..100 {
-            log.push(i);
+            for i in 0..100 {
+                log.push(i);
+            }
+
+            let mut j = 99;
+
+            log.debug_print();
+
+            for mut i in log.rev_iter() {
+                assert_eq!(*i, j);
+                j -= 1;
+            }
+
+            log.debug_print();
         }
 
-        let mut j = 99;
-
-        log.debug_print();
-
-        for mut i in log.iter() {
-            assert_eq!(*i, j);
-            j -= 1;
-        }
-
-        log.debug_print();
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

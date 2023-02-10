@@ -251,7 +251,7 @@ impl<'a, T: AsDynSizeBytes + StableType> Deref for SBoxRef<'a, T> {
 #[cfg(test)]
 mod tests {
     use crate::primitive::s_box::SBox;
-    use crate::{stable, stable_memory_init};
+    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
     use std::cmp::Ordering;
     use std::ops::Deref;
 
@@ -260,20 +260,25 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut sbox1 = SBox::new(10).unwrap();
-        let mut sbox11 = SBox::new(10).unwrap();
-        let mut sbox2 = SBox::new(20).unwrap();
+        {
+            let mut sbox1 = SBox::new(10).unwrap();
+            let mut sbox11 = SBox::new(10).unwrap();
+            let mut sbox2 = SBox::new(20).unwrap();
 
-        assert_eq!(sbox1.get().deref(), &10);
-        assert_eq!(*sbox1.get(), 10);
+            assert_eq!(sbox1.get().deref(), &10);
+            assert_eq!(*sbox1.get(), 10);
 
-        assert!(sbox1 < sbox2);
-        assert!(sbox2 > sbox1);
-        assert_eq!(sbox1, sbox11);
+            assert!(sbox1 < sbox2);
+            assert!(sbox2 > sbox1);
+            assert_eq!(sbox1, sbox11);
 
-        println!("{:?}", sbox1);
+            println!("{:?}", sbox1);
 
-        let sbox = SBox::<i32>::new(i32::default()).unwrap();
-        assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
+            let sbox = SBox::<i32>::new(i32::default()).unwrap();
+            assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

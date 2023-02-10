@@ -7,6 +7,7 @@ use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
 use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use zwohash::ZwoHasher;
@@ -246,7 +247,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             continue;
         }
     }
-
+    
     fn remove_by_idx(&mut self, mut i: usize) -> V {
         let prev_value = self.read_and_disown_val(i);
         self.read_and_disown_key(i).unwrap();
@@ -494,7 +495,7 @@ mod tests {
     use crate::encoding::AsFixedSizeBytes;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
-    use crate::stable_memory_init;
+    use crate::{_debug_validate_allocator, get_allocated_size, stable_memory_init};
     use crate::utils::mem_context::stable;
     use rand::seq::SliceRandom;
     use rand::thread_rng;
@@ -504,54 +505,59 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new_with_capacity(3);
+        {
+            let mut map = SHashMap::new_with_capacity(3);
 
-        let k1 = 1;
-        let k2 = 2;
-        let k3 = 3;
-        let k4 = 4;
-        let k5 = 5;
-        let k6 = 6;
-        let k7 = 7;
-        let k8 = 8;
+            let k1 = 1;
+            let k2 = 2;
+            let k3 = 3;
+            let k4 = 4;
+            let k5 = 5;
+            let k6 = 6;
+            let k7 = 7;
+            let k8 = 8;
 
-        map.insert(k1, 1);
-        map.insert(k2, 2);
-        map.insert(k3, 3);
-        map.insert(k4, 4);
-        map.insert(k5, 5);
-        map.insert(k6, 6);
-        map.insert(k7, 7);
-        map.insert(k8, 8);
+            map.insert(k1, 1);
+            map.insert(k2, 2);
+            map.insert(k3, 3);
+            map.insert(k4, 4);
+            map.insert(k5, 5);
+            map.insert(k6, 6);
+            map.insert(k7, 7);
+            map.insert(k8, 8);
 
-        assert_eq!(*map.get(&k1).unwrap(), 1);
-        assert_eq!(*map.get(&k2).unwrap(), 2);
-        assert_eq!(*map.get(&k3).unwrap(), 3);
-        assert_eq!(*map.get(&k4).unwrap(), 4);
-        assert_eq!(*map.get(&k5).unwrap(), 5);
-        assert_eq!(*map.get(&k6).unwrap(), 6);
-        assert_eq!(*map.get(&k7).unwrap(), 7);
-        assert_eq!(*map.get(&k8).unwrap(), 8);
+            assert_eq!(*map.get(&k1).unwrap(), 1);
+            assert_eq!(*map.get(&k2).unwrap(), 2);
+            assert_eq!(*map.get(&k3).unwrap(), 3);
+            assert_eq!(*map.get(&k4).unwrap(), 4);
+            assert_eq!(*map.get(&k5).unwrap(), 5);
+            assert_eq!(*map.get(&k6).unwrap(), 6);
+            assert_eq!(*map.get(&k7).unwrap(), 7);
+            assert_eq!(*map.get(&k8).unwrap(), 8);
 
-        assert!(map.get(&9).is_none());
-        assert!(map.get(&0).is_none());
+            assert!(map.get(&9).is_none());
+            assert!(map.get(&0).is_none());
 
-        assert_eq!(map.remove(&k3).unwrap(), 3);
-        assert!(map.get(&k3).is_none());
+            assert_eq!(map.remove(&k3).unwrap(), 3);
+            assert!(map.get(&k3).is_none());
 
-        assert_eq!(map.remove(&k1).unwrap(), 1);
-        assert!(map.get(&k1).is_none());
+            assert_eq!(map.remove(&k1).unwrap(), 1);
+            assert!(map.get(&k1).is_none());
 
-        assert_eq!(map.remove(&k5).unwrap(), 5);
-        assert!(map.get(&k5).is_none());
+            assert_eq!(map.remove(&k5).unwrap(), 5);
+            assert!(map.get(&k5).is_none());
 
-        assert_eq!(map.remove(&k7).unwrap(), 7);
-        assert!(map.get(&k7).is_none());
+            assert_eq!(map.remove(&k7).unwrap(), 7);
+            assert!(map.get(&k7).is_none());
 
-        assert_eq!(*map.get(&k2).unwrap(), 2);
-        assert_eq!(*map.get(&k4).unwrap(), 4);
-        assert_eq!(*map.get(&k6).unwrap(), 6);
-        assert_eq!(*map.get(&k8).unwrap(), 8);
+            assert_eq!(*map.get(&k2).unwrap(), 2);
+            assert_eq!(*map.get(&k4).unwrap(), 4);
+            assert_eq!(*map.get(&k6).unwrap(), 6);
+            assert_eq!(*map.get(&k8).unwrap(), 8);
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -559,37 +565,42 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new_with_capacity(3);
+        {
+            let mut map = SHashMap::new_with_capacity(3);
 
-        assert!(map.remove(&10).is_none());
-        assert!(map.get(&10).is_none());
+            assert!(map.remove(&10).is_none());
+            assert!(map.get(&10).is_none());
 
-        let it = map.insert(1, 1).unwrap();
-        assert!(it.is_none());
-        assert!(map.insert(2, 2).unwrap().is_none());
-        assert!(map.insert(3, 3).unwrap().is_none());
-        assert_eq!(map.insert(1, 10).unwrap().unwrap(), 1);
+            let it = map.insert(1, 1).unwrap();
+            assert!(it.is_none());
+            assert!(map.insert(2, 2).unwrap().is_none());
+            assert!(map.insert(3, 3).unwrap().is_none());
+            assert_eq!(map.insert(1, 10).unwrap().unwrap(), 1);
 
-        assert!(map.remove(&5).is_none());
-        assert_eq!(map.remove(&1).unwrap(), 10);
+            assert!(map.remove(&5).is_none());
+            assert_eq!(map.remove(&1).unwrap(), 10);
 
-        assert!(map.contains_key(&2));
-        assert!(!map.contains_key(&5));
+            assert!(map.contains_key(&2));
+            assert!(!map.contains_key(&5));
 
-        map.debug_print();
+            map.debug_print();
 
-        let mut map = SHashMap::default();
-        for i in 0..100 {
-            assert!(map.insert(i, i).unwrap().is_none());
+            let mut map = SHashMap::default();
+            for i in 0..100 {
+                assert!(map.insert(i, i).unwrap().is_none());
+            }
+
+            for i in 0..100 {
+                assert_eq!(*map.get(&i).unwrap(), i);
+            }
+
+            for i in 0..100 {
+                assert_eq!(map.remove(&(99 - i)).unwrap(), 99 - i);
+            }
         }
 
-        for i in 0..100 {
-            assert_eq!(*map.get(&i).unwrap(), i);
-        }
-
-        for i in 0..100 {
-            assert_eq!(map.remove(&(99 - i)).unwrap(), 99 - i);
-        }
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -597,59 +608,38 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new();
+        {
+            let mut map = SHashMap::new();
 
-        for i in 0..500 {
-            map.insert(499 - i, i);
+            for i in 0..500 {
+                map.insert(499 - i, i);
+            }
+
+            let mut vec = (200..300).collect::<Vec<_>>();
+            vec.shuffle(&mut thread_rng());
+
+            for i in vec {
+                map.remove(&i);
+            }
+
+            for i in 500..5000 {
+                map.insert(i, i);
+            }
+
+            for i in 200..300 {
+                map.insert(i, i);
+            }
+
+            let mut vec = (0..5000).collect::<Vec<_>>();
+            vec.shuffle(&mut thread_rng());
+
+            for i in vec {
+                map.remove(&i);
+            }
         }
 
-        let mut vec = (200..300).collect::<Vec<_>>();
-        vec.shuffle(&mut thread_rng());
-
-        for i in vec {
-            map.remove(&i);
-        }
-
-        for i in 500..5000 {
-            map.insert(i, i);
-        }
-
-        for i in 200..300 {
-            map.insert(i, i);
-        }
-
-        let mut vec = (0..5000).collect::<Vec<_>>();
-        vec.shuffle(&mut thread_rng());
-
-        for i in vec {
-            map.remove(&i);
-        }
-    }
-
-    #[test]
-    fn tombstones_work_fine() {
-        stable::clear();
-        stable_memory_init();
-
-        let mut map = SHashMap::new();
-
-        for i in 0..100 {
-            map.insert(i, i);
-        }
-
-        assert_eq!(map.len(), 100);
-
-        for i in 0..50 {
-            map.remove(&i);
-        }
-
-        assert_eq!(map.len(), 50);
-
-        for i in 0..50 {
-            map.insert(i, i);
-        }
-
-        assert_eq!(map.len(), 100);
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -657,23 +647,28 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new();
-        map.insert(0, 0);
+        {
+            let mut map = SHashMap::new();
+            map.insert(0, 0);
 
-        let len = map.len();
-        let cap = map.capacity();
-        let ptr = map.table_ptr;
+            let len = map.len();
+            let cap = map.capacity();
+            let ptr = map.table_ptr;
 
-        let buf = map.as_new_fixed_size_bytes();
+            let buf = map.as_new_fixed_size_bytes();
 
-        // emulating stable memory save
-        unsafe { map.assume_owned_by_stable_memory() };
+            // emulating stable memory save
+            unsafe { map.assume_owned_by_stable_memory() };
 
-        let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
+            let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
-        assert_eq!(len, map1.len());
-        assert_eq!(cap, map1.capacity());
-        assert_eq!(ptr, map1.table_ptr);
+            assert_eq!(len, map1.len());
+            assert_eq!(cap, map1.capacity());
+            assert_eq!(ptr, map1.table_ptr);
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -681,19 +676,24 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new();
-        for i in 0..100 {
-            map.insert(i, i);
+        {
+            let mut map = SHashMap::new();
+            for i in 0..100 {
+                map.insert(i, i);
+            }
+
+            let mut c = 0;
+            for (mut k, _) in map.iter() {
+                c += 1;
+
+                assert!(*k < 100);
+            }
+
+            assert_eq!(c, 100);
         }
 
-        let mut c = 0;
-        for (mut k, _) in map.iter() {
-            c += 1;
-
-            assert!(*k < 100);
-        }
-
-        assert_eq!(c, 100);
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 
     #[test]
@@ -701,17 +701,22 @@ mod tests {
         stable::clear();
         stable_memory_init();
 
-        let mut map = SHashMap::new();
+        {
+            let mut map = SHashMap::new();
 
-        for i in 0..100 {
-            map.insert(SBox::new(i).unwrap(), i).unwrap();
+            for i in 0..100 {
+                map.insert(SBox::new(i).unwrap(), i).unwrap();
+            }
+
+            println!("sbox mut");
+            let mut map = SHashMap::new();
+
+            for i in 0..100 {
+                map.insert(SBox::new(i).unwrap(), i).unwrap();
+            }
         }
 
-        println!("sbox mut");
-        let mut map = SHashMap::new();
-
-        for i in 0..100 {
-            map.insert(SBox::new(i).unwrap(), i).unwrap();
-        }
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
     }
 }

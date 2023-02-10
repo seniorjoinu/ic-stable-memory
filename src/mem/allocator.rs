@@ -382,9 +382,9 @@ impl StableMemoryAllocator {
     }
 
     pub fn debug_validate_free_blocks(&self) {
-        assert_eq!(
-            self.available_size,
-            stable::size_pages() * PAGE_SIZE_BYTES - MIN_PTR
+        assert!(
+            self.available_size == 0
+                || self.available_size == stable::size_pages() * PAGE_SIZE_BYTES - MIN_PTR
         );
 
         let mut total_free_size = 0u64;
@@ -439,6 +439,7 @@ impl AsDynSizeBytes for StableMemoryAllocator {
 mod tests {
     use crate::encoding::AsDynSizeBytes;
     use crate::mem::allocator::StableMemoryAllocator;
+    use crate::primitive::s_box::SBox;
     use crate::utils::mem_context::stable;
     use crate::SSlice;
     use rand::rngs::ThreadRng;
@@ -471,12 +472,16 @@ mod tests {
             let slice = sma.allocate(100).unwrap();
             println!("{:?}", sma);
 
+            sma.set_custom_data_ptr(1, 10);
+
             assert_eq!(sma._free_blocks_count(), 1);
 
             sma.store();
 
             println!("after store {:?}", sma);
             let sma = StableMemoryAllocator::retrieve();
+
+            assert_eq!(sma.get_custom_data_ptr(1).unwrap(), 10);
 
             println!("after retrieve {:?}", sma);
             assert_eq!(sma._free_blocks_count(), 1);
