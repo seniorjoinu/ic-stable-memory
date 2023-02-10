@@ -116,8 +116,8 @@ mod tests {
     use crate::encoding::AsFixedSizeBytes;
     use crate::mem::allocator::MIN_PTR;
     use crate::mem::s_slice::SSlice;
+    use crate::mem::StablePtr;
     use crate::utils::mem_context::stable;
-    use crate::StablePtr;
 
     #[test]
     fn read_write_work_fine() {

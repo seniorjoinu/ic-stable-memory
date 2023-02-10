@@ -505,7 +505,14 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
 #[cfg(test)]
 mod tests {
     use crate::collections::log::SLog;
-    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
+    use crate::utils::test::generate_random_string;
+    use crate::{
+        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
+        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        store_custom_data, SBox,
+    };
+    use rand::rngs::ThreadRng;
+    use rand::{thread_rng, Rng};
 
     #[test]
     fn works_fine() {
@@ -599,6 +606,94 @@ mod tests {
         }
 
         _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    enum Action {
+        Push,
+        Pop,
+        CanisterUpgrade,
+    }
+
+    struct Fuzzer {
+        state: Option<SLog<SBox<String>>>,
+        example: Vec<String>,
+        rng: ThreadRng,
+        log: Vec<Action>,
+    }
+
+    impl Fuzzer {
+        fn new() -> Self {
+            Self {
+                state: Some(SLog::default()),
+                example: Vec::default(),
+                rng: thread_rng(),
+                log: Vec::default(),
+            }
+        }
+
+        fn it(&mut self) -> &mut SLog<SBox<String>> {
+            self.state.as_mut().unwrap()
+        }
+
+        fn next(&mut self) {
+            let action = self.rng.gen_range(0..100);
+
+            match action {
+                // PUSH ~60%
+                0..=60 => {
+                    let str = generate_random_string(&mut self.rng);
+
+                    self.it().push(SBox::new(str.clone()).unwrap());
+                    self.example.push(str);
+
+                    self.log.push(Action::Push);
+                }
+                // POP ~30%
+                61..=90 => {
+                    self.it().pop();
+                    self.example.pop();
+
+                    self.log.push(Action::Pop)
+                }
+                // CANISTER UPGRADE ~10%
+                _ => {
+                    store_custom_data(1, SBox::new(self.state.take().unwrap()).unwrap());
+
+                    stable_memory_pre_upgrade();
+                    stable_memory_post_upgrade();
+
+                    self.state = retrieve_custom_data(1).map(|it| it.into_inner());
+
+                    self.log.push(Action::CanisterUpgrade);
+                }
+            }
+
+            _debug_validate_allocator();
+            assert_eq!(self.it().len(), self.example.len() as u64);
+
+            for i in 0..self.it().len() {
+                assert_eq!(
+                    self.it().get(i).unwrap().get().clone(),
+                    self.example.get(i as usize).unwrap().clone()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fuzzer_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
         assert_eq!(get_allocated_size(), 0);
     }
 }

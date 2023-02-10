@@ -1,8 +1,8 @@
-use crate::mem::s_slice::SSlice;
-
 pub mod certification;
 pub mod math;
 pub mod mem_context;
+#[cfg(test)]
+pub mod test;
 
 #[cfg(target_family = "wasm")]
 use ic_cdk::print;

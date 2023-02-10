@@ -11,12 +11,15 @@ pub mod mem;
 pub mod primitive;
 pub mod utils;
 
-/// ПРОВЕРИТЬ МЕМОРИ ЛИКИ
+use crate::encoding::AsDynSizeBytes;
 /// ПРОВЕРИТЬ ТУДУХИ
+/// ПРОВЕРИТЬ ГЕТ-МУТ
 /// ФАЗЗЕРЫ ДЛЯ ВСЕГО
+/// ОБЩИЙ ФАЗЗЕР НА БОЛЬШОЙ СТЕЙТ ИЗ ВСЕГО ПОДРЯД
 /// ПРОВЕРИТЬ СЕРТИФАЙД АССЕТС
 /// НАПИСАТЬ ДОКУМЕНТАЦИЮ + ПОМЕТИТЬ ФИКСМИ
-use crate::mem::StablePtr;
+use crate::primitive::s_box::SBox;
+use crate::primitive::StableType;
 pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
 use crate::utils::isoprint;
@@ -146,10 +149,10 @@ pub fn get_available_size() -> u64 {
 }
 
 #[inline]
-pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) -> Option<StablePtr> {
+pub fn store_custom_data<T: StableType + AsDynSizeBytes>(idx: usize, data: SBox<T>) {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.set_custom_data_ptr(idx, data_ptr)
+            alloc.store_custom_data(idx, data)
         } else {
             unreachable!("StableMemoryAllocator is not initialized");
         }
@@ -157,10 +160,10 @@ pub fn set_custom_data_ptr(idx: usize, data_ptr: StablePtr) -> Option<StablePtr>
 }
 
 #[inline]
-pub fn get_custom_data_ptr(idx: usize) -> Option<StablePtr> {
+pub fn retrieve_custom_data<T: StableType + AsDynSizeBytes>(idx: usize) -> Option<SBox<T>> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_custom_data_ptr(idx)
+        if let Some(alloc) = &mut *it.borrow_mut() {
+            alloc.retrieve_custom_data(idx)
         } else {
             unreachable!("StableMemoryAllocator is not initialized");
         }
@@ -218,9 +221,9 @@ pub fn stable_memory_post_upgrade() {
 #[cfg(test)]
 mod tests {
     use crate::{
-        _debug_print_allocator, allocate, deallocate, get_allocated_size, get_custom_data_ptr,
-        get_free_size, init_allocator, reallocate, set_custom_data_ptr, stable_memory_init,
-        stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        _debug_print_allocator, allocate, deallocate, get_allocated_size, get_free_size,
+        init_allocator, reallocate, retrieve_custom_data, stable_memory_init,
+        stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data, SBox,
     };
     use crate::{deinit_allocator, reinit_allocator, SSlice};
 
@@ -239,9 +242,9 @@ mod tests {
 
         _debug_print_allocator();
 
-        assert_eq!(get_custom_data_ptr(1), None);
-        set_custom_data_ptr(1, 100);
-        assert_eq!(get_custom_data_ptr(1), Some(100));
+        assert_eq!(retrieve_custom_data::<u64>(1), None);
+        store_custom_data(1, SBox::new(100u64).unwrap());
+        assert_eq!(retrieve_custom_data::<u64>(1).unwrap().into_inner(), 100);
 
         _debug_print_allocator();
     }
@@ -299,13 +302,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn get_custom_data_without_allocator_should_panic() {
-        get_custom_data_ptr(0);
+        retrieve_custom_data::<u64>(0);
     }
 
     #[test]
     #[should_panic]
     fn set_custom_data_without_allocator_should_panic() {
-        set_custom_data_ptr(0, 0);
+        store_custom_data(0, SBox::new(0).unwrap());
     }
 
     #[test]

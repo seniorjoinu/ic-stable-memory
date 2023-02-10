@@ -3,6 +3,8 @@ use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::mem::free_block::FreeBlock;
 use crate::mem::s_slice::SSlice;
 use crate::mem::StablePtr;
+use crate::primitive::s_box::SBox;
+use crate::primitive::StableType;
 use crate::utils::math::ceil_div;
 use crate::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use candid::{encode_one, CandidType, Deserialize};
@@ -239,13 +241,25 @@ impl StableMemoryAllocator {
     }
 
     #[inline]
-    pub fn set_custom_data_ptr(&mut self, idx: usize, ptr: StablePtr) -> Option<StablePtr> {
-        self.custom_data_pointers.insert(idx, ptr)
+    pub fn store_custom_data<T: AsDynSizeBytes + StableType>(
+        &mut self,
+        idx: usize,
+        mut data: SBox<T>,
+    ) {
+        unsafe { data.assume_owned_by_stable_memory() };
+
+        self.custom_data_pointers.insert(idx, data.as_ptr());
     }
 
     #[inline]
-    pub fn get_custom_data_ptr(&self, idx: usize) -> Option<StablePtr> {
-        self.custom_data_pointers.get(&idx).cloned()
+    pub fn retrieve_custom_data<T: AsDynSizeBytes + StableType>(
+        &mut self,
+        idx: usize,
+    ) -> Option<SBox<T>> {
+        let mut b = unsafe { SBox::from_ptr(self.custom_data_pointers.remove(&idx)?) };
+        unsafe { b.assume_not_owned_by_stable_memory() };
+
+        Some(b)
     }
 
     #[inline]
@@ -472,16 +486,16 @@ mod tests {
             let slice = sma.allocate(100).unwrap();
             println!("{:?}", sma);
 
-            sma.set_custom_data_ptr(1, 10);
+            sma.store_custom_data(1, SBox::new(10u64).unwrap());
 
             assert_eq!(sma._free_blocks_count(), 1);
 
             sma.store();
 
             println!("after store {:?}", sma);
-            let sma = StableMemoryAllocator::retrieve();
+            let mut sma = StableMemoryAllocator::retrieve();
 
-            assert_eq!(sma.get_custom_data_ptr(1).unwrap(), 10);
+            assert_eq!(sma.retrieve_custom_data::<u64>(1).unwrap().into_inner(), 10);
 
             println!("after retrieve {:?}", sma);
             assert_eq!(sma._free_blocks_count(), 1);
@@ -516,6 +530,8 @@ mod tests {
         Dealloc(SSlice),
         Realloc(SSlice, SSlice),
         ReallocOOM(u64),
+        CanisterUpgrade,
+        CanisterUpgradeOOM,
     }
 
     struct Fuzzer {
@@ -577,7 +593,7 @@ mod tests {
                     self.allocator.deallocate(slice);
                 }
                 // REALLOCATE ~ 25%
-                _ => {
+                76..=98 => {
                     if self.slices.len() < 2 {
                         return self.next();
                     }
@@ -606,6 +622,16 @@ mod tests {
                         self.log.push(Action::ReallocOOM(size));
                     }
                 }
+                // CANISTER UPGRADE ~1%
+                _ => {
+                    if self.allocator.store().is_ok() {
+                        self.allocator = StableMemoryAllocator::retrieve();
+
+                        self.log.push(Action::CanisterUpgrade);
+                    } else {
+                        self.log.push(Action::CanisterUpgradeOOM);
+                    }
+                }
             };
 
             let res = std::panic::catch_unwind(|| {
@@ -618,7 +644,6 @@ mod tests {
 
             if res.is_err() {
                 panic!("{:?} {:?}", self.log.last().unwrap(), self.allocator);
-                //panic!("Error happened: {:?}", self.log);
             }
         }
     }
@@ -631,6 +656,16 @@ mod tests {
 
         for i in 0..10_000 {
             fuzzer.next();
+        }
+
+        for action in &fuzzer.log {
+            match action {
+                Action::Alloc(_)
+                | Action::Realloc(_, _)
+                | Action::Dealloc(_)
+                | Action::CanisterUpgrade => {}
+                _ => panic!("Fuzzer cant OOM here"),
+            }
         }
 
         let mut fuzzer = Fuzzer::new(30);

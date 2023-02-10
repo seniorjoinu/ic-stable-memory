@@ -376,12 +376,17 @@ mod tests {
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
+    use crate::utils::test::generate_random_string;
     use crate::{
-        _debug_print_allocator, _debug_validate_allocator, deinit_allocator, get_allocated_size,
-        stable_memory_init,
+        _debug_print_allocator, _debug_validate_allocator, get_allocated_size,
+        retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
+        stable_memory_pre_upgrade, store_custom_data,
     };
+    use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
     use rand::{thread_rng, Rng};
+    use std::fmt::Debug;
+    use std::ops::Deref;
 
     #[derive(Copy, Clone, Debug)]
     struct Test {
@@ -733,6 +738,176 @@ mod tests {
         }
 
         _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[derive(Debug)]
+    enum Action {
+        Push,
+        Pop,
+        Insert(usize),
+        Remove(usize),
+        Swap(usize, usize),
+        Replace(usize),
+        CanisterUpgrade,
+    }
+
+    struct Fuzzer {
+        vec: Option<SVec<SBox<String>>>,
+        example: Vec<String>,
+        rng: ThreadRng,
+        log: Vec<Action>,
+    }
+
+    impl Fuzzer {
+        fn new() -> Self {
+            Self {
+                vec: Some(SVec::default()),
+                example: Vec::default(),
+                rng: thread_rng(),
+                log: Vec::default(),
+            }
+        }
+
+        fn vec(&mut self) -> &mut SVec<SBox<String>> {
+            self.vec.as_mut().unwrap()
+        }
+
+        fn next(&mut self) {
+            let action = self.rng.gen_range(0..1000);
+
+            match action {
+                // PUSH ~25%
+                0..=250 => {
+                    let str = generate_random_string(&mut self.rng);
+
+                    self.vec().push(SBox::new(str.clone()).unwrap()).unwrap();
+                    self.example.push(str.clone());
+
+                    self.log.push(Action::Push);
+                }
+                // INSERT ~25%
+                251..=500 => {
+                    let len = self.vec().len();
+
+                    let str = generate_random_string(&mut self.rng);
+                    let idx = if len == 0 {
+                        0
+                    } else {
+                        self.rng.gen_range(0..len + 1)
+                    };
+
+                    self.vec()
+                        .insert(idx, SBox::new(str.clone()).unwrap())
+                        .unwrap();
+                    self.example.insert(idx, str.clone());
+
+                    self.log.push(Action::Insert(idx));
+                }
+                // POP ~10%
+                501..=600 => {
+                    self.vec().pop();
+                    self.example.pop();
+
+                    self.log.push(Action::Pop);
+                }
+                // REMOVE ~10%
+                601..=700 => {
+                    let len = self.vec().len();
+
+                    if len == 0 {
+                        return self.next();
+                    }
+
+                    let idx = if len == 1 {
+                        0
+                    } else {
+                        self.rng.gen_range(0..len)
+                    };
+
+                    self.vec().remove(idx);
+                    self.example.remove(idx);
+
+                    self.log.push(Action::Remove(idx));
+                }
+                // SWAP ~10%
+                701..=800 => {
+                    let len = self.vec().len();
+
+                    if len < 2 {
+                        return self.next();
+                    }
+
+                    let mut idx1 = self.rng.gen_range(0..len);
+                    let mut idx2 = self.rng.gen_range(0..len);
+
+                    if idx1 == idx2 {
+                        if idx2 < len - 1 {
+                            idx2 += 1;
+                        } else {
+                            idx2 -= 1;
+                        }
+                    }
+
+                    self.vec().swap(idx1, idx2);
+                    self.example.swap(idx1, idx2);
+
+                    self.log.push(Action::Swap(idx1, idx2));
+                }
+                // REPLACE ~10%
+                801..=900 => {
+                    let len = self.vec().len();
+
+                    if len == 0 {
+                        return self.next();
+                    }
+
+                    let idx = self.rng.gen_range(0..len);
+                    let str = generate_random_string(&mut self.rng);
+
+                    self.vec().replace(idx, SBox::new(str.clone()).unwrap());
+                    std::mem::replace(self.example.get_mut(idx).unwrap(), str.clone());
+
+                    self.log.push(Action::Replace(idx));
+                }
+                // CANISTER UPGRADE
+                _ => {
+                    store_custom_data(1, SBox::new(self.vec.take().unwrap()).unwrap());
+
+                    stable_memory_pre_upgrade();
+                    stable_memory_post_upgrade();
+
+                    self.vec = retrieve_custom_data(1).map(|it| it.into_inner());
+
+                    self.log.push(Action::CanisterUpgrade);
+                }
+            }
+
+            _debug_validate_allocator();
+            assert_eq!(self.vec().len(), self.example.len());
+
+            for i in 0..self.vec().len() {
+                assert_eq!(
+                    self.vec().get(i).unwrap().get().deref().clone(),
+                    self.example.get(i).unwrap().clone()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fuzzer_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
         assert_eq!(get_allocated_size(), 0);
     }
 }
