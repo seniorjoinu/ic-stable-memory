@@ -1,4 +1,4 @@
-use crate::collections::hash_map::{SHashMap};
+use crate::collections::hash_map::SHashMap;
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::StableType;
@@ -27,6 +27,10 @@ impl<'a, K: StableType + AsFixedSizeBytes + Eq + Hash, V: StableType + AsFixedSi
     type Item = (SRef<'a, K>, SRef<'a, V>);
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.map.is_empty() {
+            return None;
+        }
+
         loop {
             if self.i == self.map.capacity() {
                 break None;
@@ -34,12 +38,12 @@ impl<'a, K: StableType + AsFixedSizeBytes + Eq + Hash, V: StableType + AsFixedSi
 
             if let Some(k) = self.map.get_key(self.i) {
                 let v = self.map.get_val(self.i);
-                
+
                 self.i += 1;
-                
+
                 return Some((k, v));
             }
-            
+
             self.i += 1;
         }
     }

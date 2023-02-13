@@ -98,6 +98,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
 
         loop {
             let ptr = SSlice::_offset(self.ptr, KEYS_OFFSET + (mid * K::SIZE) as u64);
+
             let key: K = unsafe { crate::mem::read_fixed_for_reference(ptr) };
 
             match key.borrow().cmp(k) {
@@ -307,6 +308,17 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         b
     }
 
+    pub fn read_key_as_reference(&self, idx: usize) -> K {
+        let k_buf = self.read_key_buf(idx);
+        let mut k = K::from_fixed_size_bytes(k_buf._deref());
+
+        unsafe {
+            k.assume_owned_by_stable_memory();
+        }
+
+        k
+    }
+
     #[inline]
     fn read_many_keys_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
         buf.resize(len * K::SIZE, 0);
@@ -452,10 +464,8 @@ impl<K: StableType + AsFixedSizeBytes + Ord + Debug> InternalBTreeNode<K> {
                 "*({}), ",
                 StablePtr::from_fixed_size_bytes(&self.read_child_ptr_buf(i))
             );
-            result += &format!(
-                "{:?}, ",
-                K::from_fixed_size_bytes(self.read_key_buf(i)._deref())
-            );
+
+            result += &format!("{:?}, ", self.read_key_as_reference(i));
         }
 
         result += &format!(
@@ -569,7 +579,7 @@ mod tests {
 
             node.destroy();
         }
-        
+
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }

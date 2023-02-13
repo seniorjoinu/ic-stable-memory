@@ -22,7 +22,7 @@ impl<'o, T: StableType + AsFixedSizeBytes> SRefMut<'o, T> {
     #[inline]
     unsafe fn read(&self) {
         if self.inner.is_none() {
-            let it = crate::mem::read_fixed_for_reference(self.ptr);
+            let it = crate::mem::read_and_disown_fixed(self.ptr);
             *(&self.inner as *const Option<T> as *mut Option<T>) = Some(it);
         }
     }

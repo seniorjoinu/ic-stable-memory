@@ -750,6 +750,7 @@ mod tests {
         Swap(usize, usize),
         Replace(usize),
         CanisterUpgrade,
+        GetMut(usize),
     }
 
     struct Fuzzer {
@@ -774,7 +775,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..1000);
+            let action = self.rng.gen_range(0..1100);
 
             match action {
                 // PUSH ~25%
@@ -869,6 +870,26 @@ mod tests {
                     std::mem::replace(self.example.get_mut(idx).unwrap(), str.clone());
 
                     self.log.push(Action::Replace(idx));
+                }
+                // GET MUT ~10%
+                901..=1000 => {
+                    let len = self.vec().len();
+
+                    if len == 0 {
+                        return self.next();
+                    }
+
+                    let idx = self.rng.gen_range(0..len);
+                    let str = generate_random_string(&mut self.rng);
+
+                    self.vec()
+                        .get_mut(idx)
+                        .unwrap()
+                        .with(|s| *s = str.clone())
+                        .unwrap();
+                    *self.example.get_mut(idx).unwrap() = str;
+
+                    self.log.push(Action::GetMut(idx));
                 }
                 // CANISTER UPGRADE
                 _ => {

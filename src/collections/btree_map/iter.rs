@@ -6,7 +6,6 @@ use crate::primitive::StableType;
 
 pub struct SBTreeMapIter<'a, K, V> {
     root: &'a Option<BTreeNode<K, V>>,
-    len: u64,
     node: Option<LeafBTreeNode<K, V>>,
     node_idx: usize,
     node_len: usize,
@@ -19,7 +18,6 @@ impl<'a, K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeByte
     pub(crate) fn new(map: &'a SBTreeMap<K, V>) -> Self {
         Self {
             root: &map.root,
-            len: map.len(),
             node: None,
             node_idx: 0,
             node_len: 0,
@@ -70,6 +68,11 @@ impl<'a, K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeByte
             };
 
             self.node_len = leaf.read_len();
+
+            if self.node_len == 0 {
+                return None;
+            }
+
             self.node_idx = 0;
             self.node = Some(leaf);
 

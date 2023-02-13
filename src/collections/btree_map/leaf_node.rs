@@ -130,18 +130,18 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         buf: &mut Vec<u8>,
     ) {
         if let Some((k, v)) = left_insert_last_element {
-            parent.write_key_buf(parent_idx, &k);
+            parent.write_key_buf(parent_idx, k);
 
-            self.insert_key(0, k, self_len, buf);
-            self.insert_value(0, v, self_len, buf);
+            self.insert_key_buf(0, k, self_len, buf);
+            self.insert_value_buf(0, v, self_len, buf);
         } else {
             let replace_key = left_sibling.read_key_buf(left_sibling_len - 1);
             let replace_value = left_sibling.read_value_buf(left_sibling_len - 1);
 
             parent.write_key_buf(parent_idx, &replace_key);
 
-            self.insert_key(0, &replace_key, self_len, buf);
-            self.insert_value(0, &replace_value, self_len, buf);
+            self.insert_key_buf(0, &replace_key, self_len, buf);
+            self.insert_value_buf(0, &replace_value, self_len, buf);
         }
     }
 
@@ -164,14 +164,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
             parent.write_key_buf(parent_idx, k);
         } else {
-            right_sibling.remove_key(0, right_sibling_len, buf);
-            right_sibling.remove_value(0, right_sibling_len, buf);
+            right_sibling.remove_key_buf(0, right_sibling_len, buf);
+            right_sibling.remove_value_buf(0, right_sibling_len, buf);
 
             parent.write_key_buf(parent_idx, &right_sibling.read_key_buf(0));
         };
 
-        self.push_key(&replace_key, self_len);
-        self.push_value(&replace_value, self_len);
+        self.push_key_buf(&replace_key, self_len);
+        self.push_value_buf(&replace_value, self_len);
     }
 
     #[allow(clippy::explicit_counter_loop)]
@@ -229,20 +229,20 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         self.read_and_disown_key(idx);
         let v = self.read_and_disown_value(idx);
 
-        self.remove_key(idx, len, buf);
-        self.remove_value(idx, len, buf);
+        self.remove_key_buf(idx, len, buf);
+        self.remove_value_buf(idx, len, buf);
 
         v
     }
 
     #[inline]
-    fn push_key(&mut self, key: &K::Buf, len: usize) {
+    fn push_key_buf(&mut self, key: &K::Buf, len: usize) {
         self.write_key_buf(len, key);
     }
 
-    pub fn insert_key(&mut self, idx: usize, key: &K::Buf, len: usize, buf: &mut Vec<u8>) {
+    pub fn insert_key_buf(&mut self, idx: usize, key: &K::Buf, len: usize, buf: &mut Vec<u8>) {
         if idx == len {
-            self.push_key(key, len);
+            self.push_key_buf(key, len);
             return;
         }
 
@@ -252,7 +252,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         self.write_key_buf(idx, key);
     }
 
-    fn remove_key(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
+    fn remove_key_buf(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
         if idx == len - 1 {
             return;
         }
@@ -262,13 +262,13 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     }
 
     #[inline]
-    fn push_value(&mut self, value: &V::Buf, len: usize) {
+    fn push_value_buf(&mut self, value: &V::Buf, len: usize) {
         self.write_value_buf(len, value);
     }
 
-    pub fn insert_value(&mut self, idx: usize, value: &V::Buf, len: usize, buf: &mut Vec<u8>) {
+    pub fn insert_value_buf(&mut self, idx: usize, value: &V::Buf, len: usize, buf: &mut Vec<u8>) {
         if idx == len {
-            self.push_value(value, len);
+            self.push_value_buf(value, len);
             return;
         }
 
@@ -278,7 +278,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         self.write_value_buf(idx, value);
     }
 
-    fn remove_value(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
+    fn remove_value_buf(&mut self, idx: usize, len: usize, buf: &mut Vec<u8>) {
         if idx == len - 1 {
             return;
         }
@@ -346,6 +346,17 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         buf
     }
 
+    pub fn read_key_as_reference(&self, idx: usize) -> K {
+        let k_buf = self.read_key_buf(idx);
+        let mut k = K::from_fixed_size_bytes(k_buf._deref());
+
+        unsafe {
+            k.assume_owned_by_stable_memory();
+        }
+
+        k
+    }
+
     #[inline]
     fn read_many_keys_to_buf(&self, from_idx: usize, len: usize, buf: &mut Vec<u8>) {
         buf.resize(len * K::SIZE, 0);
@@ -374,6 +385,17 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         unsafe { crate::mem::read_bytes(self.get_value_ptr(idx), b._deref_mut()) };
 
         b
+    }
+
+    pub fn read_value_as_reference(&self, idx: usize) -> V {
+        let v_buf = self.read_value_buf(idx);
+        let mut v = V::from_fixed_size_bytes(v_buf._deref());
+
+        unsafe {
+            v.assume_owned_by_stable_memory();
+        }
+
+        v
     }
 
     #[inline]
@@ -486,14 +508,8 @@ impl<K: StableType + AsFixedSizeBytes + Ord + Debug, V: StableType + AsFixedSize
     pub fn to_string(&self) -> String {
         let mut result = format!("LeafBTreeNode(&{}, {})[", self.as_ptr(), self.read_len());
         for i in 0..self.read_len() {
-            result += &format!(
-                "({:?}, ",
-                K::from_fixed_size_bytes(self.read_key_buf(i)._deref())
-            );
-            result += &format!(
-                "{:?})",
-                V::from_fixed_size_bytes(self.read_value_buf(i)._deref())
-            );
+            result += &format!("({:?}, ", self.read_key_as_reference(i));
+            result += &format!("{:?})", self.read_value_as_reference(i));
 
             if i < self.read_len() - 1 {
                 result += ", ";
@@ -523,8 +539,8 @@ mod tests {
             let mut buf = Vec::default();
 
             for i in 0..CAPACITY {
-                node.push_key(&(i as u64).as_new_fixed_size_bytes(), i);
-                node.push_value(&(i as u64).as_new_fixed_size_bytes(), i);
+                node.push_key_buf(&(i as u64).as_new_fixed_size_bytes(), i);
+                node.push_value_buf(&(i as u64).as_new_fixed_size_bytes(), i);
             }
 
             for i in 0..CAPACITY {
@@ -536,13 +552,13 @@ mod tests {
             }
 
             for i in (0..CAPACITY).rev() {
-                node.insert_key(
+                node.insert_key_buf(
                     0,
                     &(i as u64).as_new_fixed_size_bytes(),
                     CAPACITY - i - 1,
                     &mut buf,
                 );
-                node.insert_value(
+                node.insert_value_buf(
                     0,
                     &(i as u64).as_new_fixed_size_bytes(),
                     CAPACITY - i - 1,
@@ -557,14 +573,14 @@ mod tests {
                 let k = node.read_key_buf(i);
                 let v = node.read_value_buf(i);
 
-                node.remove_key(i, CAPACITY, &mut buf);
-                node.remove_value(i, CAPACITY, &mut buf);
+                node.remove_key_buf(i, CAPACITY, &mut buf);
+                node.remove_value_buf(i, CAPACITY, &mut buf);
 
                 assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
                 assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
 
-                node.insert_key(i, &k, CAPACITY - 1, &mut buf);
-                node.insert_value(i, &v, CAPACITY - 1, &mut buf);
+                node.insert_key_buf(i, &k, CAPACITY - 1, &mut buf);
+                node.insert_value_buf(i, &v, CAPACITY - 1, &mut buf);
             }
 
             let right = node.split_max_len(true, &mut buf, false).unwrap();
@@ -600,10 +616,10 @@ mod tests {
                 assert_eq!(k, (i as u64).as_new_fixed_size_bytes());
                 assert_eq!(v, (i as u64).as_new_fixed_size_bytes());
             }
-            
+
             node.destroy();
         }
-        
+
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }

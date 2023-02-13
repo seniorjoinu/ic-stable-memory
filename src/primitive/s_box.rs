@@ -7,7 +7,7 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 pub struct SBox<T: AsDynSizeBytes + StableType> {
     slice: Option<SSlice>,
@@ -81,10 +81,11 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
     }
 
     #[inline]
-    pub fn update(&mut self, it: T) -> Result<(), OutOfMemory> {
-        self.inner = Some(it);
+    pub fn with<R, F: FnOnce(&mut T) -> R>(&mut self, func: F) -> Result<R, OutOfMemory> {
+        let it = self.inner.as_mut().unwrap();
+        let res = func(it);
 
-        self.repersist()
+        self.repersist().map(|_| res)
     }
 
     fn repersist(&mut self) -> Result<(), OutOfMemory> {
@@ -205,7 +206,7 @@ impl<T: Ord + PartialOrd + AsDynSizeBytes + StableType> Ord for SBox<T> {
 impl<T: Hash + AsDynSizeBytes + StableType> Hash for SBox<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.inner.hash(state);
+        self.inner.as_ref().unwrap().hash(state);
     }
 }
 
@@ -213,7 +214,7 @@ impl<T: Debug + AsDynSizeBytes + StableType> Debug for SBox<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("SBox(")?;
 
-        self.inner.fmt(f)?;
+        self.inner.as_ref().unwrap().fmt(f)?;
 
         f.write_str(")")
     }

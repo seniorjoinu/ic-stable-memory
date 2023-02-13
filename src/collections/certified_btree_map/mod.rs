@@ -354,9 +354,15 @@ mod tests {
     use crate::utils::certification::{
         leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
-    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
+    use crate::utils::test::generate_random_string;
+    use crate::{
+        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
+        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        store_custom_data, SBox,
+    };
+    use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
+    use rand::{thread_rng, Rng};
 
     impl AsHashTree for u64 {
         fn root_hash(&self) -> Hash {
@@ -433,7 +439,7 @@ mod tests {
 
             map.debug_print();
         }
-        
+
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }
@@ -489,7 +495,7 @@ mod tests {
                 }
             }
         }
-        
+
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }
@@ -592,7 +598,7 @@ mod tests {
             let leaves = hash_tree_to_labeled_leaves(proof);
             assert!(leaves.is_empty());
         }
-        
+
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }
@@ -701,6 +707,188 @@ mod tests {
         }
 
         _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    impl AsHashTree for String {
+        fn root_hash(&self) -> Hash {
+            leaf_hash(&self.as_hashable_bytes())
+        }
+    }
+
+    impl AsHashableBytes for String {
+        fn as_hashable_bytes(&self) -> Vec<u8> {
+            self.as_bytes().to_vec()
+        }
+    }
+
+    #[derive(Debug)]
+    enum Action {
+        Insert,
+        Batch,
+        Remove,
+        CanisterUpgrade,
+    }
+
+    struct Fuzzer {
+        map: Option<SCertifiedBTreeMap<SBox<String>, SBox<String>>>,
+        keys: Vec<String>,
+        rng: ThreadRng,
+        log: Vec<Action>,
+    }
+
+    impl Fuzzer {
+        fn new() -> Fuzzer {
+            Fuzzer {
+                map: Some(SCertifiedBTreeMap::new()),
+                keys: Vec::new(),
+                rng: thread_rng(),
+                log: Vec::new(),
+            }
+        }
+
+        fn map(&mut self) -> &mut SCertifiedBTreeMap<SBox<String>, SBox<String>> {
+            self.map.as_mut().unwrap()
+        }
+
+        fn next(&mut self) {
+            let action = self.rng.gen_range(0..120);
+
+            match action {
+                // INSERT ~60%
+                0..=59 => {
+                    let key = generate_random_string(&mut self.rng);
+                    let value = generate_random_string(&mut self.rng);
+
+                    self.map()
+                        .insert_and_commit(
+                            SBox::new(key.clone()).unwrap(),
+                            SBox::new(value.clone()).unwrap(),
+                        )
+                        .unwrap();
+
+                    match self.keys.binary_search(&key) {
+                        Ok(idx) => {}
+                        Err(idx) => {
+                            self.keys.insert(idx, key);
+                        }
+                    };
+
+                    self.log.push(Action::Insert);
+                }
+                // REMOVE
+                60..=89 => {
+                    let len = self.map().len();
+
+                    if len == 0 {
+                        return self.next();
+                    }
+
+                    let idx: u64 = self.rng.gen_range(0..len);
+                    let key = self.keys.remove(idx as usize);
+
+                    self.map().remove_and_commit(&key).unwrap();
+
+                    self.log.push(Action::Remove);
+                }
+                // CANISTER UPGRADE
+                90..=99 => {
+                    store_custom_data(1, SBox::new(self.map.take().unwrap()).unwrap());
+
+                    stable_memory_pre_upgrade();
+                    stable_memory_post_upgrade();
+
+                    self.map =
+                        retrieve_custom_data::<SCertifiedBTreeMap<SBox<String>, SBox<String>>>(1)
+                            .map(|it| it.into_inner());
+
+                    self.log.push(Action::CanisterUpgrade);
+                }
+                // BATCH
+                _ => {
+                    let count = self.rng.gen_range(0..100);
+                    for i in 0..count {
+                        let act = self.rng.gen_range(0..10);
+                        match act {
+                            0..=7 => {
+                                let key = generate_random_string(&mut self.rng);
+                                let value = generate_random_string(&mut self.rng);
+
+                                self.map()
+                                    .insert(
+                                        SBox::new(key.clone()).unwrap(),
+                                        SBox::new(value.clone()).unwrap(),
+                                    )
+                                    .unwrap();
+
+                                match self.keys.binary_search(&key) {
+                                    Ok(idx) => {}
+                                    Err(idx) => {
+                                        self.keys.insert(idx, key);
+                                    }
+                                };
+                            }
+                            _ => {
+                                let len = self.map().len();
+
+                                if len == 0 {
+                                    continue;
+                                }
+
+                                let idx: u64 = self.rng.gen_range(0..len);
+                                let key = self.keys.remove(idx as usize);
+
+                                self.map().remove(&key).unwrap();
+                            }
+                        }
+
+                        self.map().commit();
+                        self.log.push(Action::Batch);
+                    }
+                }
+            }
+
+            _debug_validate_allocator();
+
+            let root_hash = self.map().root_hash();
+
+            for key in self.keys.clone() {
+                let witness = self
+                    .map()
+                    .witness_with(&key, |it| leaf(it.as_hashable_bytes()));
+
+                assert_eq!(witness.reconstruct(), root_hash);
+            }
+
+            for _ in 0..10 {
+                let k = generate_random_string(&mut self.rng);
+                let witness = self.map().prove_absence(&k);
+
+                assert_eq!(witness.reconstruct(), root_hash);
+
+                let k1 = generate_random_string(&mut self.rng);
+
+                let (max, min) = if k > k1 { (k, k1) } else { (k1, k) };
+
+                let witness = self.map().prove_range(&min, &max);
+                assert_eq!(witness.reconstruct(), root_hash);
+            }
+        }
+    }
+
+    #[test]
+    fn fuzzer_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..100 {
+                fuzzer.next();
+            }
+        }
+
         assert_eq!(get_allocated_size(), 0);
     }
 }

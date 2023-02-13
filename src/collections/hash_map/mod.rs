@@ -8,6 +8,7 @@ use crate::primitive::StableType;
 use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use zwohash::ZwoHasher;
@@ -93,8 +94,9 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
         loop {
             match self.get_key(i) {
+                // if there is already a key like that, don't even check for fullness - simply replace the value
                 Some(prev_key) => {
-                    if prev_key.eq(&key) {
+                    if (*prev_key).eq(&key) {
                         let prev_value = self.read_and_disown_val(i);
                         self.write_and_own_val(i, value);
 
@@ -247,21 +249,23 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             continue;
         }
     }
-    
-    fn remove_by_idx(&mut self, mut i: usize) -> V {
-        let prev_value = self.read_and_disown_val(i);
-        self.read_and_disown_key(i).unwrap();
 
-        let mut j = i;
+    fn remove_by_idx(&mut self, idx: usize) -> V {
+        let prev_value = self.read_and_disown_val(idx);
+        self.read_and_disown_key(idx).unwrap();
+
+        let mut i = idx;
+        let mut j = idx;
 
         loop {
             j = (j + 1) % self.capacity();
-            if j == i {
+            if j == idx {
                 break;
             }
 
-            if let Some(next_key) = self.read_and_disown_key(j) {
+            if let Some(next_key) = self.read_key_for_reference(j) {
                 let k = Self::hash(&next_key) % self.capacity();
+
                 if (j < i) ^ (k <= i) ^ (k > j) {
                     self.write_and_own_key(i, Some(next_key));
                     self.write_and_own_val(i, self.read_and_disown_val(j));
@@ -320,6 +324,17 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         match flag {
             EMPTY => None,
             OCCUPIED => Some(unsafe { crate::mem::read_and_disown_fixed(ptr + 1) }),
+            _ => unreachable!(),
+        }
+    }
+
+    fn read_key_for_reference(&self, idx: usize) -> Option<K> {
+        let ptr = self.get_key_flag_ptr(idx);
+        let flag: u8 = unsafe { crate::mem::read_fixed_for_reference(ptr) };
+
+        match flag {
+            EMPTY => None,
+            OCCUPIED => Some(unsafe { crate::mem::read_fixed_for_reference(ptr + 1) }),
             _ => unreachable!(),
         }
     }
@@ -404,6 +419,26 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             }
         }
         println!("]");
+    }
+}
+
+impl<
+        K: StableType + AsFixedSizeBytes + Hash + Eq + Debug,
+        V: StableType + AsFixedSizeBytes + Debug,
+    > Debug for SHashMap<K, V>
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("{")?;
+        for (idx, (k, v)) in self.iter().enumerate() {
+            k.fmt(f)?;
+            f.write_str(": ")?;
+            v.fmt(f)?;
+
+            if idx < self.len() - 1 {
+                f.write_str(", ")?;
+            }
+        }
+        f.write_str("}")
     }
 }
 
@@ -495,10 +530,17 @@ mod tests {
     use crate::encoding::AsFixedSizeBytes;
     use crate::primitive::s_box::SBox;
     use crate::primitive::StableType;
-    use crate::{_debug_validate_allocator, get_allocated_size, stable_memory_init};
     use crate::utils::mem_context::stable;
+    use crate::utils::test::generate_random_string;
+    use crate::{
+        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable_memory_init,
+        stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data,
+    };
+    use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
-    use rand::thread_rng;
+    use rand::{thread_rng, Rng};
+    use std::collections::HashMap;
+    use std::ops::Deref;
 
     #[test]
     fn simple_flow_works_well() {
@@ -717,6 +759,123 @@ mod tests {
         }
 
         _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[derive(Debug)]
+    enum Action {
+        Insert,
+        Remove,
+        CanisterUpgrade,
+    }
+
+    struct Fuzzer {
+        map: Option<SHashMap<SBox<String>, SBox<String>>>,
+        example: HashMap<String, String>,
+        keys: Vec<String>,
+        rng: ThreadRng,
+        log: Vec<Action>,
+    }
+
+    impl Fuzzer {
+        fn new() -> Fuzzer {
+            Fuzzer {
+                map: Some(SHashMap::new()),
+                example: HashMap::new(),
+                keys: Vec::new(),
+                rng: thread_rng(),
+                log: Vec::new(),
+            }
+        }
+
+        fn map(&mut self) -> &mut SHashMap<SBox<String>, SBox<String>> {
+            self.map.as_mut().unwrap()
+        }
+
+        fn next(&mut self) {
+            let action = self.rng.gen_range(0..100);
+
+            match action {
+                // INSERT ~60%
+                0..=59 => {
+                    let key = generate_random_string(&mut self.rng);
+                    let value = generate_random_string(&mut self.rng);
+
+                    self.map()
+                        .insert(
+                            SBox::new(key.clone()).unwrap(),
+                            SBox::new(value.clone()).unwrap(),
+                        )
+                        .unwrap();
+                    self.example.insert(key.clone(), value);
+
+                    match self.keys.binary_search(&key) {
+                        Ok(idx) => {}
+                        Err(idx) => {
+                            self.keys.insert(idx, key);
+                        }
+                    };
+
+                    self.log.push(Action::Insert);
+                }
+                // REMOVE
+                60..=89 => {
+                    let len = self.map().len();
+
+                    if len == 0 {
+                        return self.next();
+                    }
+
+                    let idx = self.rng.gen_range(0..len);
+                    let key = self.keys.remove(idx);
+
+                    self.map().remove(&key).unwrap();
+                    self.example.remove(&key).unwrap();
+
+                    self.log.push(Action::Remove);
+                }
+                // CANISTER UPGRADE
+                _ => {
+                    store_custom_data(1, SBox::new(self.map.take().unwrap()).unwrap());
+
+                    stable_memory_pre_upgrade();
+                    stable_memory_post_upgrade();
+
+                    self.map = retrieve_custom_data::<SHashMap<SBox<String>, SBox<String>>>(1)
+                        .map(|it| it.into_inner());
+
+                    self.log.push(Action::CanisterUpgrade);
+                }
+            }
+
+            _debug_validate_allocator();
+            assert_eq!(self.map().len(), self.example.len());
+
+            for key in self.keys.clone() {
+                let contains = self.map().contains_key(&key);
+                assert!(contains);
+
+                assert_eq!(
+                    self.map().get(&key).unwrap().get().deref().clone(),
+                    self.example.get(&key).unwrap().clone()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fuzzer_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
         assert_eq!(get_allocated_size(), 0);
     }
 }
