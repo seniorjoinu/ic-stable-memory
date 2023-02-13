@@ -1,13 +1,12 @@
 use crate::collections::vec::iter::SVecIter;
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
-use crate::mem::free_block::FreeBlock;
 use crate::mem::s_slice::SSlice;
 use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
-use crate::{allocate, deallocate, make_sure_can_allocate, reallocate, OutOfMemory};
+use crate::{allocate, deallocate, reallocate, OutOfMemory};
 use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -27,20 +26,26 @@ pub struct SVec<T: StableType + AsFixedSizeBytes> {
 impl<T: StableType + AsFixedSizeBytes> SVec<T> {
     #[inline]
     pub fn new() -> Self {
-        Self::new_with_capacity(DEFAULT_CAPACITY)
-    }
-
-    #[inline]
-    pub fn new_with_capacity(capacity: usize) -> Self {
-        assert!(capacity <= Self::max_capacity());
-
         Self {
             len: 0,
-            cap: capacity,
+            cap: DEFAULT_CAPACITY,
             ptr: EMPTY_PTR,
             is_owned: false,
             _marker_t: PhantomData::default(),
         }
+    }
+
+    #[inline]
+    pub fn new_with_capacity(capacity: usize) -> Result<Self, OutOfMemory> {
+        assert!(capacity <= Self::max_capacity());
+
+        Ok(Self {
+            len: 0,
+            cap: capacity,
+            ptr: allocate((capacity * T::SIZE) as u64)?.as_ptr(),
+            is_owned: false,
+            _marker_t: PhantomData::default(),
+        })
     }
 
     #[inline]
@@ -85,15 +90,17 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
     }
 
     #[inline]
-    pub fn push(&mut self, mut element: T) -> Result<(), OutOfMemory> {
-        self.maybe_reallocate()?;
+    pub fn push(&mut self, mut element: T) -> Result<(), T> {
+        if self.maybe_reallocate().is_ok() {
+            let elem_ptr = SSlice::_offset(self.ptr, (self.len * T::SIZE) as u64);
+            unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
 
-        let elem_ptr = SSlice::_offset(self.ptr, (self.len * T::SIZE) as u64);
-        unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
+            self.len += 1;
 
-        self.len += 1;
-
-        Ok(())
+            Ok(())
+        } else {
+            Err(element)
+        }
     }
 
     #[inline]
@@ -133,36 +140,38 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         prev_element
     }
 
-    pub fn insert(&mut self, idx: usize, mut element: T) -> Result<(), OutOfMemory> {
+    pub fn insert(&mut self, idx: usize, mut element: T) -> Result<(), T> {
         if idx == self.len {
             return self.push(element);
         }
 
         assert!(idx < self.len, "out of bounds");
 
-        self.maybe_reallocate()?;
+        if self.maybe_reallocate().is_ok() {
+            let elem_ptr = SSlice::_offset(self.ptr, (idx * T::SIZE) as u64);
 
-        let elem_ptr = SSlice::_offset(self.ptr, (idx * T::SIZE) as u64);
+            // moving elements after idx one slot to the right
+            let mut buf = vec![0u8; (self.len - idx) * T::SIZE];
+            unsafe { crate::mem::read_bytes(elem_ptr, &mut buf) };
+            unsafe { crate::mem::write_bytes(elem_ptr + T::SIZE as u64, &buf) };
 
-        // moving elements after idx one slot to the right
-        let mut buf = vec![0u8; (self.len - idx) * T::SIZE];
-        unsafe { crate::mem::read_bytes(elem_ptr, &mut buf) };
-        unsafe { crate::mem::write_bytes(elem_ptr + T::SIZE as u64, &buf) };
+            // writing the element
+            unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
 
-        // writing the element
-        unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
+            self.len += 1;
 
-        self.len += 1;
-
-        Ok(())
+            Ok(())
+        } else {
+            Err(element)
+        }
     }
 
     pub fn remove(&mut self, idx: usize) -> T {
+        assert!(idx < self.len, "out of bounds");
+
         if idx == self.len - 1 {
             return unsafe { self.pop().unwrap_unchecked() };
         }
-
-        assert!(idx < self.len - 1, "out of bounds");
 
         let elem_ptr = SSlice::_offset(self.ptr, (idx * T::SIZE) as u64);
         let elem = unsafe { crate::mem::read_and_disown_fixed(elem_ptr) };
@@ -377,9 +386,10 @@ mod tests {
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
     use crate::utils::test::generate_random_string;
+    use crate::utils::DebuglessUnwrap;
     use crate::{
-        _debug_print_allocator, _debug_validate_allocator, get_allocated_size,
-        retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
+        _debug_print_allocator, _debug_validate_allocator, deinit_allocator, get_allocated_size,
+        init_allocator, retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
         stable_memory_pre_upgrade, store_custom_data,
     };
     use rand::rngs::ThreadRng;
@@ -621,10 +631,15 @@ mod tests {
         stable_memory_init();
 
         {
-            let vec = SVec::<u32>::new_with_capacity(10);
+            let mut vec = SVec::<u32>::new_with_capacity(10).debugless_unwrap();
+            vec.push(1);
+            vec.push(2);
+            vec.push(3);
+
             let mut buf = <SVec<u32> as AsFixedSizeBytes>::Buf::new(SVec::<u32>::SIZE);
             vec.as_fixed_size_bytes(buf._deref_mut());
-            let vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
+            let mut vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
+            unsafe { vec1.assume_owned_by_stable_memory() };
 
             assert_eq!(vec.ptr, vec1.ptr);
             assert_eq!(vec.len, vec1.len);
@@ -636,7 +651,9 @@ mod tests {
 
             let mut buf = <SVec<u32> as AsFixedSizeBytes>::Buf::new(SVec::<u32>::SIZE);
             vec.as_fixed_size_bytes(buf._deref_mut());
-            let vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
+
+            let mut vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
+            unsafe { vec1.assume_owned_by_stable_memory() };
 
             assert_eq!(ptr, vec1.ptr);
             assert_eq!(len, vec1.len);
@@ -782,10 +799,15 @@ mod tests {
                 0..=250 => {
                     let str = generate_random_string(&mut self.rng);
 
-                    self.vec().push(SBox::new(str.clone()).unwrap()).unwrap();
-                    self.example.push(str.clone());
+                    if let Ok(data) = SBox::new(str.clone()) {
+                        if self.vec().push(data).is_err() {
+                            return;
+                        };
 
-                    self.log.push(Action::Push);
+                        self.example.push(str.clone());
+
+                        self.log.push(Action::Push);
+                    }
                 }
                 // INSERT ~25%
                 251..=500 => {
@@ -798,12 +820,15 @@ mod tests {
                         self.rng.gen_range(0..len + 1)
                     };
 
-                    self.vec()
-                        .insert(idx, SBox::new(str.clone()).unwrap())
-                        .unwrap();
-                    self.example.insert(idx, str.clone());
+                    if let Ok(data) = SBox::new(str.clone()) {
+                        if self.vec().insert(idx, data).is_err() {
+                            return;
+                        }
 
-                    self.log.push(Action::Insert(idx));
+                        self.example.insert(idx, str.clone());
+
+                        self.log.push(Action::Insert(idx));
+                    }
                 }
                 // POP ~10%
                 501..=600 => {
@@ -866,10 +891,12 @@ mod tests {
                     let idx = self.rng.gen_range(0..len);
                     let str = generate_random_string(&mut self.rng);
 
-                    self.vec().replace(idx, SBox::new(str.clone()).unwrap());
-                    std::mem::replace(self.example.get_mut(idx).unwrap(), str.clone());
+                    if let Ok(data) = SBox::new(str.clone()) {
+                        self.vec().replace(idx, data);
+                        std::mem::replace(self.example.get_mut(idx).unwrap(), str.clone());
 
-                    self.log.push(Action::Replace(idx));
+                        self.log.push(Action::Replace(idx));
+                    }
                 }
                 // GET MUT ~10%
                 901..=1000 => {
@@ -882,26 +909,38 @@ mod tests {
                     let idx = self.rng.gen_range(0..len);
                     let str = generate_random_string(&mut self.rng);
 
-                    self.vec()
+                    if self
+                        .vec()
                         .get_mut(idx)
                         .unwrap()
-                        .with(|s| *s = str.clone())
-                        .unwrap();
+                        .with(|s: &mut String| {
+                            *s = str.clone();
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+
                     *self.example.get_mut(idx).unwrap() = str;
 
                     self.log.push(Action::GetMut(idx));
                 }
                 // CANISTER UPGRADE
-                _ => {
-                    store_custom_data(1, SBox::new(self.vec.take().unwrap()).unwrap());
+                _ => match SBox::new(self.vec.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.vec = retrieve_custom_data(1).map(|it| it.into_inner());
-
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.vec = retrieve_custom_data(1).map(|it| it.into_inner());
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(vec) => {
+                        self.vec = Some(vec);
+                    }
+                },
             }
 
             _debug_validate_allocator();
@@ -919,7 +958,23 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(10);
 
         {
             let mut fuzzer = Fuzzer::new();

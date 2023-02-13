@@ -65,7 +65,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     }
 
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         self._insert(key, value, &mut LeveledList::None)
     }
 
@@ -74,38 +74,61 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         key: K,
         value: V,
         modified: &mut LeveledList,
-    ) -> Result<Option<V>, OutOfMemory> {
-        let mut node = self.get_or_create_root()?;
+    ) -> Result<Option<V>, (K, V)> {
+        if let Ok(mut node) = self.get_or_create_root() {
+            let mut leaf = loop {
+                match unsafe { node.copy() } {
+                    BTreeNode::Internal(internal_node) => {
+                        let node_len = internal_node.read_len();
+                        let child_idx = match internal_node.binary_search(&key, node_len) {
+                            Ok(idx) => idx + 1,
+                            Err(idx) => idx,
+                        };
 
-        let mut leaf = loop {
-            match unsafe { node.copy() } {
-                BTreeNode::Internal(internal_node) => {
-                    let node_len = internal_node.read_len();
-                    let child_idx = match internal_node.binary_search(&key, node_len) {
-                        Ok(idx) => idx + 1,
-                        Err(idx) => idx,
-                    };
+                        let child_ptr = internal_node.read_child_ptr_buf(child_idx);
+                        self.push_stack(internal_node, node_len, child_idx);
 
-                    let child_ptr = internal_node.read_child_ptr_buf(child_idx);
-                    self.push_stack(internal_node, node_len, child_idx);
-
-                    node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
+                        node = BTreeNode::<K, V>::from_ptr(u64::from_fixed_size_bytes(&child_ptr));
+                    }
+                    BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
                 }
-                BTreeNode::Leaf(leaf_node) => break unsafe { leaf_node.copy() },
-            }
-        };
+            };
 
-        // this call makes sure there is enough free stable memory to allocate everything else
-        // if it returns Ok - every other allocation after that should simply .unwrap()
-        let right_leaf = match self.insert_leaf(&mut leaf, key, value, modified)? {
-            Ok(v) => {
-                self.clear_stack(modified);
+            // this call makes sure there is enough free stable memory to allocate everything else
+            // if it returns Ok - every other allocation after that should simply .unwrap()
+            let right_leaf = match self.insert_leaf(&mut leaf, key, value, modified)? {
+                Ok(v) => {
+                    self.clear_stack(modified);
 
-                return Ok(Some(v));
-            }
-            Err(right_leaf_opt) => {
-                if let Some(right_leaf) = right_leaf_opt {
-                    right_leaf
+                    return Ok(Some(v));
+                }
+                Err(right_leaf_opt) => {
+                    if let Some(right_leaf) = right_leaf_opt {
+                        right_leaf
+                    } else {
+                        self.clear_stack(modified);
+                        self.len += 1;
+
+                        return Ok(None);
+                    }
+                }
+            };
+
+            let mut key_to_index = right_leaf.read_key_buf(0);
+            let mut ptr = right_leaf.as_ptr();
+
+            while let Some((mut parent, parent_len, idx)) = self.pop_stack() {
+                if let Some((right, _k)) = self.insert_internal(
+                    &mut parent,
+                    parent_len,
+                    idx,
+                    key_to_index,
+                    ptr.as_new_fixed_size_bytes(),
+                    modified,
+                ) {
+                    key_to_index = _k;
+                    ptr = right.as_ptr();
+                    node = BTreeNode::Internal(parent);
                 } else {
                     self.clear_stack(modified);
                     self.len += 1;
@@ -113,47 +136,26 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
                     return Ok(None);
                 }
             }
-        };
 
-        let mut key_to_index = right_leaf.read_key_buf(0);
-        let mut ptr = right_leaf.as_ptr();
+            // stack is empty now
 
-        while let Some((mut parent, parent_len, idx)) = self.pop_stack() {
-            if let Some((right, _k)) = self.insert_internal(
-                &mut parent,
-                parent_len,
-                idx,
-                key_to_index,
-                ptr.as_new_fixed_size_bytes(),
-                modified,
-            ) {
-                key_to_index = _k;
-                ptr = right.as_ptr();
-                node = BTreeNode::Internal(parent);
-            } else {
-                self.clear_stack(modified);
-                self.len += 1;
+            let new_root = InternalBTreeNode::<K>::create(
+                &key_to_index,
+                &node.as_ptr().as_new_fixed_size_bytes(),
+                &ptr.as_new_fixed_size_bytes(),
+                self.certified,
+            )
+            .unwrap();
 
-                return Ok(None);
-            }
+            modified.insert_root(new_root.as_ptr());
+
+            self.root = Some(BTreeNode::Internal(new_root));
+            self.len += 1;
+
+            Ok(None)
+        } else {
+            Err((key, value))
         }
-
-        // stack is empty now
-
-        let new_root = InternalBTreeNode::<K>::create(
-            &key_to_index,
-            &node.as_ptr().as_new_fixed_size_bytes(),
-            &ptr.as_new_fixed_size_bytes(),
-            self.certified,
-        )
-        .unwrap();
-
-        modified.insert_root(new_root.as_ptr());
-
-        self.root = Some(BTreeNode::Internal(new_root));
-        self.len += 1;
-
-        Ok(None)
     }
 
     #[inline]
@@ -401,7 +403,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         mut key: K,
         mut value: V,
         modified: &mut LeveledList,
-    ) -> Result<Result<V, Option<LeafBTreeNode<K, V>>>, OutOfMemory> {
+    ) -> Result<Result<V, Option<LeafBTreeNode<K, V>>>, (K, V)> {
         let leaf_node_len = leaf_node.read_len();
         let insert_idx = match leaf_node.binary_search(&key, leaf_node_len) {
             Ok(existing_idx) => {
@@ -416,10 +418,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             Err(idx) => idx,
         };
 
-        unsafe { key.assume_owned_by_stable_memory() };
         let k = key.as_new_fixed_size_bytes();
-
-        unsafe { value.assume_owned_by_stable_memory() };
         let v = value.as_new_fixed_size_bytes();
 
         // if there is enough space - simply insert and return early
@@ -431,11 +430,17 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
 
             modified.push(self.current_depth(), leaf_node.as_ptr());
 
+            unsafe { key.assume_owned_by_stable_memory() };
+            unsafe { value.assume_owned_by_stable_memory() };
+
             return Ok(Err(None));
         }
 
         // try passing an element to a neighbor, to make room for a new one
         if self.pass_elem_to_sibling_leaf(leaf_node, &k, &v, insert_idx, modified) {
+            unsafe { key.assume_owned_by_stable_memory() };
+            unsafe { value.assume_owned_by_stable_memory() };
+
             return Ok(Err(None));
         }
 
@@ -444,9 +449,13 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             * FreeBlock::to_total_size(InternalBTreeNode::<K>::calc_byte_size(self.certified))
             + FreeBlock::to_total_size(LeafBTreeNode::<K, V>::calc_size_bytes(self.certified));
 
+        // we can unwrap all OutOfMemory errors if this check passes, without any consequences
         if !make_sure_can_allocate(memory_to_allocate) {
-            return Err(OutOfMemory);
+            return Err((key, value));
         }
+
+        unsafe { key.assume_owned_by_stable_memory() };
+        unsafe { value.assume_owned_by_stable_memory() };
 
         // split the leaf and insert so both leaves now have length of B
         let mut right = if insert_idx < B {
@@ -1631,8 +1640,8 @@ mod tests {
     use crate::collections::btree_map::SBTreeMap;
     use crate::utils::test::generate_random_string;
     use crate::{
-        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
-        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        _debug_validate_allocator, get_allocated_size, init_allocator, retrieve_custom_data,
+        stable, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
         store_custom_data, SBox,
     };
     use rand::rngs::ThreadRng;
@@ -1773,22 +1782,23 @@ mod tests {
                     let key = generate_random_string(&mut self.rng);
                     let value = generate_random_string(&mut self.rng);
 
-                    self.map()
-                        .insert(
-                            SBox::new(key.clone()).unwrap(),
-                            SBox::new(value.clone()).unwrap(),
-                        )
-                        .unwrap();
-                    self.example.insert(key.clone(), value);
+                    if let Ok(key_data) = SBox::new(key.clone()) {
+                        if let Ok(val_data) = SBox::new(value.clone()) {
+                            if self.map().insert(key_data, val_data).is_err() {
+                                return;
+                            }
+                            self.example.insert(key.clone(), value);
 
-                    match self.keys.binary_search(&key) {
-                        Ok(idx) => {}
-                        Err(idx) => {
-                            self.keys.insert(idx, key);
+                            match self.keys.binary_search(&key) {
+                                Ok(idx) => {}
+                                Err(idx) => {
+                                    self.keys.insert(idx, key);
+                                }
+                            };
+
+                            self.log.push(Action::Insert);
                         }
-                    };
-
-                    self.log.push(Action::Insert);
+                    }
                 }
                 // REMOVE
                 60..=89 => {
@@ -1807,17 +1817,23 @@ mod tests {
                     self.log.push(Action::Remove);
                 }
                 // CANISTER UPGRADE
-                _ => {
-                    store_custom_data(1, SBox::new(self.map.take().unwrap()).unwrap());
+                _ => match SBox::new(self.map.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.map = retrieve_custom_data::<SBTreeMap<SBox<String>, SBox<String>>>(1)
-                        .map(|it| it.into_inner());
+                        self.map = retrieve_custom_data::<SBTreeMap<SBox<String>, SBox<String>>>(1)
+                            .map(|it| it.into_inner());
 
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(map) => {
+                        self.map = Some(map);
+                    }
+                },
             }
 
             _debug_validate_allocator();
@@ -1838,7 +1854,23 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(10);
 
         {
             let mut fuzzer = Fuzzer::new();

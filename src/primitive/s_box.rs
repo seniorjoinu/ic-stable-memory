@@ -16,18 +16,21 @@ pub struct SBox<T: AsDynSizeBytes + StableType> {
 }
 
 impl<T: AsDynSizeBytes + StableType> SBox<T> {
+    /// DONT PUT REFERENCES INSIDE
     #[inline]
-    pub fn new(it: T) -> Result<Self, OutOfMemory> {
+    pub fn new(it: T) -> Result<Self, T> {
         let buf = it.as_dyn_size_bytes();
-        let slice = allocate(buf.len() as u64)?;
+        if let Ok(slice) = allocate(buf.len() as u64) {
+            unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
 
-        unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
-
-        Ok(Self {
-            slice: Some(slice),
-            inner: Some(it),
-            is_owned: false,
-        })
+            Ok(Self {
+                slice: Some(slice),
+                inner: Some(it),
+                is_owned: false,
+            })
+        } else {
+            Err(it)
+        }
     }
 
     #[inline]
@@ -55,26 +58,6 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         }
     }
 
-    /// Safety: it is safe, if T doesn't contain any other stable structure inside (any collection
-    /// or other SBox) - in that case, this function will return return a complete copy of the underlying data.
-    /// But if T contains any stable structure, these won't be copies - modifying them will also modify
-    /// the data that lies in stable memory.
-    /// For example, if T is SHashMap<_, _>, then by accuiring a copy via get_cloned() you accuire
-    /// a pointer to the original SHashMap which can lead to unexpected behaviour.
-    pub unsafe fn get_cloned(&self) -> T {
-        if let Some(slice) = self.slice {
-            let mut buf = vec![0u8; slice.get_size_bytes() as usize];
-            unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf) };
-
-            let mut it = T::from_dyn_size_bytes(&buf);
-            it.assume_owned_by_stable_memory();
-
-            it
-        } else {
-            unreachable!()
-        }
-    }
-
     #[inline]
     pub fn get(&self) -> SBoxRef<'_, T> {
         SBoxRef(self)
@@ -95,7 +78,15 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
             if slice.get_size_bytes() < buf.len() as u64 {
                 // safe, since buf.len() is always less or equal to usize::MAX
                 unsafe {
-                    slice = reallocate(slice, buf.len() as u64)?;
+                    match reallocate(slice, buf.len() as u64) {
+                        Ok(s) => {
+                            slice = s;
+                        }
+                        Err(e) => {
+                            self.slice = Some(slice);
+                            return Err(e);
+                        }
+                    }
                 }
             }
 

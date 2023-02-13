@@ -4,9 +4,8 @@ use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::StableType;
 use crate::utils::certification::{empty_hash, AsHashTree, AsHashableBytes, Hash, HashTree};
-use crate::OutOfMemory;
 use std::borrow::Borrow;
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 
 pub struct SCertifiedBTreeMap<
@@ -33,16 +32,18 @@ impl<
     }
 
     #[inline]
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
-        if !self.frozen {
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
+        let res = self.inner._insert(key, value, &mut self.modified);
+
+        if res.is_ok() && !self.frozen {
             self.frozen = true;
         }
 
-        self.inner._insert(key, value, &mut self.modified)
+        res
     }
 
     #[inline]
-    pub fn insert_and_commit(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
+    pub fn insert_and_commit(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         let it = self.insert(key, value)?;
         self.commit();
 
@@ -338,14 +339,26 @@ impl<
     unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.inner.assume_owned_by_stable_memory();
     }
+}
 
-    #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.inner.is_owned_by_stable_memory()
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes + Debug,
+        V: StableType + AsFixedSizeBytes + AsHashTree + Debug,
+    > Debug for SCertifiedBTreeMap<K, V>
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("{")?;
+        for (idx, (k, v)) in self.iter().enumerate() {
+            k.fmt(f)?;
+            f.write_str(": ")?;
+            v.fmt(f)?;
+
+            if idx < (self.len() - 1) as usize {
+                f.write_str(", ")?;
+            }
+        }
+        f.write_str("}")
     }
-
-    #[inline]
-    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
@@ -356,8 +369,8 @@ mod tests {
     };
     use crate::utils::test::generate_random_string;
     use crate::{
-        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
-        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        _debug_validate_allocator, get_allocated_size, init_allocator, retrieve_custom_data,
+        stable, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
         store_custom_data, SBox,
     };
     use rand::rngs::ThreadRng;
@@ -760,21 +773,22 @@ mod tests {
                     let key = generate_random_string(&mut self.rng);
                     let value = generate_random_string(&mut self.rng);
 
-                    self.map()
-                        .insert_and_commit(
-                            SBox::new(key.clone()).unwrap(),
-                            SBox::new(value.clone()).unwrap(),
-                        )
-                        .unwrap();
+                    if let Ok(key_data) = SBox::new(key.clone()) {
+                        if let Ok(val_data) = SBox::new(value.clone()) {
+                            if self.map().insert_and_commit(key_data, val_data).is_err() {
+                                return;
+                            }
 
-                    match self.keys.binary_search(&key) {
-                        Ok(idx) => {}
-                        Err(idx) => {
-                            self.keys.insert(idx, key);
+                            match self.keys.binary_search(&key) {
+                                Ok(idx) => {}
+                                Err(idx) => {
+                                    self.keys.insert(idx, key);
+                                }
+                            };
+
+                            self.log.push(Action::Insert);
                         }
-                    };
-
-                    self.log.push(Action::Insert);
+                    }
                 }
                 // REMOVE
                 60..=89 => {
@@ -792,21 +806,29 @@ mod tests {
                     self.log.push(Action::Remove);
                 }
                 // CANISTER UPGRADE
-                90..=99 => {
-                    store_custom_data(1, SBox::new(self.map.take().unwrap()).unwrap());
+                90..=99 => match SBox::new(self.map.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.map =
-                        retrieve_custom_data::<SCertifiedBTreeMap<SBox<String>, SBox<String>>>(1)
-                            .map(|it| it.into_inner());
+                        self.map = retrieve_custom_data::<
+                            SCertifiedBTreeMap<SBox<String>, SBox<String>>,
+                        >(1)
+                        .map(|it| it.into_inner());
 
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(map) => {
+                        self.map = Some(map);
+                    }
+                },
                 // BATCH
                 _ => {
-                    let count = self.rng.gen_range(0..100);
+                    let count = self.rng.gen_range(0..10);
+
                     for i in 0..count {
                         let act = self.rng.gen_range(0..10);
                         match act {
@@ -814,19 +836,20 @@ mod tests {
                                 let key = generate_random_string(&mut self.rng);
                                 let value = generate_random_string(&mut self.rng);
 
-                                self.map()
-                                    .insert(
-                                        SBox::new(key.clone()).unwrap(),
-                                        SBox::new(value.clone()).unwrap(),
-                                    )
-                                    .unwrap();
+                                if let Ok(key_data) = SBox::new(key.clone()) {
+                                    if let Ok(val_data) = SBox::new(value.clone()) {
+                                        if self.map().insert(key_data, val_data).is_err() {
+                                            continue;
+                                        }
 
-                                match self.keys.binary_search(&key) {
-                                    Ok(idx) => {}
-                                    Err(idx) => {
-                                        self.keys.insert(idx, key);
+                                        match self.keys.binary_search(&key) {
+                                            Ok(idx) => {}
+                                            Err(idx) => {
+                                                self.keys.insert(idx, key);
+                                            }
+                                        };
                                     }
-                                };
+                                }
                             }
                             _ => {
                                 let len = self.map().len();
@@ -841,10 +864,10 @@ mod tests {
                                 self.map().remove(&key).unwrap();
                             }
                         }
-
-                        self.map().commit();
-                        self.log.push(Action::Batch);
                     }
+
+                    self.map().commit();
+                    self.log.push(Action::Batch);
                 }
             }
 
@@ -879,12 +902,28 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
 
         {
             let mut fuzzer = Fuzzer::new();
 
-            for _ in 0..100 {
+            for _ in 0..500 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(1);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..1000 {
                 fuzzer.next();
             }
         }

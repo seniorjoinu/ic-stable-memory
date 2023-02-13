@@ -18,3 +18,16 @@ pub fn isoprint(str: &str) {
 pub fn isoprint(str: &str) {
     println!("{}", str)
 }
+
+pub trait DebuglessUnwrap<T> {
+    fn debugless_unwrap(self) -> T;
+}
+
+impl<R, E> DebuglessUnwrap<R> for Result<R, E> {
+    fn debugless_unwrap(self) -> R {
+        match self {
+            Err(_) => panic!("Unwrapped a Result type without debug info"),
+            Ok(r) => r
+        }
+    }
+}

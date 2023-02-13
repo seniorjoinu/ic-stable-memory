@@ -4,6 +4,7 @@ use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableType;
 use crate::OutOfMemory;
 use std::borrow::Borrow;
+use std::fmt::{Debug, Formatter};
 
 pub mod iter;
 
@@ -30,8 +31,11 @@ impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
     }
 
     #[inline]
-    pub fn insert(&mut self, value: T) -> Result<bool, OutOfMemory> {
-        self.map.insert(value, ()).map(|it| it.is_some())
+    pub fn insert(&mut self, value: T) -> Result<bool, T> {
+        self.map
+            .insert(value, ())
+            .map(|it| it.is_some())
+            .map_err(|(k, _)| k)
     }
 
     #[inline]
@@ -98,14 +102,20 @@ impl<T: StableType + AsFixedSizeBytes + Ord> StableType for SBTreeSet<T> {
     unsafe fn assume_owned_by_stable_memory(&mut self) {
         self.map.assume_owned_by_stable_memory()
     }
+}
 
-    #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.map.is_owned_by_stable_memory()
+impl<T: StableType + AsFixedSizeBytes + Ord + Debug> Debug for SBTreeSet<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(")?;
+        for (idx, elem) in self.iter().enumerate() {
+            elem.fmt(f)?;
+
+            if idx < (self.len() - 1) as usize {
+                f.write_str(", ")?;
+            }
+        }
+        f.write_str(")")
     }
-
-    #[inline]
-    unsafe fn stable_drop(&mut self) {}
 }
 
 #[cfg(test)]
@@ -114,8 +124,8 @@ mod tests {
     use crate::encoding::{AsFixedSizeBytes, Buffer};
     use crate::utils::test::generate_random_string;
     use crate::{
-        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
-        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        _debug_validate_allocator, get_allocated_size, init_allocator, retrieve_custom_data,
+        stable, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
         store_custom_data, SBox,
     };
     use rand::rngs::ThreadRng;
@@ -219,18 +229,21 @@ mod tests {
                 // INSERT ~60%
                 0..=59 => {
                     let key = generate_random_string(&mut self.rng);
-
-                    self.set().insert(SBox::new(key.clone()).unwrap()).unwrap();
-                    self.example.insert(key.clone());
-
-                    match self.keys.binary_search(&key) {
-                        Ok(idx) => {}
-                        Err(idx) => {
-                            self.keys.insert(idx, key);
+                    if let Ok(data) = SBox::new(key.clone()) {
+                        if self.set().insert(data).is_err() {
+                            return;
                         }
-                    };
+                        self.example.insert(key.clone());
 
-                    self.log.push(Action::Insert);
+                        match self.keys.binary_search(&key) {
+                            Ok(idx) => {}
+                            Err(idx) => {
+                                self.keys.insert(idx, key);
+                            }
+                        };
+
+                        self.log.push(Action::Insert);
+                    }
                 }
                 // REMOVE
                 60..=89 => {
@@ -249,17 +262,23 @@ mod tests {
                     self.log.push(Action::Remove);
                 }
                 // CANISTER UPGRADE
-                _ => {
-                    store_custom_data(1, SBox::new(self.set.take().unwrap()).unwrap());
+                _ => match SBox::new(self.set.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.set = retrieve_custom_data::<SBTreeSet<SBox<String>>>(1)
-                        .map(|it| it.into_inner());
+                        self.set = retrieve_custom_data::<SBTreeSet<SBox<String>>>(1)
+                            .map(|it| it.into_inner());
 
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(set) => {
+                        self.set = Some(set);
+                    }
+                },
             }
 
             _debug_validate_allocator();
@@ -275,7 +294,23 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(10);
 
         {
             let mut fuzzer = Fuzzer::new();

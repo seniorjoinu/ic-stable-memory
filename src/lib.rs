@@ -11,19 +11,25 @@ pub mod mem;
 pub mod primitive;
 pub mod utils;
 
-use crate::encoding::AsDynSizeBytes;
-/// ПРОВЕРИТЬ ТУДУХИ
-/// ПРОВЕРИТЬ ГЕТ-МУТ
-/// ФАЗЗЕРЫ ДЛЯ ВСЕГО
-/// ОБЩИЙ ФАЗЗЕР НА БОЛЬШОЙ СТЕЙТ ИЗ ВСЕГО ПОДРЯД
+/// МАКРОСЫ + ОБЩИЙ ФАЗЗЕР НА БОЛЬШОЙ СТЕЙТ ИЗ ВСЕГО ПОДРЯД
 /// ПРОВЕРИТЬ СЕРТИФАЙД АССЕТС
+/// КОВЕРАЖ ДО 90+
+/// ПРОГОНИ ФАЗЗЕРЫ ЕЩЕ
 /// НАПИСАТЬ ДОКУМЕНТАЦИЮ + ПОМЕТИТЬ ФИКСМИ
-use crate::primitive::s_box::SBox;
-use crate::primitive::StableType;
+///
+/// ДОКУМЕНТАЦИЯ
+/// 1. Про то, как сделать быстро
+/// 2. Про то, как сохранить апгрейдабилити
+/// 3. Про то, как хендлить OOM: а) прямой отлов и реверс транзакции; б) композитные структуры данных, бекапящие невлезшие данные в обычные структуры данных
+/// 4. Про бенчмарки
+/// 5. Про то, как преехать с обычных структур данных, на эти
 pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
 
 use crate::utils::isoprint;
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
+pub use encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+pub use primitive::s_box::SBox;
+pub use primitive::StableType;
 
 thread_local! {
     static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);
@@ -43,21 +49,26 @@ pub fn init_allocator(max_pages: u64) {
 }
 
 #[inline]
-pub fn deinit_allocator() {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
+pub fn deinit_allocator() -> Result<(), OutOfMemory> {
+    STABLE_MEMORY_ALLOCATOR.with(|it: &RefCell<Option<StableMemoryAllocator>>| {
         if let Some(mut alloc) = it.take() {
-            alloc.store();
+            let res = alloc.store();
+            if res.is_err() {
+                *it.borrow_mut() = Some(alloc);
+            }
+
+            res
         } else {
             unreachable!("StableMemoryAllocator is not initialized");
         }
-    });
+    })
 }
 
 #[inline]
 pub fn reinit_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if it.borrow().is_none() {
-            let allocator = unsafe { StableMemoryAllocator::retrieve() };
+            let allocator = StableMemoryAllocator::retrieve();
 
             *it.borrow_mut() = Some(allocator);
         } else {
@@ -88,7 +99,7 @@ pub fn deallocate(slice: SSlice) {
     })
 }
 
-/// Safety:
+/// # Safety
 /// Reallocating slices bigger than u32::MAX bytes will panic, since data has to be moved into
 /// the new location and this move is implemented via reading all bytes from the old location into
 /// a regular Vec<u8> and then writing them into the new location.
@@ -209,8 +220,8 @@ pub fn stable_memory_init() {
 }
 
 #[inline]
-pub fn stable_memory_pre_upgrade() {
-    deinit_allocator();
+pub fn stable_memory_pre_upgrade() -> Result<(), OutOfMemory> {
+    deinit_allocator()
 }
 
 #[inline]

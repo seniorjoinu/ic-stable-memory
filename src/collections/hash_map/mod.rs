@@ -5,9 +5,9 @@ use crate::mem::StablePtr;
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
+use crate::utils::DebuglessUnwrap;
 use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -62,31 +62,46 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
     #[inline]
     pub fn new() -> Self {
-        Self::new_with_capacity(DEFAULT_CAPACITY)
-    }
-
-    pub fn new_with_capacity(capacity: usize) -> Self {
-        assert!(capacity <= Self::max_capacity());
-
         Self {
             table_ptr: EMPTY_PTR,
             len: 0,
-            cap: capacity,
+            cap: DEFAULT_CAPACITY,
             is_owned: false,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
+    pub fn new_with_capacity(capacity: usize) -> Result<Self, OutOfMemory> {
+        assert!(capacity <= Self::max_capacity());
+
+        let size = (1 + K::SIZE + V::SIZE) * capacity;
+        let table = allocate(size as u64)?;
+
+        let zeroed = vec![0u8; size];
+        unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
+
+        Ok(Self {
+            table_ptr: table.as_ptr(),
+            len: 0,
+            cap: capacity,
+            is_owned: false,
+            _marker_k: PhantomData::default(),
+            _marker_v: PhantomData::default(),
+        })
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
-            let table = allocate(size as u64)?;
+            if let Ok(table) = allocate(size as u64) {
+                let zeroed = vec![0u8; size];
+                unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
 
-            let zeroed = vec![0u8; size];
-            unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
-
-            self.table_ptr = table.as_ptr();
+                self.table_ptr = table.as_ptr();
+            } else {
+                return Err((key, value));
+            }
         }
 
         let key_hash = Self::hash(&key);
@@ -109,30 +124,34 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                 }
                 None => {
                     if self.is_full() {
-                        let mut new =
-                            Self::new_with_capacity(self.capacity().checked_mul(2).unwrap() - 1);
+                        // since we're allocating a new map with "new_with_capacity()" method, it should have
+                        // enough space to fit all elements without throwing an OutOfMemory error
+                        if let Ok(mut new) =
+                            Self::new_with_capacity(self.capacity().checked_mul(2).unwrap() - 1)
+                        {
+                            for i in 0..self.cap {
+                                if let Some(k) = self.read_and_disown_key(i) {
+                                    let v = self.read_and_disown_val(i);
 
-                        for i in 0..self.cap {
-                            if let Some(k) = self.read_and_disown_key(i) {
-                                let v = self.read_and_disown_val(i);
-
-                                new.insert(k, v).unwrap();
+                                    new.insert(k, v).debugless_unwrap();
+                                }
                             }
+
+                            let res = new.insert(key, value).debugless_unwrap();
+                            let slice = SSlice::from_ptr(self.table_ptr).unwrap();
+                            deallocate(slice);
+
+                            // dirty hack to make it not call stable_drop() when it is dropped
+                            // it is safe to use, since we've moved all the data inside into the new map
+                            // and deallocated the underlying slice
+                            unsafe { self.assume_owned_by_stable_memory() };
+
+                            *self = new;
+
+                            return Ok(res);
+                        } else {
+                            return Err((key, value));
                         }
-
-                        let res = new.insert(key, value).unwrap();
-
-                        let slice = SSlice::from_ptr(self.table_ptr).unwrap();
-                        deallocate(slice);
-
-                        // dirty hack to make it not call stable_drop() when it is dropped
-                        // it is safe to use, since we've moved all the data inside into the new map
-                        // and deallocated the underlying slice
-                        unsafe { self.assume_owned_by_stable_memory() };
-
-                        *self = new;
-
-                        return Ok(res);
                     }
 
                     self.write_and_own_key(i, Some(key));
@@ -532,9 +551,11 @@ mod tests {
     use crate::primitive::StableType;
     use crate::utils::mem_context::stable;
     use crate::utils::test::generate_random_string;
+    use crate::utils::DebuglessUnwrap;
     use crate::{
-        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable_memory_init,
-        stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data,
+        _debug_validate_allocator, get_allocated_size, init_allocator, retrieve_custom_data,
+        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        store_custom_data,
     };
     use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
@@ -548,7 +569,7 @@ mod tests {
         stable_memory_init();
 
         {
-            let mut map = SHashMap::new_with_capacity(3);
+            let mut map = SHashMap::new_with_capacity(3).debugless_unwrap();
 
             let k1 = 1;
             let k2 = 2;
@@ -608,7 +629,7 @@ mod tests {
         stable_memory_init();
 
         {
-            let mut map = SHashMap::new_with_capacity(3);
+            let mut map = SHashMap::new_with_capacity(3).debugless_unwrap();
 
             assert!(map.remove(&10).is_none());
             assert!(map.get(&10).is_none());
@@ -801,22 +822,23 @@ mod tests {
                     let key = generate_random_string(&mut self.rng);
                     let value = generate_random_string(&mut self.rng);
 
-                    self.map()
-                        .insert(
-                            SBox::new(key.clone()).unwrap(),
-                            SBox::new(value.clone()).unwrap(),
-                        )
-                        .unwrap();
-                    self.example.insert(key.clone(), value);
+                    if let Ok(key_data) = SBox::new(key.clone()) {
+                        if let Ok(val_data) = SBox::new(value.clone()) {
+                            if self.map().insert(key_data, val_data).is_err() {
+                                return;
+                            }
+                            self.example.insert(key.clone(), value);
 
-                    match self.keys.binary_search(&key) {
-                        Ok(idx) => {}
-                        Err(idx) => {
-                            self.keys.insert(idx, key);
+                            match self.keys.binary_search(&key) {
+                                Ok(idx) => {}
+                                Err(idx) => {
+                                    self.keys.insert(idx, key);
+                                }
+                            };
+
+                            self.log.push(Action::Insert);
                         }
-                    };
-
-                    self.log.push(Action::Insert);
+                    }
                 }
                 // REMOVE
                 60..=89 => {
@@ -835,17 +857,23 @@ mod tests {
                     self.log.push(Action::Remove);
                 }
                 // CANISTER UPGRADE
-                _ => {
-                    store_custom_data(1, SBox::new(self.map.take().unwrap()).unwrap());
+                _ => match SBox::new(self.map.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.map = retrieve_custom_data::<SHashMap<SBox<String>, SBox<String>>>(1)
-                        .map(|it| it.into_inner());
+                        self.map = retrieve_custom_data::<SHashMap<SBox<String>, SBox<String>>>(1)
+                            .map(|it| it.into_inner());
 
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(map) => {
+                        self.map = Some(map);
+                    }
+                },
             }
 
             _debug_validate_allocator();
@@ -866,7 +894,23 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(10);
 
         {
             let mut fuzzer = Fuzzer::new();

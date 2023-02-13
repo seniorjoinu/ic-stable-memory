@@ -45,16 +45,21 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         }
     }
 
-    pub fn push(&mut self, it: T) -> Result<(), OutOfMemory> {
-        let mut sector = self.get_or_create_current_sector()?;
-        self.move_to_next_sector_if_needed(&mut sector)?;
+    pub fn push(&mut self, it: T) -> Result<(), T> {
+        if let Ok(mut sector) = self.get_or_create_current_sector() {
+            if self.move_to_next_sector_if_needed(&mut sector).is_ok() {
+                sector.write_and_own_element(self.cur_sector_last_item_offset, it);
+                self.cur_sector_last_item_offset += T::SIZE as u64;
+                self.cur_sector_len += 1;
+                self.len += 1;
 
-        sector.write_and_own_element(self.cur_sector_last_item_offset, it);
-        self.cur_sector_last_item_offset += T::SIZE as u64;
-        self.cur_sector_len += 1;
-        self.len += 1;
-
-        Ok(())
+                Ok(())
+            } else {
+                Err(it)
+            }
+        } else {
+            Err(it)
+        }
     }
 
     pub fn pop(&mut self) -> Option<T> {
@@ -131,16 +136,6 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
     #[inline]
     pub fn rev_iter(&self) -> SLogIter<'_, T> {
         SLogIter::new(self)
-    }
-
-    pub fn from_std(mut vec: Vec<T>) -> Result<Self, OutOfMemory> {
-        let mut slog = Self::new();
-
-        for _ in 0..vec.len() {
-            slog.push(vec.remove(0))?;
-        }
-
-        Ok(slog)
     }
 
     fn find_sector_for_idx(&self, idx: u64) -> Option<(Sector<T>, u64)> {
@@ -507,8 +502,8 @@ mod tests {
     use crate::collections::log::SLog;
     use crate::utils::test::generate_random_string;
     use crate::{
-        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
-        stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
+        _debug_validate_allocator, get_allocated_size, init_allocator, retrieve_custom_data,
+        stable, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
         store_custom_data, SBox,
     };
     use rand::rngs::ThreadRng;
@@ -644,10 +639,12 @@ mod tests {
                 0..=60 => {
                     let str = generate_random_string(&mut self.rng);
 
-                    self.it().push(SBox::new(str.clone()).unwrap());
-                    self.example.push(str);
+                    if let Ok(data) = SBox::new(str.clone()) {
+                        self.it().push(data);
+                        self.example.push(str);
 
-                    self.log.push(Action::Push);
+                        self.log.push(Action::Push);
+                    }
                 }
                 // POP ~30%
                 61..=90 => {
@@ -657,16 +654,22 @@ mod tests {
                     self.log.push(Action::Pop)
                 }
                 // CANISTER UPGRADE ~10%
-                _ => {
-                    store_custom_data(1, SBox::new(self.state.take().unwrap()).unwrap());
+                _ => match SBox::new(self.state.take().unwrap()) {
+                    Ok(data) => {
+                        store_custom_data(1, data);
 
-                    stable_memory_pre_upgrade();
-                    stable_memory_post_upgrade();
+                        if stable_memory_pre_upgrade().is_ok() {
+                            stable_memory_post_upgrade();
+                        }
 
-                    self.state = retrieve_custom_data(1).map(|it| it.into_inner());
+                        self.state = retrieve_custom_data(1).map(|it| it.into_inner());
 
-                    self.log.push(Action::CanisterUpgrade);
-                }
+                        self.log.push(Action::CanisterUpgrade);
+                    }
+                    Err(log) => {
+                        self.state = Some(log);
+                    }
+                },
             }
 
             _debug_validate_allocator();
@@ -684,7 +687,23 @@ mod tests {
     #[test]
     fn fuzzer_works_fine() {
         stable::clear();
-        stable_memory_init();
+        init_allocator(0);
+
+        {
+            let mut fuzzer = Fuzzer::new();
+
+            for _ in 0..10_000 {
+                fuzzer.next();
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn fuzzer_works_fine_limited_memory() {
+        stable::clear();
+        init_allocator(10);
 
         {
             let mut fuzzer = Fuzzer::new();

@@ -480,6 +480,3 @@ mod private {
     impl<const N: usize> Sealed for [u8; N] {}
     impl Sealed for Vec<u8> {}
 }
-
-// TODO: make macro for tests
-// take type instance, write it to buffer, extend buffer to make it bigger, try to decode back
