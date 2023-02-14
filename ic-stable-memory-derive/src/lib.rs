@@ -1,13 +1,15 @@
+use crate::as_fixed_size_bytes::derive_as_fixed_size_bytes_impl;
 use crate::candid_as_dyn_size_bytes::derive_candid_as_dyn_size_bytes_impl;
+use crate::fixed_size_as_dyn_size_bytes::derive_fixed_size_as_dyn_size_bytes_impl;
+use crate::stable_type::derive_stable_type_impl;
 use proc_macro::TokenStream as Tokens;
-use proc_macro2::{self, Ident as IdentPM, TokenStream};
-use quote::{format_ident, quote};
-use stable_drop::derive_stable_drop_impl;
-use stable_type::{derive_as_fixed_size_bytes, derive_fixed_size, derive_stable_allocated};
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Ident, Index};
+use proc_macro2::{self, TokenStream};
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Fields, Ident, Index};
 
+mod as_fixed_size_bytes;
 mod candid_as_dyn_size_bytes;
-mod stable_drop;
+mod fixed_size_as_dyn_size_bytes;
 mod stable_type;
 
 #[proc_macro_derive(StableType)]
@@ -18,21 +20,12 @@ pub fn derive_stable_type(input: Tokens) -> Tokens {
         generics,
         ..
     } = parse_macro_input!(input);
-    let fixed_size = derive_fixed_size(&ident, &data, &generics);
-    let as_fixed_size_bytes = derive_as_fixed_size_bytes(&ident, &data, &generics);
-    let stable_allocated = derive_stable_allocated(&ident, &generics);
 
-    let out = quote! {
-        #fixed_size
-        #as_fixed_size_bytes
-        #stable_allocated
-    };
-
-    out.into()
+    derive_stable_type_impl(&ident, &data, &generics).into()
 }
 
-#[proc_macro_derive(StableDrop)]
-pub fn derive_stable_drop(input: Tokens) -> Tokens {
+#[proc_macro_derive(AsFixedSizeBytes)]
+pub fn derive_as_fixed_size_bytes(input: Tokens) -> Tokens {
     let DeriveInput {
         ident,
         data,
@@ -40,17 +33,23 @@ pub fn derive_stable_drop(input: Tokens) -> Tokens {
         ..
     } = parse_macro_input!(input);
 
-    derive_stable_drop_impl(&ident, &generics).into()
+    derive_as_fixed_size_bytes_impl(&ident, &data, &generics).into()
 }
 
 #[proc_macro_derive(CandidAsDynSizeBytes)]
 pub fn derive_candid_as_dyn_size_bytes(input: Tokens) -> Tokens {
     let DeriveInput {
-        ident,
-        data,
-        generics,
-        ..
+        ident, generics, ..
     } = parse_macro_input!(input);
 
     derive_candid_as_dyn_size_bytes_impl(&ident, &generics).into()
+}
+
+#[proc_macro_derive(FixedSizeAsDynSizeBytes)]
+pub fn derive_fixed_size_as_dyn_size_bytes(input: Tokens) -> Tokens {
+    let DeriveInput {
+        ident, generics, ..
+    } = parse_macro_input!(input);
+
+    derive_fixed_size_as_dyn_size_bytes_impl(&ident, &generics).into()
 }

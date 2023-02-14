@@ -7,6 +7,5 @@ edition = "2021"
 
 [dependencies]
 ic-stable-memory = { path = "../../ic-stable-memory" }
-ic-stable-memory-derive = { path = "../ic-stable-memory-derive" }
 candid = "0.8.4"
 serde = "1.0.152"

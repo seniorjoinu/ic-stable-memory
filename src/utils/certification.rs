@@ -79,7 +79,7 @@ impl WitnessForker {
             }
             it => {
                 let lh = mem::replace(it, HashTree::Empty);
-                mem::replace(it, fork(lh, rh));
+                *it = fork(lh, rh);
             }
         }
     }

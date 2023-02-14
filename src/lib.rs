@@ -23,7 +23,8 @@ pub mod utils;
 /// 3. Про то, как хендлить OOM: а) прямой отлов и реверс транзакции; б) композитные структуры данных, бекапящие невлезшие данные в обычные структуры данных
 /// 4. Про бенчмарки
 /// 5. Про то, как преехать с обычных структур данных, на эти
-pub use ic_stable_memory_derive::{CandidAsDynSizeBytes, StableDrop, StableType};
+/// 6. Про енкодинг - как имплементировать Fixed и Dyn
+pub use ic_stable_memory_derive as derive;
 
 use crate::utils::isoprint;
 pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
