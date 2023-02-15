@@ -22,6 +22,41 @@ pub enum HashTree {
     Pruned(Hash),
 }
 
+pub fn merge_hash_trees(lhs: HashTree, rhs: HashTree) -> HashTree {
+    use HashTree::{Empty, Fork, Labeled, Leaf, Pruned};
+
+    match (lhs, rhs) {
+        (Pruned(l), Pruned(r)) => {
+            if l != r {
+                panic!("merge_hash_trees: inconsistent hashes");
+            }
+            Pruned(l)
+        }
+        (Pruned(_), r) => r,
+        (l, Pruned(_)) => l,
+        (Fork(l), Fork(r)) => Fork(Box::new((
+            merge_hash_trees(l.0, r.0),
+            merge_hash_trees(l.1, r.1),
+        ))),
+        (Labeled(l_label, l), Labeled(r_label, r)) => {
+            if l_label != r_label {
+                panic!("merge_hash_trees: inconsistent hash tree labels");
+            }
+            Labeled(l_label, Box::new(merge_hash_trees(*l, *r)))
+        }
+        (Empty, Empty) => Empty,
+        (Leaf(l), Leaf(r)) => {
+            if l != r {
+                panic!("merge_hash_trees: inconsistent leaves");
+            }
+            Leaf(l)
+        }
+        (_l, _r) => {
+            panic!("merge_hash_trees: inconsistent tree structure");
+        }
+    }
+}
+
 pub fn traverse_hashtree<Fn: FnMut(&HashTree)>(tree: &HashTree, f: &mut Fn) {
     f(tree);
 
@@ -229,20 +264,6 @@ pub trait AsHashTree {
     /// Returns the root hash of the tree without constructing it.
     /// Must be equivalent to `HashTree::reconstruct()`.
     fn root_hash(&self) -> Hash;
-}
-
-impl AsHashTree for Hash {
-    #[inline]
-    fn root_hash(&self) -> Hash {
-        *self
-    }
-}
-
-impl AsHashTree for () {
-    #[inline]
-    fn root_hash(&self) -> Hash {
-        empty_hash()
-    }
 }
 
 impl<

@@ -365,7 +365,8 @@ impl<
 mod tests {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
     use crate::utils::certification::{
-        leaf, leaf_hash, traverse_hashtree, AsHashTree, AsHashableBytes, Hash, HashTree,
+        leaf, leaf_hash, merge_hash_trees, traverse_hashtree, AsHashTree, AsHashableBytes, Hash,
+        HashTree,
     };
     use crate::utils::test::generate_random_string;
     use crate::{
@@ -373,9 +374,11 @@ mod tests {
         stable, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade,
         store_custom_data, SBox,
     };
+    use ic_certified_map::RbTree;
     use rand::rngs::ThreadRng;
     use rand::seq::SliceRandom;
     use rand::{thread_rng, Rng};
+    use std::borrow::Cow;
 
     impl AsHashTree for u64 {
         fn root_hash(&self) -> Hash {
@@ -610,6 +613,57 @@ mod tests {
 
             let leaves = hash_tree_to_labeled_leaves(proof);
             assert!(leaves.is_empty());
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn merge_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        #[derive(Debug, Default, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+        struct U64(pub u64);
+
+        impl ic_certified_map::AsHashTree for U64 {
+            fn as_hash_tree(&self) -> ic_certified_map::HashTree<'_> {
+                ic_certified_map::HashTree::Leaf(Cow::Owned(self.0.to_le_bytes().to_vec()))
+            }
+
+            fn root_hash(&self) -> ic_certified_map::Hash {
+                ic_certified_map::leaf_hash(&self.0.to_le_bytes())
+            }
+        }
+
+        {
+            let mut map = SCertifiedBTreeMap::<SBox<u64>, SBox<u64>>::default();
+            let mut rb = RbTree::<[u8; 8], U64>::new();
+
+            for i in 0..100 {
+                map.insert(SBox::new(i * 2).unwrap(), SBox::new(i * 2).unwrap())
+                    .unwrap();
+
+                rb.insert((i * 2).to_le_bytes(), U64(i * 2));
+            }
+
+            map.commit();
+
+            let map_w1 = map.prove_absence(&11);
+            let map_w2 = map.witness_with(&22, |val| leaf(val.as_hashable_bytes()));
+
+            assert_eq!(map_w1.reconstruct(), map.root_hash());
+            assert_eq!(map_w2.reconstruct(), map.root_hash());
+
+            let w3 = merge_hash_trees(map_w1, map_w2);
+            assert_eq!(w3.reconstruct(), map.root_hash());
+
+            let rb_w1 = rb.witness(&11u64.to_le_bytes());
+            let rb_w2 = rb.witness(&22u64.to_le_bytes());
+
+            let rb_w3 = rb.key_range(&9u64.to_le_bytes(), &100u64.to_le_bytes());
+            let map_w3 = map.prove_range(&9, &100);
         }
 
         _debug_validate_allocator();

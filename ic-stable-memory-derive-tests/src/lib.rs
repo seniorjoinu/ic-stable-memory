@@ -91,3 +91,157 @@ mod derive_tests {
         assert_eq!(c, c_copy);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use candid::{CandidType, Deserialize};
+    use ic_stable_memory::collections::{
+        SBTreeMap, SBTreeSet, SCertifiedBTreeMap, SHashMap, SHashSet, SLog, SVec,
+    };
+    use ic_stable_memory::derive::{AsFixedSizeBytes, CandidAsDynSizeBytes, StableType};
+    use ic_stable_memory::utils::certification::{
+        leaf, leaf_hash, AsHashTree, AsHashableBytes, Hash,
+    };
+    use ic_stable_memory::utils::DebuglessUnwrap;
+    use ic_stable_memory::{
+        get_allocated_size, retrieve_custom_data, stable_memory_init, store_custom_data, SBox,
+    };
+    use rand::rngs::ThreadRng;
+    use rand::{thread_rng, Rng};
+    use std::borrow::Borrow;
+
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                            abcdefghijklmnopqrstuvwxyz\
+                            0123456789)(*&^%$#@!~";
+
+    pub fn generate_random_string(rng: &mut ThreadRng) -> String {
+        let len = rng.gen_range(10..1000usize);
+
+        (0..len)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
+    }
+
+    #[derive(
+        Clone,
+        Debug,
+        Ord,
+        PartialOrd,
+        Eq,
+        PartialEq,
+        Default,
+        CandidType,
+        Deserialize,
+        CandidAsDynSizeBytes,
+        StableType,
+    )]
+    struct WrappedString(pub String);
+
+    impl Borrow<String> for WrappedString {
+        fn borrow(&self) -> &String {
+            self.0.borrow()
+        }
+    }
+
+    impl AsHashTree for WrappedString {
+        fn root_hash(&self) -> Hash {
+            leaf_hash(self.0.as_bytes())
+        }
+    }
+
+    impl AsHashableBytes for WrappedString {
+        fn as_hashable_bytes(&self) -> Vec<u8> {
+            self.0.as_bytes().to_vec()
+        }
+    }
+
+    #[derive(AsFixedSizeBytes, StableType, Default)]
+    struct State {
+        vec: SVec<SBox<String>>,
+        log: SLog<SBox<String>>,
+        hash_map: SHashMap<SBox<String>, SBox<String>>,
+        hash_set: SHashSet<SBox<String>>,
+        btree_map: SBTreeMap<SBox<String>, SBox<String>>,
+        btree_set: SBTreeSet<SBox<String>>,
+        certified_btree_map: SCertifiedBTreeMap<SBox<WrappedString>, SBox<WrappedString>>,
+    }
+
+    #[test]
+    fn big_state_works_fine() {
+        ic_stable_memory::stable::clear();
+        stable_memory_init();
+
+        {
+            let mut rng = thread_rng();
+            let mut state = State::default();
+
+            for _ in 0..100 {
+                let str = generate_random_string(&mut rng);
+
+                state.vec.push(SBox::new(str.clone()).unwrap()).unwrap();
+                state.log.push(SBox::new(str.clone()).unwrap()).unwrap();
+                state
+                    .hash_map
+                    .insert(
+                        SBox::new(str.clone()).unwrap(),
+                        SBox::new(str.clone()).unwrap(),
+                    )
+                    .unwrap();
+                state
+                    .hash_set
+                    .insert(SBox::new(str.clone()).unwrap())
+                    .unwrap();
+                state
+                    .btree_map
+                    .insert(
+                        SBox::new(str.clone()).unwrap(),
+                        SBox::new(str.clone()).unwrap(),
+                    )
+                    .unwrap();
+                state
+                    .btree_set
+                    .insert(SBox::new(str.clone()).unwrap())
+                    .unwrap();
+                state
+                    .certified_btree_map
+                    .insert_and_commit(
+                        SBox::new(WrappedString(str.clone())).unwrap(),
+                        SBox::new(WrappedString(str)).unwrap(),
+                    )
+                    .unwrap();
+
+                for i in 0..state.vec.len() {
+                    let val = state.vec.get(i).unwrap();
+                    assert_eq!(*state.log.get(i as u64).unwrap(), *val);
+                    assert_eq!(*state.hash_map.get(&*val).unwrap(), *val);
+                    assert!(state.hash_set.contains(&*val));
+                    assert_eq!(*state.btree_map.get(&*val).unwrap(), *val);
+                    assert!(state.btree_set.contains(&*val));
+                    assert_eq!(
+                        *state
+                            .certified_btree_map
+                            .get(&WrappedString(val.get().clone()))
+                            .unwrap()
+                            .get(),
+                        WrappedString(val.get().clone())
+                    );
+
+                    let w = state
+                        .certified_btree_map
+                        .witness_with(&WrappedString(val.get().clone()), |v| {
+                            leaf(v.get().as_hashable_bytes())
+                        });
+                    assert_eq!(w.reconstruct(), state.certified_btree_map.root_hash());
+
+                    store_custom_data(1, SBox::new(state).debugless_unwrap());
+                    state = retrieve_custom_data(1).unwrap().into_inner();
+                }
+            }
+        }
+
+        assert_eq!(get_allocated_size(), 0);
+    }
+}

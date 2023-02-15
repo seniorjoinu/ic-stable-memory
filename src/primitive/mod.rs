@@ -1,4 +1,5 @@
 use candid::{Int, Nat, Principal};
+use serde_bytes::ByteBuf;
 use std::collections::{BTreeSet, HashSet};
 
 pub mod s_box;
@@ -58,6 +59,8 @@ impl<const N: usize> StableType for [f64; N] {}
 impl StableType for Principal {}
 impl StableType for Nat {}
 impl StableType for Int {}
+
+impl StableType for ByteBuf {}
 
 impl<T: StableType> StableType for Option<T> {
     #[inline]

@@ -27,7 +27,7 @@ impl<R, E> DebuglessUnwrap<R> for Result<R, E> {
     fn debugless_unwrap(self) -> R {
         match self {
             Err(_) => panic!("Unwrapped a Result type without debug info"),
-            Ok(r) => r
+            Ok(r) => r,
         }
     }
 }

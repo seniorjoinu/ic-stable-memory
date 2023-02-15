@@ -132,10 +132,12 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
 
     quote! {
         impl ic_stable_memory::StableType for #ident {
+            #[inline]
             unsafe fn assume_owned_by_stable_memory(&mut self) {
                 #assume_owned_body
             }
 
+            #[inline]
             unsafe fn assume_not_owned_by_stable_memory(&mut self) {
                 #assume_not_owned_body
             }
