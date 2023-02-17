@@ -294,12 +294,12 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn write_and_own_key(&mut self, idx: usize, mut key: K) {
-        unsafe { crate::mem::write_and_own_fixed(self.get_key_ptr(idx), &mut key) };
+        unsafe { crate::mem::write_fixed(self.get_key_ptr(idx), &mut key) };
     }
 
     #[inline]
     pub fn read_and_disown_key(&mut self, idx: usize) -> K {
-        unsafe { crate::mem::read_and_disown_fixed(self.get_key_ptr(idx)) }
+        unsafe { crate::mem::read_fixed_for_move(self.get_key_ptr(idx)) }
     }
 
     #[inline]
@@ -314,12 +314,12 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn write_and_own_value(&mut self, idx: usize, mut value: V) {
-        unsafe { crate::mem::write_and_own_fixed(self.get_value_ptr(idx), &mut value) };
+        unsafe { crate::mem::write_fixed(self.get_value_ptr(idx), &mut value) };
     }
 
     #[inline]
     pub fn read_and_disown_value(&mut self, idx: usize) -> V {
-        unsafe { crate::mem::read_and_disown_fixed(self.get_value_ptr(idx)) }
+        unsafe { crate::mem::read_fixed_for_move(self.get_value_ptr(idx)) }
     }
 
     #[inline]
@@ -351,7 +351,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         let mut k = K::from_fixed_size_bytes(k_buf._deref());
 
         unsafe {
-            k.assume_owned_by_stable_memory();
+            k.stable_drop_flag_off();
         }
 
         k
@@ -392,7 +392,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
         let mut v = V::from_fixed_size_bytes(v_buf._deref());
 
         unsafe {
-            v.assume_owned_by_stable_memory();
+            v.stable_drop_flag_off();
         }
 
         v
@@ -463,7 +463,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     pub fn write_len(&mut self, mut len: usize) {
         let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
-        unsafe { crate::mem::write_and_own_fixed(ptr, &mut len) };
+        unsafe { crate::mem::write_fixed(ptr, &mut len) };
     }
 
     #[inline]
@@ -477,7 +477,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     fn init_node_type(&mut self) {
         let ptr = SSlice::_offset(self.ptr, NODE_TYPE_OFFSET);
 
-        unsafe { crate::mem::write_and_own_fixed(ptr, &mut NODE_TYPE_LEAF) };
+        unsafe { crate::mem::write_fixed(ptr, &mut NODE_TYPE_LEAF) };
     }
 }
 

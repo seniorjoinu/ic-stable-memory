@@ -40,7 +40,7 @@ pub struct SHashMap<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType 
     table_ptr: u64,
     len: usize,
     cap: usize,
-    is_owned: bool,
+    stable_drop_flag: bool,
     _marker_k: PhantomData<K>,
     _marker_v: PhantomData<V>,
 }
@@ -66,7 +66,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             table_ptr: EMPTY_PTR,
             len: 0,
             cap: DEFAULT_CAPACITY,
-            is_owned: false,
+            stable_drop_flag: true,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
@@ -85,7 +85,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             table_ptr: table.as_ptr(),
             len: 0,
             cap: capacity,
-            is_owned: false,
+            stable_drop_flag: true,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         })
@@ -144,7 +144,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                             // dirty hack to make it not call stable_drop() when it is dropped
                             // it is safe to use, since we've moved all the data inside into the new map
                             // and deallocated the underlying slice
-                            unsafe { self.assume_owned_by_stable_memory() };
+                            unsafe { self.stable_drop_flag_off() };
 
                             *self = new;
 
@@ -254,8 +254,8 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                 let mut v = self.read_and_disown_val(i);
                 if f(&k, &v) {
                     unsafe {
-                        k.assume_owned_by_stable_memory();
-                        v.assume_owned_by_stable_memory();
+                        k.stable_drop_flag_off();
+                        v.stable_drop_flag_off();
                     }
 
                     continue;
@@ -342,7 +342,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
         match flag {
             EMPTY => None,
-            OCCUPIED => Some(unsafe { crate::mem::read_and_disown_fixed(ptr + 1) }),
+            OCCUPIED => Some(unsafe { crate::mem::read_fixed_for_move(ptr + 1) }),
             _ => unreachable!(),
         }
     }
@@ -362,13 +362,13 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         let ptr = self.get_key_flag_ptr(idx);
 
         if let Some(mut k) = key {
-            unsafe { crate::mem::write_and_own_fixed(ptr, &mut OCCUPIED) };
-            unsafe { crate::mem::write_and_own_fixed(ptr + 1, &mut k) };
+            unsafe { crate::mem::write_fixed(ptr, &mut OCCUPIED) };
+            unsafe { crate::mem::write_fixed(ptr + 1, &mut k) };
 
             return;
         }
 
-        unsafe { crate::mem::write_and_own_fixed(ptr, &mut EMPTY) };
+        unsafe { crate::mem::write_fixed(ptr, &mut EMPTY) };
     }
 
     #[inline]
@@ -383,12 +383,12 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
     #[inline]
     fn read_and_disown_val(&self, idx: usize) -> V {
-        unsafe { crate::mem::read_and_disown_fixed(self.get_value_ptr(idx)) }
+        unsafe { crate::mem::read_fixed_for_move(self.get_value_ptr(idx)) }
     }
 
     #[inline]
     fn write_and_own_val(&mut self, idx: usize, mut val: V) {
-        unsafe { crate::mem::write_and_own_fixed(self.get_value_ptr(idx), &mut val) }
+        unsafe { crate::mem::write_fixed(self.get_value_ptr(idx), &mut val) }
     }
 
     #[inline]
@@ -496,7 +496,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
             table_ptr,
             len,
             cap,
-            is_owned: false,
+            stable_drop_flag: false,
             _marker_k: PhantomData::default(),
             _marker_v: PhantomData::default(),
         }
@@ -507,18 +507,18 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     for SHashMap<K, V>
 {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.is_owned = true;
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.stable_drop_flag = false;
     }
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.is_owned = false;
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.stable_drop_flag = true;
     }
 
     #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.is_owned
+    fn should_stable_drop(&self) -> bool {
+        self.stable_drop_flag
     }
 
     unsafe fn stable_drop(&mut self) {
@@ -535,7 +535,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     for SHashMap<K, V>
 {
     fn drop(&mut self) {
-        if !self.is_owned_by_stable_memory() {
+        if self.should_stable_drop() {
             unsafe {
                 self.stable_drop();
             }
@@ -721,7 +721,7 @@ mod tests {
             let buf = map.as_new_fixed_size_bytes();
 
             // emulating stable memory save
-            unsafe { map.assume_owned_by_stable_memory() };
+            unsafe { map.stable_drop_flag_off() };
 
             let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
@@ -884,7 +884,7 @@ mod tests {
                 assert!(contains);
 
                 assert_eq!(
-                    self.map().get(&key).unwrap().get().deref().clone(),
+                    self.map().get(&key).unwrap().clone(),
                     self.example.get(&key).unwrap().clone()
                 );
             }

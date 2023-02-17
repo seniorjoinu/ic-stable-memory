@@ -7,7 +7,7 @@ use crate::utils::mem_context::stable;
 pub(crate) const ALLOCATED: u64 = 2u64.pow(u64::BITS - 1); // first biggest bit set to 1, other set to 0
 pub(crate) const FREE: u64 = ALLOCATED - 1; // first biggest bit set to 0, other set to 1
 
-/// A smart-pointer for stable memory.
+/// An allocated block of stable memory.
 #[derive(Debug, Copy, Clone)]
 pub struct SSlice {
     ptr: StablePtr,

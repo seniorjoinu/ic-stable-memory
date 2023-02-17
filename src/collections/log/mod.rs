@@ -20,7 +20,7 @@ pub struct SLog<T: StableType + AsFixedSizeBytes> {
     cur_sector_last_item_offset: u64,
     cur_sector_capacity: u64,
     cur_sector_len: u64,
-    is_owned: bool,
+    stable_drop_flag: bool,
     _marker: PhantomData<T>,
 }
 
@@ -40,7 +40,7 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
             cur_sector_last_item_offset: 0,
             cur_sector_capacity: DEFAULT_CAPACITY,
             cur_sector_len: 0,
-            is_owned: false,
+            stable_drop_flag: true,
             _marker: PhantomData::default(),
         }
     }
@@ -303,7 +303,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn write_prev_ptr(&mut self, mut ptr: StablePtr) {
-        unsafe { crate::mem::write_and_own_fixed(SSlice::_offset(self.0, PREV_OFFSET), &mut ptr) }
+        unsafe { crate::mem::write_fixed(SSlice::_offset(self.0, PREV_OFFSET), &mut ptr) }
     }
 
     #[inline]
@@ -313,7 +313,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn write_next_ptr(&mut self, mut ptr: StablePtr) {
-        unsafe { crate::mem::write_and_own_fixed(SSlice::_offset(self.0, NEXT_OFFSET), &mut ptr) }
+        unsafe { crate::mem::write_fixed(SSlice::_offset(self.0, NEXT_OFFSET), &mut ptr) }
     }
 
     #[inline]
@@ -323,9 +323,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn write_capacity(&mut self, mut cap: u64) {
-        unsafe {
-            crate::mem::write_and_own_fixed(SSlice::_offset(self.0, CAPACITY_OFFSET), &mut cap)
-        }
+        unsafe { crate::mem::write_fixed(SSlice::_offset(self.0, CAPACITY_OFFSET), &mut cap) }
     }
 
     #[inline]
@@ -335,7 +333,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn read_and_disown_element(&self, offset: u64) -> T {
-        unsafe { crate::mem::read_and_disown_fixed(self.get_element_ptr(offset)) }
+        unsafe { crate::mem::read_fixed_for_move(self.get_element_ptr(offset)) }
     }
 
     #[inline]
@@ -350,7 +348,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn write_and_own_element(&self, offset: u64, mut element: T) {
-        unsafe { crate::mem::write_and_own_fixed(self.get_element_ptr(offset), &mut element) };
+        unsafe { crate::mem::write_fixed(self.get_element_ptr(offset), &mut element) };
     }
 }
 
@@ -454,7 +452,7 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
             cur_sector_len,
             cur_sector_capacity,
             cur_sector_last_item_offset,
-            is_owned: false,
+            stable_drop_flag: false,
             _marker: PhantomData::default(),
         }
     }
@@ -462,18 +460,18 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
 
 impl<T: StableType + AsFixedSizeBytes> StableType for SLog<T> {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.is_owned = true;
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.stable_drop_flag = false;
     }
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.is_owned = false;
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.stable_drop_flag = true;
     }
 
     #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.is_owned
+    fn should_stable_drop(&self) -> bool {
+        self.stable_drop_flag
     }
 
     #[inline]
@@ -489,7 +487,7 @@ impl<T: StableType + AsFixedSizeBytes> StableType for SLog<T> {
 
 impl<T: StableType + AsFixedSizeBytes> Drop for SLog<T> {
     fn drop(&mut self) {
-        if !self.is_owned_by_stable_memory() {
+        if self.should_stable_drop() {
             unsafe {
                 self.stable_drop();
             }
@@ -662,7 +660,8 @@ mod tests {
                             stable_memory_post_upgrade();
                         }
 
-                        self.state = retrieve_custom_data(1).map(|it| it.into_inner());
+                        self.state =
+                            retrieve_custom_data::<SLog<SBox<String>>>(1).map(|it| it.into_inner());
 
                         self.log.push(Action::CanisterUpgrade);
                     }
@@ -677,7 +676,7 @@ mod tests {
 
             for i in 0..self.it().len() {
                 assert_eq!(
-                    self.it().get(i).unwrap().get().clone(),
+                    self.it().get(i).unwrap().clone(),
                     self.example.get(i as usize).unwrap().clone()
                 );
             }

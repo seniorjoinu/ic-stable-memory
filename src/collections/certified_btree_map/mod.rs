@@ -331,13 +331,13 @@ impl<
     > StableType for SCertifiedBTreeMap<K, V>
 {
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.inner.assume_not_owned_by_stable_memory();
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.inner.stable_drop_flag_on();
     }
 
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.inner.assume_owned_by_stable_memory();
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.inner.stable_drop_flag_off();
     }
 }
 

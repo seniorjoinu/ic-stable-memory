@@ -23,7 +23,7 @@ impl<'o, T: StableType + AsFixedSizeBytes> SRefMut<'o, T> {
     #[inline]
     unsafe fn read(&self) {
         if (*self.inner.get()).is_none() {
-            let it = crate::mem::read_and_disown_fixed(self.ptr);
+            let it = crate::mem::read_fixed_for_move(self.ptr);
             *self.inner.get() = Some(it);
         }
     }
@@ -31,7 +31,7 @@ impl<'o, T: StableType + AsFixedSizeBytes> SRefMut<'o, T> {
     #[inline]
     unsafe fn repersist(&mut self) {
         if let Some(it) = self.inner.get_mut() {
-            crate::mem::write_and_own_fixed(self.ptr, it);
+            crate::mem::write_fixed(self.ptr, it);
         }
     }
 }

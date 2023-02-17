@@ -1,28 +1,30 @@
-extern crate core;
+#![warn(missing_docs)]
+#![deny(missing_doc_code_examples)]
+
+//! This crate provides a number of "stable" data structures - collections that use canister's stable
+//! memory for storage, as well as other primitives that allow storing all data of your canister in stable memory.
+//! This crate also provides the [`SCertifiedBTreeMap`](collections::SCertifiedBTreeMap) - a Merkle-tree based collection that can
+//! be used to include custom data into canister's certified state tree.
+//!
+//! This documentation only covers API and some implementation details. For more useful info and
+//! tutorials, please visit [project's Github page](https://github.com/seniorjoinu/ic-stable-memory).
 
 use crate::mem::allocator::StableMemoryAllocator;
 use mem::s_slice::SSlice;
 use std::cell::RefCell;
 
 mod benches;
+/// All collections provided by this crate
 pub mod collections;
+/// Traits and algorithms for internal data encoding
 pub mod encoding;
+/// Stable memory allocator and related structs
 pub mod mem;
+/// Stable memory smart-pointers
 pub mod primitive;
+/// Various utilities: certification, stable memory API wrapper etc.
 pub mod utils;
 
-/// МАКРОСЫ + ОБЩИЙ ФАЗЗЕР НА БОЛЬШОЙ СТЕЙТ ИЗ ВСЕГО ПОДРЯД
-/// КОВЕРАЖ ДО 90+
-/// ПРОГОНИ ФАЗЗЕРЫ ЕЩЕ
-/// НАПИСАТЬ ДОКУМЕНТАЦИЮ + ПОМЕТИТЬ ФИКСМИ
-///
-/// ДОКУМЕНТАЦИЯ
-/// 1. Про то, как сделать быстро
-/// 2. Про то, как сохранить апгрейдабилити
-/// 3. Про то, как хендлить OOM: а) прямой отлов и реверс транзакции; б) композитные структуры данных, бекапящие невлезшие данные в обычные структуры данных
-/// 4. Про бенчмарки
-/// 5. Про то, как преехать с обычных структур данных, на эти
-/// 6. Про енкодинг - как имплементировать Fixed и Dyn + StableType
 pub use ic_stable_memory_derive as derive;
 
 use crate::utils::isoprint;
@@ -35,6 +37,143 @@ thread_local! {
     static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);
 }
 
+/// Initializes the [memory allocator](mem::allocator::StableMemoryAllocator).
+///
+/// This function should be called *ONLY ONCE* during the lifetime of a canister. For canisters,
+/// that are being build using this crate from scratch, the most apropriate place to call it is the
+/// `#[init]` canister method. For canisters which are migrating from standard data structures thic
+/// function should be added as a first line of `#[post_upgrade]` canister method and later (right after
+/// this canister upgrade happens) in the next code revision it should be replaced with [stable_memory_post_upgrade()].
+///
+/// Stable memory allocator is stored inside a `thread_local!` static variable at runtime.
+///
+/// Works the same way as [init_allocator(0)].
+///
+/// # Panics
+/// Panics if the allocator is already initialized.
+///
+/// # Examples
+/// For new canisters:
+/// ```rust
+/// # use ic_stable_memory::stable_memory_init;
+/// #[ic_cdk_macros::init]
+/// fn init() {
+///     stable_memory_init();
+///
+///     // the rest of the initialization
+/// }
+/// ```
+///
+/// For migrating canisters:
+/// ```rust
+/// // canister version N
+/// # use ic_stable_memory::stable_memory_init;
+/// #[ic_cdk_macros::post_upgrade]
+/// fn post_upgrade() {
+///     stable_memory_init();
+///
+///     // move data from standard collections into "stable" ones
+/// }
+/// ```
+/// ```rust
+/// // canister version N+1
+/// # use ic_stable_memory::stable_memory_post_upgrade;
+/// #[ic_cdk_macros::post_upgrade]
+/// fn post_upgrade() {
+///     stable_memory_post_upgrade();
+///
+///     // the rest of canister's reinitialization
+/// }
+/// ```
+#[inline]
+pub fn stable_memory_init() {
+    init_allocator(0);
+}
+
+/// Persists the memory allocator into stable memory between canister upgrades.
+///
+/// See also [stable_memory_post_upgrade].
+///
+/// This function should be called as the last step of the `#[pre_ugrade]` canister method.
+///
+/// It works by first writing the allocator to an `SBox` and then writing a pointer to that `SBox` into
+/// frist 8 bytes of stable memory (offsets [0..8)). `thread_local!` static variable that stores the
+/// allocator also gets cleared, if this function is executed successfully.
+///
+/// If it was impossible to allocate a memory block of required size, this function returns an [OutOfMemory]
+/// error. For tips on possible ways of resolving an [OutOfMemory] error visit [this page](https://github.com/seniorjoinu/ic-stable-memory/docs/out-of-memory-error-handling.md).
+///
+/// This function is an alias for [deinit_allocator()].
+///
+/// # Example
+/// ```rust
+/// # use ic_stable_memory::stable_memory_pre_upgrade;
+/// #[ic_cdk_macros::pre_upgrade]
+/// fn pre_upgrade() {
+///     // other pre-upgrade routine
+///
+///     if stable_memory_pre_upgrade().is_err() {
+///         panic!("Out of stable memory")
+///     }
+/// }
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn stable_memory_pre_upgrade() -> Result<(), OutOfMemory> {
+    deinit_allocator()
+}
+
+/// Retrieves the memory allocator from stable memory.
+///
+/// See also [stable_memory_pre_upgrade].
+///
+/// This function should be called as the first step of the `#[post_upgrade]` canister method.
+///
+/// The process is exactly the same as in `stable_memory_pre_upgrade`, but in reverse order. It reads
+/// first 8 bytes of stable memory to get a pointer. Then the `SBox` located at that pointer is read
+/// and "unboxed" into the allocator. Then the allocator is assigned back to the `thread_local!` variable.
+///
+/// This function is an alias for [reinit_allocator()].
+///
+/// # Example
+/// ```rust
+/// use ic_stable_memory::stable_memory_post_upgrade;
+/// #[ic_cdk_macros::post_upgrade]
+/// fn post_upgrade() {
+///     stable_memory_post_upgrade();
+///
+///     // other post-upgrade routine
+/// }
+/// ```
+///
+/// # Panics
+/// This function will panic if:
+/// 1. there is no valid pointer stored at first 8 bytes of stable memory,
+/// 2. there is no valid `SBox` was found at that location,
+/// 3. deserialization step during `SBox`'s "unboxing" failed due to invalid data stored inside this `SBox`,
+/// 4. if there was an already initialized stable memory allocator.
+#[inline]
+pub fn stable_memory_post_upgrade() {
+    reinit_allocator();
+}
+
+/// An alias for [stable_memory_init], but allows limiting the maximum number of stable memory pages
+/// that the allocator can grow. [init_allocator(0)] works exactly the same as [stable_memory_init()].
+///
+/// This function is useful for testing, when one wants to see how a canister behaves when there is
+/// only a little of stable memory available.
+///
+/// If this function is invoked in a canister that already grown more stable memory pages than the
+/// argument states (this can happen for canisters that migrate from standard collections to "stable" ones),
+/// then the actual number of already grown pages is used as a maximum number of pages
+/// instead of what is passed as an argument.
+///
+/// Passing a `0` as an argument has a special "infinite" meaning, which means "grow as many pages
+/// as needed, while it is possible".
+///
+/// Internally calls [StableMemoryAllocator::init](mem::allocator::StableMemoryAllocator::init).
 #[inline]
 pub fn init_allocator(max_pages: u64) {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
@@ -48,6 +187,12 @@ pub fn init_allocator(max_pages: u64) {
     })
 }
 
+/// An alias for [stable_memory_pre_upgrade].
+///
+/// Internally calls [StableMemoryAllocator::store](mem::allocator::StableMemoryAllocator::store).
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
 #[inline]
 pub fn deinit_allocator() -> Result<(), OutOfMemory> {
     STABLE_MEMORY_ALLOCATOR.with(|it: &RefCell<Option<StableMemoryAllocator>>| {
@@ -64,6 +209,12 @@ pub fn deinit_allocator() -> Result<(), OutOfMemory> {
     })
 }
 
+/// An alias for [stable_memory_post_upgrade].
+///
+/// Internally calls [StableMemoryAllocator::retrieve](mem::allocator::StableMemoryAllocator::retrieve).
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
 #[inline]
 pub fn reinit_allocator() {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
@@ -77,88 +228,85 @@ pub fn reinit_allocator() {
     });
 }
 
-#[inline]
-pub fn allocate(size: u64) -> Result<SSlice, OutOfMemory> {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.allocate(size)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-#[inline]
-pub fn deallocate(slice: SSlice) {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.deallocate(slice)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-/// # Safety
-/// Reallocating slices bigger than u32::MAX bytes will panic, since data has to be moved into
-/// the new location and this move is implemented via reading all bytes from the old location into
-/// a regular Vec<u8> and then writing them into the new location.
-/// Make sure, you're only reallocating slices smaller than usize::MAX.
-#[inline]
-pub unsafe fn reallocate(slice: SSlice, new_size: u64) -> Result<SSlice, OutOfMemory> {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.reallocate(slice, new_size)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-#[inline]
-pub fn make_sure_can_allocate(size: u64) -> bool {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &mut *it.borrow_mut() {
-            alloc.make_sure_can_allocate(size)
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-#[inline]
-pub fn get_allocated_size() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_allocated_size()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-#[inline]
-pub fn get_free_size() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_free_size()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
-#[inline]
-pub fn get_available_size() -> u64 {
-    STABLE_MEMORY_ALLOCATOR.with(|it| {
-        if let Some(alloc) = &*it.borrow() {
-            alloc.get_available_size()
-        } else {
-            unreachable!("StableMemoryAllocator is not initialized");
-        }
-    })
-}
-
+/// Persists a pointer to an [SBox] between canister upgrades mapped to some unique [usize] key.
+///
+/// See also [retrieve_custom_data].
+///
+/// Despite the fact that stable memory data structures from this crate store all data completely on
+/// stable memory, they themselves are stored on stack. Exactly how standard data structures ([Vec],
+/// for example) store their data on heap, but themselves are stored on stack. This means that in order
+/// to persist this data structures between canister upgrades, we have to temporary store them on
+/// stable memory aswell.
+///
+/// This function allows one to do that, by assigning a unique [usize] index to the stored data, which was
+/// previously stored in [SBox].
+///
+/// This function should be used in the `#[pre_upgrade]` canister method. Right before
+/// [stable_memory_pre_upgrade()] invocation. This function can be used multiple times, but one should
+/// make sure they always keep track of keys they are assigning custom data to. An attempt to assign
+/// two values to a single key will lead to losing the data that was assigned first. *Be careful!*
+///
+/// Internally calls [StableMemoryAllocator::store_custom_data](mem::allocator::StableMemoryAllocator::store_custom_data).
+///
+/// # Example
+/// ```rust
+/// # use ic_stable_memory::collections::SHashMap;
+/// # use ic_stable_memory::{retrieve_custom_data, SBox, stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data};
+/// // "let mut" instead of "thread_local" for simplicity
+/// let mut state = SHashMap::<u64, u64>::default();
+///
+/// #[ic_cdk_macros::pre_upgrade]
+/// fn pre_upgrade() {
+///     let boxed_state = SBox::new(state).expect("Out of memory");
+///
+///     store_custom_data(1, boxed_state);
+///
+///     // always as a last expression of "pre_upgrade"
+///     stable_memory_pre_upgrade();
+/// }
+///
+/// #[ic_cdk_macros::post_upgrade]
+/// fn post_upgrade() {
+///     // always as a first expression of "post_upgrade"
+///     stable_memory_post_upgrade();
+///
+///     let boxed_state = retrieve_custom_data::<SHashMap<u64, u64>>(1)
+///         .expect("Key not found");
+///
+///     state = boxed_state.into_inner();
+/// }
+/// ```
+///
+/// One can also persist other data this way
+/// ```rust
+/// # use ic_stable_memory::{retrieve_custom_data, SBox, stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data};
+///
+/// #[ic_cdk_macros::pre_upgrade]
+/// fn pre_upgrade() {
+///     let very_important_string = String::from("THE PASSWORD IS 42");
+///     let boxed_string = SBox::new(very_important_string)
+///         .expect("Out of memory");
+///     
+///     store_custom_data(2, boxed_string);
+///
+///     // always as a last expression of "pre_upgrade"
+///     stable_memory_pre_upgrade();
+/// }
+///
+/// #[ic_cdk_macros::post_upgrade]
+/// fn post_upgrade() {
+///     // always as a first expression of "post_upgrade"
+///     stable_memory_post_upgrade();
+///
+///     let boxed_string = retrieve_custom_data::<String>(2)
+///         .expect("Key not found");
+///
+///     let very_important_string = boxed_string.into_inner();
+/// }
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
 #[inline]
 pub fn store_custom_data<T: StableType + AsDynSizeBytes>(idx: usize, data: SBox<T>) {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
@@ -170,6 +318,24 @@ pub fn store_custom_data<T: StableType + AsDynSizeBytes>(idx: usize, data: SBox<
     })
 }
 
+/// Retrieves a pointer to some [SBox] stored previously.
+///
+/// See also [store_custom_data].
+///
+/// This function is intended to be invoked inside the `#[post_upgrade]` canister method. Right after
+/// [stable_memory_post_upgrade()] invocation. After retrieval, the key gets "forgotten", allowing
+/// reusing it again for other data.
+///
+/// Any panic in the `#[post_upgrade]` canister method results in broken canister.
+/// Please, *be careful*.
+///
+/// Internally calls [StableMemoryAllocator::retrieve_custom_data](mem::allocator::StableMemoryAllocator::retrieve_custom_data).
+///
+/// # Examples
+/// See examples of [store_custom_data].
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
 #[inline]
 pub fn retrieve_custom_data<T: StableType + AsDynSizeBytes>(idx: usize) -> Option<SBox<T>> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
@@ -181,6 +347,205 @@ pub fn retrieve_custom_data<T: StableType + AsDynSizeBytes>(idx: usize) -> Optio
     })
 }
 
+/// Attempts to allocate a new [SSlice] of at least the required size or returns an [OutOfMemory] error
+/// if there is no continuous stable memory memory block of that size can be allocated.
+///
+/// Memory block that is returned *can be bigger* than requested. This happens because:
+/// 1. Sizes for allocation are always getting rounded up to the next multiple of 8 bytes. For example,
+/// if requested 100 bytes to allocate requested, the resulting memory block can't be smaller than 104 bytes.
+/// 2. Minimum memory block size is 16 bytes. To find out more see documentation for [the allocator](mem::allocator::StableMemoryAllocator).
+/// 3. If the allocator has a free block of size less than `requested size + minimum block size`,
+/// this block won't be split and will be returned as is.
+///
+/// If the allocator only has a memory block which is bigger than `requested size + minimum block size`,
+/// that block gets split it two. The first half is returned as the result of this function, and the other
+/// half goes back to the free list.
+///
+/// If the allocator has no apropriate free memory block to allocate, it will try to grow stable memory
+/// by the number of pages enough to allocate a block of that size. If it can't grow due to lack of
+/// stable memory in a subnet or due to reaching `max_pages` limit set earlier - it will return an
+/// [OutOfMemory] error.
+///
+/// Internally calls [StableMemoryAllocator::allocate](mem::allocator::StableMemoryAllocator::allocate).
+///
+/// # Example
+/// ```rust
+/// // slice size is in [104..136) bytes range, despite requesting for only 100 bytes
+/// let slice = allocate(100).expect("Not enough stable memory");
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn allocate(size: u64) -> Result<SSlice, OutOfMemory> {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &mut *it.borrow_mut() {
+            alloc.allocate(size)
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Deallocates an already allocated [SSlice] freeing it's memory.
+///
+/// Supplied [SSlice] get's transformed into [FreeBlock](mem::free_block::FreeBlock) and then an
+/// attempt to merge it with neighboring (physically) free blocks is performed.
+///
+/// Internally calls [StableMemoryAllocator::deallocate](mem::allocator::StableMemoryAllocator::deallocate).
+///
+/// # Example
+/// ```rust
+/// let slice = allocate(100).expect("Out of memory");
+/// deallocate(slice);
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn deallocate(slice: SSlice) {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &mut *it.borrow_mut() {
+            alloc.deallocate(slice)
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Attempts to reallocate a memory block growing its size and possibly moving its content to a new
+/// location.
+///
+/// At first it tries to perform an `inplace reallocation` - check if the next neighboring (physically)
+/// memory block is also free. If that is so, this neighboring (or only a chunk of it, if it's too big)
+/// free block gets merged with the one passed as an argument to this function and returned as a result.
+/// This process does not move the data.
+///
+/// If there is no neighboring free block, than a sequence of operations is performed:
+/// 1. Copy the data to a heap-allocated byte buffer.
+/// 2. Deallocate the [SSlice] passed as an argument to this function.
+/// 3. Allocate a new [SSlice] of the requested size, possibly returning an [OutOfMemory] error.
+/// 4. Copy data from the byte buffer to this new [SSlice].
+/// 5. Return it as a result.
+/// This process moves the data.
+///
+/// If the requested new size is less than the actual size of the [SSlice] passed as an argument,
+/// the function does nothing and returns this [SSlice] as a result back.
+///
+/// Internally calls [StableMemoryAllocator::reallocate](mem::allocator::StableMemoryAllocator::reallocate).
+///
+/// # Example
+/// ```rust
+/// let slice = allocate(100).expect("Out of memory");
+/// let bigger_slice = reallocate(slice, 200).expect("Out of memory");
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+/// Reallocating [SSlice]s bigger than [u32::MAX] bytes will also panic.
+#[inline]
+pub fn reallocate(slice: SSlice, new_size: u64) -> Result<SSlice, OutOfMemory> {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &mut *it.borrow_mut() {
+            alloc.reallocate(slice, new_size)
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Checks if it would be possible to allocate a block of stable memory of the provided size right now.
+///
+/// The allocator will check its free list for a block of appropriate size. If there is no such free
+/// block, it will try to grow stable memory by the number of pages enough to fit this size.
+///
+/// Returns `true` if a block was found. Returns `false` if an attempt to grow stable memory resulted in
+/// an [OutOfMemory] error.
+///
+/// Internally calls [StableMemoryAllocator::make_sure_can_allocate](mem::allocator::StableMemoryAllocator::make_sure_can_allocate).
+///
+/// # Example
+/// ```rust
+/// # use ic_stable_memory::make_sure_can_allocate;
+/// if make_sure_can_allocate(1_000_000) {
+///     ic_cdk::print("It is possible to allocate a million bytes of stable memory");
+/// }
+/// ```
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn make_sure_can_allocate(size: u64) -> bool {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &mut *it.borrow_mut() {
+            alloc.make_sure_can_allocate(size)
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Returns the amount of stable memory in bytes which is under the allocator's management.
+///
+/// Always equals to [stable64_size()](ic_cdk::api::stable::stable64_size) - `8`.
+///
+/// Internally calls [StableMemoryAllocator::get_available_size](mem::allocator::StableMemoryAllocator::get_available_size).
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn get_available_size() -> u64 {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &*it.borrow() {
+            alloc.get_available_size()
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Returns the amount of free stable memory in bytes.
+///
+/// Internally calls [StableMemoryAllocator::get_free_size](mem::allocator::StableMemoryAllocator::get_free_size).
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn get_free_size() -> u64 {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &*it.borrow() {
+            alloc.get_free_size()
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Returns the amount of allocated stable memory in bytes.
+///
+/// Always equal to [get_available_size()] - [get_free_size()].
+///
+/// Internally calls [StableMemoryAllocator::get_allocated_size](mem::allocator::StableMemoryAllocator::get_allocated_size).
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
+#[inline]
+pub fn get_allocated_size() -> u64 {
+    STABLE_MEMORY_ALLOCATOR.with(|it| {
+        if let Some(alloc) = &*it.borrow() {
+            alloc.get_allocated_size()
+        } else {
+            unreachable!("StableMemoryAllocator is not initialized");
+        }
+    })
+}
+
+/// Returns `max_pages` parameter.
+///
+/// See [init_allocator] for more details.
+///
+/// # Panics
+/// Panics if there is no initialized stable memory allocator.
 #[inline]
 pub fn get_max_pages() -> u64 {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
@@ -212,21 +577,6 @@ pub fn _debug_print_allocator() {
             unreachable!("StableMemoryAllocator is not initialized");
         }
     })
-}
-
-#[inline]
-pub fn stable_memory_init() {
-    init_allocator(0);
-}
-
-#[inline]
-pub fn stable_memory_pre_upgrade() -> Result<(), OutOfMemory> {
-    deinit_allocator()
-}
-
-#[inline]
-pub fn stable_memory_post_upgrade() {
-    reinit_allocator();
 }
 
 #[cfg(test)]

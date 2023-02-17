@@ -34,7 +34,7 @@ pub struct SBTreeMap<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsF
     root: Option<BTreeNode<K, V>>,
     len: u64,
     certified: bool,
-    is_owned: bool,
+    stable_drop_flag: bool,
     _stack: Vec<(InternalBTreeNode<K>, usize, usize)>,
     _buf: Vec<u8>,
 }
@@ -46,7 +46,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             root: None,
             len: 0,
             certified: false,
-            is_owned: false,
+            stable_drop_flag: true,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
@@ -58,7 +58,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             root: None,
             len: 0,
             certified: true,
-            is_owned: false,
+            stable_drop_flag: true,
             _stack: Vec::default(),
             _buf: Vec::default(),
         }
@@ -430,16 +430,16 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
 
             modified.push(self.current_depth(), leaf_node.as_ptr());
 
-            unsafe { key.assume_owned_by_stable_memory() };
-            unsafe { value.assume_owned_by_stable_memory() };
+            unsafe { key.stable_drop_flag_off() };
+            unsafe { value.stable_drop_flag_off() };
 
             return Ok(Err(None));
         }
 
         // try passing an element to a neighbor, to make room for a new one
         if self.pass_elem_to_sibling_leaf(leaf_node, &k, &v, insert_idx, modified) {
-            unsafe { key.assume_owned_by_stable_memory() };
-            unsafe { value.assume_owned_by_stable_memory() };
+            unsafe { key.stable_drop_flag_off() };
+            unsafe { value.stable_drop_flag_off() };
 
             return Ok(Err(None));
         }
@@ -454,8 +454,8 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
             return Err((key, value));
         }
 
-        unsafe { key.assume_owned_by_stable_memory() };
-        unsafe { value.assume_owned_by_stable_memory() };
+        unsafe { key.stable_drop_flag_off() };
+        unsafe { value.stable_drop_flag_off() };
 
         // split the leaf and insert so both leaves now have length of B
         let mut right = if insert_idx < B {
@@ -1290,7 +1290,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     #[inline]
     pub fn clear(&mut self) {
         let mut old = mem::replace(self, Self::new());
-        self.is_owned = old.is_owned;
+        self.stable_drop_flag = old.stable_drop_flag;
         self.certified = old.certified;
 
         unsafe { old.stable_drop() };
@@ -1301,18 +1301,18 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     for SBTreeMap<K, V>
 {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.is_owned = true;
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.stable_drop_flag = false;
     }
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.is_owned = false;
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.stable_drop_flag = true;
     }
 
     #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.is_owned
+    fn should_stable_drop(&self) -> bool {
+        self.stable_drop_flag
     }
 
     unsafe fn stable_drop(&mut self) {
@@ -1362,7 +1362,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> D
     for SBTreeMap<K, V>
 {
     fn drop(&mut self) {
-        if !self.is_owned_by_stable_memory() {
+        if self.should_stable_drop() {
             unsafe {
                 self.stable_drop();
             }
@@ -1468,7 +1468,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> A
             },
             certified: false,
             len,
-            is_owned: false,
+            stable_drop_flag: false,
             _buf: Vec::default(),
             _stack: Vec::default(),
         }
@@ -1844,7 +1844,7 @@ mod tests {
                 assert!(contains);
 
                 assert_eq!(
-                    self.map().get(&key).unwrap().get().clone(),
+                    self.map().get(&key).unwrap().clone(),
                     self.example.get(&key).unwrap().clone()
                 );
             }

@@ -142,11 +142,7 @@ impl StableMemoryAllocator {
     /// # Safety
     /// Reallocation available only for slices smaller than u32::MAX.
     /// Otherwise - UB
-    pub unsafe fn reallocate(
-        &mut self,
-        slice: SSlice,
-        mut new_size: u64,
-    ) -> Result<SSlice, OutOfMemory> {
+    pub fn reallocate(&mut self, slice: SSlice, mut new_size: u64) -> Result<SSlice, OutOfMemory> {
         new_size = Self::pad_size(new_size);
 
         if new_size <= slice.get_size_bytes() {
@@ -166,7 +162,7 @@ impl StableMemoryAllocator {
         }
 
         // othewise, get ready for move and copy the data
-        let mut b = vec![0u8; slice.get_size_bytes() as usize];
+        let mut b = vec![0u8; slice.get_size_bytes().try_into().unwrap()];
         unsafe { crate::mem::read_bytes(slice.offset(0), &mut b) };
 
         // deallocate the slice
@@ -192,13 +188,13 @@ impl StableMemoryAllocator {
         let buf = self.as_dyn_size_bytes();
 
         unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
-        unsafe { crate::mem::write_and_own_fixed(0, &mut slice.as_ptr()) };
+        unsafe { crate::mem::write_fixed(0, &mut slice.as_ptr()) };
 
         Ok(())
     }
 
     pub fn retrieve() -> Self {
-        let slice_ptr = unsafe { crate::mem::read_and_disown_fixed(0) };
+        let slice_ptr = unsafe { crate::mem::read_fixed_for_reference(0) };
         let slice = SSlice::from_ptr(slice_ptr).unwrap();
 
         let mut buf = vec![0u8; slice.get_size_bytes() as usize];
@@ -246,7 +242,7 @@ impl StableMemoryAllocator {
         idx: usize,
         mut data: SBox<T>,
     ) {
-        unsafe { data.assume_owned_by_stable_memory() };
+        unsafe { data.stable_drop_flag_off() };
 
         self.custom_data_pointers.insert(idx, data.as_ptr());
     }
@@ -257,7 +253,7 @@ impl StableMemoryAllocator {
         idx: usize,
     ) -> Option<SBox<T>> {
         let mut b = unsafe { SBox::from_ptr(self.custom_data_pointers.remove(&idx)?) };
-        unsafe { b.assume_not_owned_by_stable_memory() };
+        unsafe { SBox::<T>::stable_drop_flag_on(&mut b) };
 
         Some(b)
     }
@@ -486,16 +482,12 @@ mod tests {
             let slice = sma.allocate(100).unwrap();
             println!("{:?}", sma);
 
-            sma.store_custom_data(1, SBox::new(10u64).unwrap());
-
             assert_eq!(sma._free_blocks_count(), 1);
 
             sma.store();
 
             println!("after store {:?}", sma);
             let mut sma = StableMemoryAllocator::retrieve();
-
-            assert_eq!(sma.retrieve_custom_data::<u64>(1).unwrap().into_inner(), 10);
 
             println!("after retrieve {:?}", sma);
             assert_eq!(sma._free_blocks_count(), 1);

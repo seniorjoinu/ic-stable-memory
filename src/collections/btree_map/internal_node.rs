@@ -313,7 +313,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         let mut k = K::from_fixed_size_bytes(k_buf._deref());
 
         unsafe {
-            k.assume_owned_by_stable_memory();
+            k.stable_drop_flag_off();
         }
 
         k
@@ -395,7 +395,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     pub fn write_len(&mut self, mut len: usize) {
         let ptr = SSlice::_offset(self.ptr, LEN_OFFSET);
 
-        unsafe { crate::mem::write_and_own_fixed(ptr, &mut len) };
+        unsafe { crate::mem::write_fixed(ptr, &mut len) };
     }
 
     #[inline]
@@ -409,7 +409,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     fn init_node_type(&mut self) {
         let ptr = SSlice::_offset(self.ptr, NODE_TYPE_OFFSET);
 
-        unsafe { crate::mem::write_and_own_fixed(ptr, &mut NODE_TYPE_INTERNAL) };
+        unsafe { crate::mem::write_fixed(ptr, &mut NODE_TYPE_INTERNAL) };
     }
 }
 

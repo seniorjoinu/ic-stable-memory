@@ -110,13 +110,13 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> AsFixedSizeBytes for SHashSet
 
 impl<T: StableType + AsFixedSizeBytes + Hash + Eq> StableType for SHashSet<T> {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.map.assume_owned_by_stable_memory();
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.map.stable_drop_flag_off();
     }
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.map.assume_not_owned_by_stable_memory();
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.map.stable_drop_flag_on();
     }
 }
 

@@ -19,7 +19,7 @@ pub struct SVec<T: StableType + AsFixedSizeBytes> {
     ptr: u64,
     len: usize,
     cap: usize,
-    is_owned: bool,
+    stable_drop_flag: bool,
     _marker_t: PhantomData<T>,
 }
 
@@ -30,7 +30,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
             len: 0,
             cap: DEFAULT_CAPACITY,
             ptr: EMPTY_PTR,
-            is_owned: false,
+            stable_drop_flag: true,
             _marker_t: PhantomData::default(),
         }
     }
@@ -43,7 +43,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
             len: 0,
             cap: capacity,
             ptr: allocate((capacity * T::SIZE) as u64)?.as_ptr(),
-            is_owned: false,
+            stable_drop_flag: true,
             _marker_t: PhantomData::default(),
         })
     }
@@ -93,7 +93,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
     pub fn push(&mut self, mut element: T) -> Result<(), T> {
         if self.maybe_reallocate().is_ok() {
             let elem_ptr = SSlice::_offset(self.ptr, (self.len * T::SIZE) as u64);
-            unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
+            unsafe { crate::mem::write_fixed(elem_ptr, &mut element) };
 
             self.len += 1;
 
@@ -112,7 +112,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         let elem_ptr = self.get_element_ptr(self.len - 1)?;
         self.len -= 1;
 
-        Some(unsafe { crate::mem::read_and_disown_fixed(elem_ptr) })
+        Some(unsafe { crate::mem::read_fixed_for_move(elem_ptr) })
     }
 
     #[inline]
@@ -134,8 +134,8 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
 
         let elem_ptr = SSlice::_offset(self.ptr, (idx * T::SIZE) as u64);
 
-        let prev_element = unsafe { crate::mem::read_and_disown_fixed(elem_ptr) };
-        unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
+        let prev_element = unsafe { crate::mem::read_fixed_for_move(elem_ptr) };
+        unsafe { crate::mem::write_fixed(elem_ptr, &mut element) };
 
         prev_element
     }
@@ -156,7 +156,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
             unsafe { crate::mem::write_bytes(elem_ptr + T::SIZE as u64, &buf) };
 
             // writing the element
-            unsafe { crate::mem::write_and_own_fixed(elem_ptr, &mut element) };
+            unsafe { crate::mem::write_fixed(elem_ptr, &mut element) };
 
             self.len += 1;
 
@@ -174,7 +174,7 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
 
         let elem_ptr = SSlice::_offset(self.ptr, (idx * T::SIZE) as u64);
-        let elem = unsafe { crate::mem::read_and_disown_fixed(elem_ptr) };
+        let elem = unsafe { crate::mem::read_fixed_for_move(elem_ptr) };
 
         let mut buf = vec![0u8; (self.len - idx - 1) * T::SIZE];
         unsafe { crate::mem::read_bytes(elem_ptr + T::SIZE as u64, &mut buf) };
@@ -335,7 +335,7 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SVec<T> {
             ptr,
             len,
             cap,
-            is_owned: false,
+            stable_drop_flag: false,
             _marker_t: PhantomData::default(),
         }
     }
@@ -343,18 +343,18 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SVec<T> {
 
 impl<T: StableType + AsFixedSizeBytes> StableType for SVec<T> {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        self.is_owned = true;
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.stable_drop_flag = false;
     }
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        self.is_owned = false;
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.stable_drop_flag = true;
     }
 
     #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
-        self.is_owned
+    fn should_stable_drop(&self) -> bool {
+        self.stable_drop_flag
     }
 
     unsafe fn stable_drop(&mut self) {
@@ -370,7 +370,7 @@ impl<T: StableType + AsFixedSizeBytes> StableType for SVec<T> {
 
 impl<T: StableType + AsFixedSizeBytes> Drop for SVec<T> {
     fn drop(&mut self) {
-        if !self.is_owned_by_stable_memory() {
+        if self.should_stable_drop() {
             unsafe {
                 self.stable_drop();
             }
@@ -639,7 +639,7 @@ mod tests {
             let mut buf = <SVec<u32> as AsFixedSizeBytes>::Buf::new(SVec::<u32>::SIZE);
             vec.as_fixed_size_bytes(buf._deref_mut());
             let mut vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
-            unsafe { vec1.assume_owned_by_stable_memory() };
+            unsafe { vec1.stable_drop_flag_off() };
 
             assert_eq!(vec.ptr, vec1.ptr);
             assert_eq!(vec.len, vec1.len);
@@ -653,7 +653,7 @@ mod tests {
             vec.as_fixed_size_bytes(buf._deref_mut());
 
             let mut vec1 = SVec::<u32>::from_fixed_size_bytes(buf._deref());
-            unsafe { vec1.assume_owned_by_stable_memory() };
+            unsafe { vec1.stable_drop_flag_off() };
 
             assert_eq!(ptr, vec1.ptr);
             assert_eq!(len, vec1.len);
@@ -760,34 +760,42 @@ mod tests {
 
     #[derive(Debug)]
     enum Action {
-        Push,
-        Pop,
-        Insert(usize),
-        Remove(usize),
-        Swap(usize, usize),
-        Replace(usize),
+        Push(usize),
+        Pop(usize),
+        Insert(usize, usize),
+        Remove(usize, usize),
+        Swap(usize, usize, usize),
+        Replace(usize, usize),
         CanisterUpgrade,
-        GetMut(usize),
+        GetMut(usize, usize),
     }
 
     struct Fuzzer {
-        vec: Option<SVec<SBox<String>>>,
-        example: Vec<String>,
+        vec: Option<SVec<SVec<SBox<String>>>>,
+        example: Vec<Vec<String>>,
         rng: ThreadRng,
         log: Vec<Action>,
     }
 
     impl Fuzzer {
         fn new() -> Self {
+            let mut svec = SVec::default();
+            let mut vec = Vec::default();
+
+            for i in 0..10 {
+                svec.push(SVec::default());
+                vec.push(Vec::default());
+            }
+
             Self {
-                vec: Some(SVec::default()),
-                example: Vec::default(),
+                vec: Some(svec),
+                example: vec,
                 rng: thread_rng(),
                 log: Vec::default(),
             }
         }
 
-        fn vec(&mut self) -> &mut SVec<SBox<String>> {
+        fn vec(&mut self) -> &mut SVec<SVec<SBox<String>>> {
             self.vec.as_mut().unwrap()
         }
 
@@ -800,46 +808,63 @@ mod tests {
                     let str = generate_random_string(&mut self.rng);
 
                     if let Ok(data) = SBox::new(str.clone()) {
-                        if self.vec().push(data).is_err() {
+                        let outer_idx = self.rng.gen_range(0..10);
+
+                        if self.vec().get_mut(outer_idx).unwrap().push(data).is_err() {
                             return;
                         };
 
-                        self.example.push(str.clone());
+                        self.example.get_mut(outer_idx).unwrap().push(str.clone());
 
-                        self.log.push(Action::Push);
+                        self.log.push(Action::Push(outer_idx));
                     }
                 }
                 // INSERT ~25%
                 251..=500 => {
-                    let len = self.vec().len();
-
                     let str = generate_random_string(&mut self.rng);
-                    let idx = if len == 0 {
-                        0
-                    } else {
-                        self.rng.gen_range(0..len + 1)
-                    };
 
                     if let Ok(data) = SBox::new(str.clone()) {
-                        if self.vec().insert(idx, data).is_err() {
+                        let outer_idx = self.rng.gen_range(0..10);
+
+                        let len = self.vec().get(outer_idx).unwrap().len();
+                        let idx = if len == 0 {
+                            0
+                        } else {
+                            self.rng.gen_range(0..len + 1)
+                        };
+
+                        if self
+                            .vec()
+                            .get_mut(outer_idx)
+                            .unwrap()
+                            .insert(idx, data)
+                            .is_err()
+                        {
                             return;
                         }
 
-                        self.example.insert(idx, str.clone());
+                        self.example
+                            .get_mut(outer_idx)
+                            .unwrap()
+                            .insert(idx, str.clone());
 
-                        self.log.push(Action::Insert(idx));
+                        self.log.push(Action::Insert(outer_idx, idx));
                     }
                 }
                 // POP ~10%
                 501..=600 => {
-                    self.vec().pop();
-                    self.example.pop();
+                    let outer_idx = self.rng.gen_range(0..10);
 
-                    self.log.push(Action::Pop);
+                    self.vec().get_mut(outer_idx).unwrap().pop();
+                    self.example.get_mut(outer_idx).unwrap().pop();
+
+                    self.log.push(Action::Pop(outer_idx));
                 }
                 // REMOVE ~10%
                 601..=700 => {
-                    let len = self.vec().len();
+                    let outer_idx = self.rng.gen_range(0..10);
+
+                    let len = self.vec().get(outer_idx).unwrap().len();
 
                     if len == 0 {
                         return self.next();
@@ -851,14 +876,16 @@ mod tests {
                         self.rng.gen_range(0..len)
                     };
 
-                    self.vec().remove(idx);
-                    self.example.remove(idx);
+                    self.vec().get_mut(outer_idx).unwrap().remove(idx);
+                    self.example.get_mut(outer_idx).unwrap().remove(idx);
 
-                    self.log.push(Action::Remove(idx));
+                    self.log.push(Action::Remove(outer_idx, idx));
                 }
                 // SWAP ~10%
                 701..=800 => {
-                    let len = self.vec().len();
+                    let outer_idx = self.rng.gen_range(0..10);
+
+                    let len = self.vec().get(outer_idx).unwrap().len();
 
                     if len < 2 {
                         return self.next();
@@ -875,14 +902,16 @@ mod tests {
                         }
                     }
 
-                    self.vec().swap(idx1, idx2);
-                    self.example.swap(idx1, idx2);
+                    self.vec().get_mut(outer_idx).unwrap().swap(idx1, idx2);
+                    self.example.get_mut(outer_idx).unwrap().swap(idx1, idx2);
 
-                    self.log.push(Action::Swap(idx1, idx2));
+                    self.log.push(Action::Swap(outer_idx, idx1, idx2));
                 }
                 // REPLACE ~10%
                 801..=900 => {
-                    let len = self.vec().len();
+                    let outer_idx = self.rng.gen_range(0..10);
+
+                    let len = self.vec().get(outer_idx).unwrap().len();
 
                     if len == 0 {
                         return self.next();
@@ -892,15 +921,25 @@ mod tests {
                     let str = generate_random_string(&mut self.rng);
 
                     if let Ok(data) = SBox::new(str.clone()) {
-                        self.vec().replace(idx, data);
-                        std::mem::replace(self.example.get_mut(idx).unwrap(), str.clone());
+                        self.vec().get_mut(outer_idx).unwrap().replace(idx, data);
 
-                        self.log.push(Action::Replace(idx));
+                        std::mem::replace(
+                            self.example
+                                .get_mut(outer_idx)
+                                .unwrap()
+                                .get_mut(idx)
+                                .unwrap(),
+                            str.clone(),
+                        );
+
+                        self.log.push(Action::Replace(outer_idx, idx));
                     }
                 }
                 // GET MUT ~10%
                 901..=1000 => {
-                    let len = self.vec().len();
+                    let outer_idx = self.rng.gen_range(0..10);
+
+                    let len = self.vec().get_mut(outer_idx).unwrap().len();
 
                     if len == 0 {
                         return self.next();
@@ -911,6 +950,8 @@ mod tests {
 
                     if self
                         .vec()
+                        .get_mut(outer_idx)
+                        .unwrap()
                         .get_mut(idx)
                         .unwrap()
                         .with(|s: &mut String| {
@@ -921,9 +962,14 @@ mod tests {
                         return;
                     }
 
-                    *self.example.get_mut(idx).unwrap() = str;
+                    *self
+                        .example
+                        .get_mut(outer_idx)
+                        .unwrap()
+                        .get_mut(idx)
+                        .unwrap() = str;
 
-                    self.log.push(Action::GetMut(idx));
+                    self.log.push(Action::GetMut(outer_idx, idx));
                 }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.vec.take().unwrap()) {
@@ -934,7 +980,8 @@ mod tests {
                             stable_memory_post_upgrade();
                         }
 
-                        self.vec = retrieve_custom_data(1).map(|it| it.into_inner());
+                        self.vec = retrieve_custom_data::<SVec<SVec<SBox<String>>>>(1)
+                            .map(|it| it.into_inner());
                         self.log.push(Action::CanisterUpgrade);
                     }
                     Err(vec) => {
@@ -947,10 +994,17 @@ mod tests {
             assert_eq!(self.vec().len(), self.example.len());
 
             for i in 0..self.vec().len() {
-                assert_eq!(
-                    self.vec().get(i).unwrap().get().deref().clone(),
-                    self.example.get(i).unwrap().clone()
-                );
+                let svec = self.vec.as_ref().unwrap().get(i).unwrap();
+                let example = self.example.get(i).unwrap();
+
+                assert_eq!(svec.len(), example.len());
+
+                for j in 0..svec.len() {
+                    assert_eq!(
+                        svec.get(j).unwrap().clone(),
+                        example.get(j).unwrap().clone()
+                    );
+                }
             }
         }
     }
@@ -963,7 +1017,7 @@ mod tests {
         {
             let mut fuzzer = Fuzzer::new();
 
-            for _ in 0..10_000 {
+            for _ in 0..100_000 {
                 fuzzer.next();
             }
         }

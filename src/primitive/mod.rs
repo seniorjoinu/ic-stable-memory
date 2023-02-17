@@ -8,13 +8,13 @@ pub mod s_ref_mut;
 
 pub trait StableType {
     #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {}
+    unsafe fn stable_drop_flag_off(&mut self) {}
 
     #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {}
+    unsafe fn stable_drop_flag_on(&mut self) {}
 
     #[inline]
-    fn is_owned_by_stable_memory(&self) -> bool {
+    fn should_stable_drop(&self) -> bool {
         false
     }
 
@@ -61,22 +61,7 @@ impl StableType for Nat {}
 impl StableType for Int {}
 
 impl StableType for ByteBuf {}
-
-impl<T: StableType> StableType for Option<T> {
-    #[inline]
-    unsafe fn assume_owned_by_stable_memory(&mut self) {
-        if let Some(it) = self.as_mut() {
-            it.assume_owned_by_stable_memory();
-        }
-    }
-
-    #[inline]
-    unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-        if let Some(it) = self.as_mut() {
-            it.assume_not_owned_by_stable_memory();
-        }
-    }
-}
+impl<T> StableType for Option<T> {}
 
 impl StableType for String {}
 impl StableType for Vec<u8> {}
