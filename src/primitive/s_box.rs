@@ -294,7 +294,10 @@ impl<T: AsDynSizeBytes + StableType> Deref for SBox<T> {
 #[cfg(test)]
 mod tests {
     use crate::primitive::s_box::SBox;
-    use crate::{_debug_validate_allocator, get_allocated_size, stable, stable_memory_init};
+    use crate::{
+        _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
+        stable_memory_init, store_custom_data,
+    };
     use std::cmp::Ordering;
     use std::ops::Deref;
 
@@ -302,6 +305,45 @@ mod tests {
     fn sboxes_work_fine() {
         stable::clear();
         stable_memory_init();
+
+        {
+            let sbox = SBox::new(100).unwrap();
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+
+        {
+            let mut sbox = SBox::new(100).unwrap();
+            let mut o_sbox = SBox::new(sbox).unwrap();
+            let mut oo_sbox = SBox::new(o_sbox).unwrap();
+
+            store_custom_data(0, oo_sbox);
+            oo_sbox = retrieve_custom_data::<SBox<SBox<i32>>>(0).unwrap();
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+
+        {
+            let mut sbox = SBox::new(100).unwrap();
+            let mut o_sbox = SBox::new(sbox).unwrap();
+            let mut oo_sbox = SBox::new(o_sbox).unwrap();
+
+            store_custom_data(0, oo_sbox);
+            o_sbox = retrieve_custom_data::<SBox<SBox<i32>>>(0)
+                .unwrap()
+                .into_inner();
+
+            o_sbox.with(|sbox| *sbox = SBox::new(200).unwrap()).unwrap();
+
+            sbox = o_sbox.into_inner();
+
+            assert_eq!(*sbox, 200);
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
 
         {
             let mut sbox1 = SBox::new(10).unwrap();

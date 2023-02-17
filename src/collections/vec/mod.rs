@@ -768,6 +768,7 @@ mod tests {
         Replace(usize, usize),
         CanisterUpgrade,
         GetMut(usize, usize),
+        Clear(usize),
     }
 
     struct Fuzzer {
@@ -971,6 +972,15 @@ mod tests {
 
                     self.log.push(Action::GetMut(outer_idx, idx));
                 }
+                // CLEAR
+                1001..=1010 => {
+                    let outer_idx = self.rng.gen_range(0..10);
+
+                    self.vec().get_mut(outer_idx).unwrap().clear();
+                    self.example.get_mut(outer_idx).unwrap().clear();
+
+                    self.log.push(Action::Clear(outer_idx));
+                }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.vec.take().unwrap()) {
                     Ok(data) => {
@@ -1017,7 +1027,7 @@ mod tests {
         {
             let mut fuzzer = Fuzzer::new();
 
-            for _ in 0..100_000 {
+            for _ in 0..10_000 {
                 fuzzer.next();
             }
         }

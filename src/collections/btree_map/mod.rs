@@ -1743,6 +1743,26 @@ mod tests {
         assert_eq!(get_allocated_size(), 0);
     }
 
+    #[test]
+    fn clear_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut map = SBTreeMap::<SBox<u64>, SBox<u64>>::default();
+
+            for i in 0..500 {
+                map.insert(SBox::new(i).unwrap(), SBox::new(i).unwrap())
+                    .unwrap();
+            }
+
+            map.clear();
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
     #[derive(Debug)]
     enum Action {
         Insert,
