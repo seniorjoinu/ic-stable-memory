@@ -720,9 +720,6 @@ mod tests {
 
             let buf = map.as_new_fixed_size_bytes();
 
-            // emulating stable memory save
-            unsafe { map.stable_drop_flag_off() };
-
             let map1 = SHashMap::<i32, i32>::from_fixed_size_bytes(&buf);
 
             assert_eq!(len, map1.len());
