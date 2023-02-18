@@ -1,3 +1,14 @@
+//! Stable memory allocator used by every data collection in this crate.
+//!
+//! `O(logN)` in both: allocation and deallocation, where `N` is the number of free blocks.
+//! Free-list is simply a [BTreeMap](std::collections::BTreeMap). Custom data storage is simply a
+//! [HashMap](std::collections::HashMap).
+//!
+//! Persisted between canister upgrades by serializing itself with [CandidType](candid::CandidType),
+//! putting itself in an [SBox] and writing a pointer to that [SBox] into stable memory at location (0..8).
+//!
+//! This allocator shouldn't be used directly - instead use top-level functions exposed by this crate.
+
 use crate::encoding::dyn_size::candid_decode_one_allow_trailing;
 use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 use crate::mem::free_block::FreeBlock;
@@ -10,10 +21,11 @@ use crate::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 use candid::{encode_one, CandidType, Deserialize};
 use std::collections::{BTreeMap, HashMap};
 
-pub const ALLOCATOR_PTR: StablePtr = 0;
-pub const MIN_PTR: StablePtr = u64::SIZE as u64;
-pub const EMPTY_PTR: StablePtr = u64::MAX;
+pub(crate) const ALLOCATOR_PTR: StablePtr = 0;
+pub(crate) const MIN_PTR: StablePtr = u64::SIZE as u64;
+pub(crate) const EMPTY_PTR: StablePtr = u64::MAX;
 
+#[doc(hidden)]
 #[derive(Debug, CandidType, Deserialize, Eq, PartialEq)]
 pub struct StableMemoryAllocator {
     free_blocks: BTreeMap<u64, Vec<FreeBlock>>,
@@ -139,9 +151,6 @@ impl StableMemoryAllocator {
         self.push_free_block(free_block);
     }
 
-    /// # Safety
-    /// Reallocation available only for slices smaller than u32::MAX.
-    /// Otherwise - UB
     pub fn reallocate(&mut self, slice: SSlice, mut new_size: u64) -> Result<SSlice, OutOfMemory> {
         new_size = Self::pad_size(new_size);
 

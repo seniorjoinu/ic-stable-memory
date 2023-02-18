@@ -1,3 +1,10 @@
+//! A primitive smart-pointer that points to an allocated memory block.
+//!
+//! This data structure's main purpose is to tell the dimensions of an allocated memory block and allow taking
+//! a pointer somewhere inside it. One can create such a memory block by calling [allocate](crate::allocate)
+//! function. This is a managed resource, so please be careful and always [deallocate](crate::deallocate)
+//! memory blocks, when you don't longer need them.
+
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
@@ -8,6 +15,16 @@ pub(crate) const ALLOCATED: u64 = 2u64.pow(u64::BITS - 1); // first biggest bit 
 pub(crate) const FREE: u64 = ALLOCATED - 1; // first biggest bit set to 0, other set to 1
 
 /// An allocated block of stable memory.
+///
+/// Represented by a pointer to the first byte of the memory block and a [u64] size of this block in
+/// bytes. It implements [Copy], but using it after deallocation is undefined behavior.
+///
+/// In stable memory each memory block has the following layout:
+/// - bytes `0..8` - `size` + `allocated bit flag` (the flag uses the first bit of little endian encoded size)
+/// - bytes `8..(size + 8)` - the data
+/// - bytes `(size + 8)..(size + 16)` - another `size` + `allocated bit flag`
+/// So, a memory block is simply `size` bytes of data wrapped with some metadata from both sides.
+/// [FreeBlock](mem::free_block::FreeBlock) is stored exactly in a same way.
 #[derive(Debug, Copy, Clone)]
 pub struct SSlice {
     ptr: StablePtr,
@@ -23,6 +40,12 @@ impl SSlice {
         Self { ptr, size }
     }
 
+    /// Recreate an [SSlice] from a pointer to the front of the memory block.
+    /// 
+    /// See also [SSlice::from_rear_ptr].
+    /// 
+    /// This call will check whether a pointer is valid (points to an *allocated* memory block) and
+    /// if it's not, it will return [None].
     pub fn from_ptr(ptr: StablePtr) -> Option<Self> {
         if ptr == 0 || ptr == EMPTY_PTR {
             return None;
@@ -33,6 +56,9 @@ impl SSlice {
         Some(Self::new(ptr, size, false))
     }
 
+    /// Recreate an [SSlice] from a pointer to the back of the memory block.
+    /// 
+    /// See also [SSlice::from_ptr].
     pub fn from_rear_ptr(ptr: StablePtr) -> Option<Self> {
         if ptr == 0 || ptr == EMPTY_PTR {
             return None;
@@ -46,27 +72,31 @@ impl SSlice {
             false,
         ))
     }
-
-    #[inline]
-    pub(crate) fn to_free_block(self) -> FreeBlock {
-        FreeBlock::new(self.ptr, self.size)
-    }
-
+    
+    /// Returns a pointer to the memory block.
+    /// 
+    /// *Don't use this function to point to the data inside this memory block!* Use [SSlice::offset]
+    /// instead.
     #[inline]
     pub fn as_ptr(&self) -> StablePtr {
         self.ptr
     }
 
+    /// Returns the size of the data in this memory block in bytes.
     #[inline]
     pub fn get_size_bytes(&self) -> u64 {
         self.size
     }
 
+    /// Returns the size of the whole memory block in bytes (including metadata).
     #[inline]
     pub fn get_total_size_bytes(&self) -> u64 {
         self.get_size_bytes() + StablePtr::SIZE as u64 * 2
     }
 
+    /// Static analog of [SSlice::offset].
+    /// 
+    /// Does not perform boundary check.
     #[inline]
     pub fn _offset(self_ptr: u64, offset: u64) -> StablePtr {
         debug_assert_ne!(self_ptr, EMPTY_PTR);
@@ -74,9 +104,35 @@ impl SSlice {
         self_ptr + (StablePtr::SIZE as u64) + offset
     }
 
+    /// Returns a pointer to the data inside [SSlice].
+    /// 
+    /// One should use this function to write data in a memory block by using [mem::write_fixed] or
+    /// [mem::write_bytes].
+    /// 
+    /// # Panics
+    /// Panics if boundary check fails (if the offset is outside the memory block).
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::{allocate, mem};
+    /// let slice = allocate(100);
+    /// let ptr = slice.offset(20);
+    /// 
+    /// // will write `10` as little endian bytes into the memory block
+    /// // starting from 20th byte
+    /// unsafe { mem::write_fixed(ptr, 10u64); }
+    /// ``` 
     #[inline]
     pub fn offset(&self, offset: u64) -> StablePtr {
-        Self::_offset(self.as_ptr(), offset)
+        let ptr = Self::_offset(self.as_ptr(), offset);
+        assert!(ptr <= self.as_ptr() + StablePtr::SIZE as u64 + self.get_size_bytes());
+        
+        ptr
+    }
+    
+    #[inline]
+    pub(crate) fn to_free_block(self) -> FreeBlock {
+        FreeBlock::new(self.ptr, self.size)
     }
 
     fn read_size(ptr: StablePtr) -> Option<u64> {

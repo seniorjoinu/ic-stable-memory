@@ -1,3 +1,10 @@
+//! A struct that is used by [StableMemoryAllocator](mem::allocator::StableMemoryAllocator) to
+//! represent a free block.
+//!
+//! Internally structured the same way as [SSlice](mem::s_slice::SSlice), but has additional methods.
+//!
+//! Only used by the allocator itself. Not for public use.
+
 use crate::encoding::{AsFixedSizeBytes, Buffer};
 use crate::mem::allocator::MIN_PTR;
 use crate::mem::s_slice::{SSlice, ALLOCATED, FREE};
