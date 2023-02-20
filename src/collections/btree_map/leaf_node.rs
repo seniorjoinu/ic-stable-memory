@@ -53,7 +53,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
     }
 
     pub fn create(certified: bool) -> Result<Self, OutOfMemory> {
-        let slice = allocate(Self::calc_size_bytes(certified))?;
+        let slice = unsafe { allocate(Self::calc_size_bytes(certified))? };
         let mut it = unsafe { Self::from_ptr(slice.as_ptr()) };
 
         it.init_node_type();
@@ -68,14 +68,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn destroy(self) {
-        let slice = SSlice::from_ptr(self.ptr).unwrap();
+        let slice = unsafe { SSlice::from_ptr(self.ptr).unwrap() };
         deallocate(slice);
     }
 
     pub fn binary_search<Q>(&self, k: &Q, len: usize) -> Result<usize, usize>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         if len == 0 {
             return Err(0);
@@ -289,7 +289,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn get_key<'a>(&self, idx: usize) -> SRef<'a, K> {
-        SRef::new(self.get_key_ptr(idx))
+        unsafe { SRef::new(self.get_key_ptr(idx)) }
     }
 
     #[inline]
@@ -304,12 +304,12 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> L
 
     #[inline]
     pub fn get_value<'a>(&self, idx: usize) -> SRef<'a, V> {
-        SRef::new(self.get_value_ptr(idx))
+        unsafe { SRef::new(self.get_value_ptr(idx)) }
     }
 
     #[inline]
     pub fn get_value_mut<'a>(&mut self, idx: usize) -> SRefMut<'a, V> {
-        SRefMut::new(self.get_value_ptr(idx))
+        unsafe { SRefMut::new(self.get_value_ptr(idx)) }
     }
 
     #[inline]

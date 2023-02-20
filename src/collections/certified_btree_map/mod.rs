@@ -1,20 +1,195 @@
+use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::iter::SBTreeMapIter;
+use crate::collections::btree_map::leaf_node::LeafBTreeNode;
 use crate::collections::btree_map::{BTreeNode, LeveledList, SBTreeMap};
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::s_ref::SRef;
+use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
-use crate::utils::certification::{empty_hash, AsHashTree, AsHashableBytes, Hash, HashTree};
+use crate::utils::certification::{
+    empty_hash, labeled, labeled_hash, pruned, AsHashTree, AsHashableBytes, Hash, HashForker,
+    HashTree, WitnessForker,
+};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 
+/// Merkle tree certified map on top of [SBTreeMap]
+///
+/// All logic, not related to the undelying Merkle tree is simply proxied from the underlying [SBTreeMap],
+/// read its documentation for more details.
+///
+/// This Merkle tree provides various proofs in a form of [HashTree] data structure that is completely
+/// compatible with [Dfinity's ic-certified-map](https://github.com/dfinity/cdk-rs/tree/main/library/ic-certified-map),
+/// which means that you can verify data, certified with [SCertifiedBTreeMap] using [agent-js library](https://github.com/dfinity/agent-js).
+///
+/// Both `K` and `V` have to implement [StableType] and [AsFixedSizeBytes] traits. [SCertifiedBTreeMap]
+/// also implements both these traits, so you can nest it into other stable structures. `K` also has
+/// to implement [AsHashableBytes] trait. `V` also has to implement [AsHashTree] trait. [SCertifiedBTreeMap]
+/// also implements [AsHashTree], so you can nest it into itself.
+///
+/// For a real-world example of how to use this data stucture, visit [this repository](https://github.com/seniorjoinu/ic-stable-certified-assets).
+///
+/// Features:
+/// 1. You can nest multiple [SCertifiedBTreeMap]s into each other to create more complex Merkle trees.
+/// 2. O(logN) perfromance and proof size.
+/// 3. Batch API - modify the map multiple times, but recalculate the underlying Merkle tree only once.
+/// 4. Witnesses of a single key-value pair, range proofs and proofs of absence of key are supported.
+///
+/// # Examples
+/// ```rust
+/// # use std::borrow::Borrow;
+/// # use ic_stable_memory::collections::SCertifiedBTreeMap;
+/// # use ic_stable_memory::{leaf, stable_memory_init};
+/// # use ic_stable_memory::utils::certification::{AsHashableBytes, AsHashTree, leaf_hash, Hash, HashTree};
+/// # use ic_stable_memory::derive::{StableType, AsFixedSizeBytes};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+///
+/// // create a wrapping structure, to be able to implement custom traits
+/// #[derive(StableType, AsFixedSizeBytes, Ord, PartialOrd, Eq, PartialEq, Debug)]
+/// struct WrappedNumber(u64);
+///
+/// // implement borrow, to be able to use &u64 for search
+/// impl Borrow<u64> for WrappedNumber {
+///     fn borrow(&self) -> &u64 {
+///         &self.0
+///     }
+/// }
+///
+/// // implement AsHashableBytes to be able to use the type as a key
+/// impl AsHashableBytes for WrappedNumber {
+///     fn as_hashable_bytes(&self) -> Vec<u8> {
+///         self.0.to_le_bytes().to_vec()
+///     }
+/// }
+///
+/// // implement AsHashTree to be able to use the type as a value
+/// impl AsHashTree for WrappedNumber {
+///     fn root_hash(&self) -> Hash {
+///         leaf_hash(&self.0.to_le_bytes())
+///     }
+///
+///     fn hash_tree(&self) -> HashTree {
+///         leaf(self.0.to_le_bytes().to_vec())
+///     }
+/// }
+///
+/// // create the map
+/// let mut map = SCertifiedBTreeMap::<WrappedNumber, WrappedNumber>::new();
+///
+/// // insert some values in one batch
+/// map.insert(
+///     WrappedNumber(1),
+///     WrappedNumber(1)
+/// ).expect("Out of memory");
+///
+/// map.insert(
+///     WrappedNumber(2),
+///     WrappedNumber(2)
+/// ).expect("Out of memory");
+///
+/// map.insert(
+///     WrappedNumber(3),
+///     WrappedNumber(3)
+/// ).expect("Out of memory");
+///
+/// // recalculate the Merkle tree
+/// map.commit();
+///
+/// // prove that there is a value by "2" key
+/// let witness = map.witness(&2);
+/// assert_eq!(witness.reconstruct(), map.root_hash());
+///
+/// // prove that there is no key "5"
+/// let absence_proof = map.prove_absence(&5);
+/// assert_eq!(absence_proof.reconstruct(), map.root_hash());
+///
+/// // prove that all three keys are there
+/// let range_proof = map.prove_range(&1, &3);
+/// assert_eq!(range_proof.reconstruct(), map.root_hash());
+/// ```
+///
+/// Another example with nested maps
+/// ```rust
+/// # use std::borrow::Borrow;
+/// # use ic_stable_memory::collections::SCertifiedBTreeMap;
+/// # use ic_stable_memory::{leaf, stable_memory_init};
+/// # use ic_stable_memory::utils::certification::{AsHashableBytes, AsHashTree, leaf_hash, Hash, HashTree};
+/// # use ic_stable_memory::derive::{StableType, AsFixedSizeBytes};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// # #[derive(StableType, AsFixedSizeBytes, Ord, PartialOrd, Eq, PartialEq, Debug)]
+/// # struct WrappedNumber(u64);
+/// # impl Borrow<u64> for WrappedNumber {
+/// #     fn borrow(&self) -> &u64 {
+/// #         &self.0
+/// #     }
+/// # }
+/// # impl AsHashableBytes for WrappedNumber {
+/// #     fn as_hashable_bytes(&self) -> Vec<u8> {
+/// #         self.0.to_le_bytes().to_vec()
+/// #     }
+/// # }
+/// # impl AsHashTree for WrappedNumber {
+/// #     fn root_hash(&self) -> Hash {
+/// #         leaf_hash(&self.0.to_le_bytes())
+/// #     }
+/// #     fn hash_tree(&self) -> HashTree {
+/// #         leaf(self.0.to_le_bytes().to_vec())
+/// #     }
+/// # }
+/// // same setup as in previous example
+/// // create the outer map
+/// let mut outer_map = SCertifiedBTreeMap::new();
+///
+/// // create a couple of nested maps
+/// let mut map_1 = SCertifiedBTreeMap::<WrappedNumber, WrappedNumber>::new();
+/// let mut map_2 = SCertifiedBTreeMap::<WrappedNumber, WrappedNumber>::new();
+///
+/// // nest maps
+/// outer_map.insert(WrappedNumber(1), map_1)
+///     .expect("Out of memory");
+/// outer_map.insert(WrappedNumber(2), map_2)
+///     .expect("Out of memory");
+///
+/// // insert some values into nested maps
+/// // with_key() commits changes automatically
+/// outer_map
+///     .with_key(&1, |val| {
+///         val
+///             .unwrap()
+///             .insert_and_commit(
+///                 WrappedNumber(11),
+///                 WrappedNumber(11),
+///             )
+///             .expect("Out of memory");
+///     });
+///
+/// outer_map
+///     .with_key(&2, |val| {
+///         val.unwrap()
+///         .insert_and_commit(
+///             WrappedNumber(22),
+///             WrappedNumber(22),
+///         )
+///         .expect("Out of memory");
+///     });
+///
+/// // create a witness for some key in a nested map using `witness_with()`
+/// let witness = outer_map.witness_with(&2, |map_2| {
+///     map_2.witness(&22)
+/// });
+///
+/// assert_eq!(witness.reconstruct(), outer_map.root_hash());
+/// ```
 pub struct SCertifiedBTreeMap<
     K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
     V: StableType + AsFixedSizeBytes + AsHashTree,
 > {
     inner: SBTreeMap<K, V>,
     modified: LeveledList,
-    frozen: bool,
+    uncommited: bool,
 }
 
 impl<
@@ -22,26 +197,39 @@ impl<
         V: StableType + AsFixedSizeBytes + AsHashTree,
     > SCertifiedBTreeMap<K, V>
 {
+    /// Creates a new [SCertifiedBTreeMap]
+    ///
+    /// Allocates a small amount of heap memory.
     #[inline]
     pub fn new() -> Self {
         Self {
             inner: SBTreeMap::new_certified(),
             modified: LeveledList::new(),
-            frozen: false,
+            uncommited: false,
         }
     }
 
+    /// Inserts a new key-value pair into this [SCertifiedBTreeMap], leaving it in the `uncommited`
+    /// state, if the insertion was successful
+    ///
+    /// * See also [SCertifiedBTreeMap::commit]
+    /// * See also [SCertifiedBTreeMap::insert_and_commit]
+    /// * See also [SBTreeMap::insert]
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         let res = self.inner._insert(key, value, &mut self.modified);
 
-        if res.is_ok() && !self.frozen {
-            self.frozen = true;
+        if res.is_ok() && !self.uncommited {
+            self.uncommited = true;
         }
 
         res
     }
 
+    /// Inserts a new key-value pair into this [SCertifiedBTreeMap], immediately commiting changes to
+    /// the underlying Merkle tree, if the insertion was successful
+    ///
+    /// See also [SCertifiedBTreeMap::insert]
     #[inline]
     pub fn insert_and_commit(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         let it = self.insert(key, value)?;
@@ -50,24 +238,34 @@ impl<
         Ok(it)
     }
 
+    /// Removes a key-value pair from this [SCertifiedBTreeMap], leaving it in the `uncommited` state,
+    /// if the removal was successful
+    ///
+    /// * See also [SCertifiedBTreeMap::commit]
+    /// * See also [SCertifiedBTreeMap::remove_and_commit]
+    /// * See also [SBTreeMap::remove]
     #[inline]
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
-        if !self.frozen {
-            self.frozen = true;
+        if !self.uncommited {
+            self.uncommited = true;
         }
 
         self.inner._remove(key, &mut self.modified)
     }
 
+    /// Removes a key-value pair from this [SCertifiedBTreeMap], immediately commiting changes to
+    /// the underlying Merkle tree, if the removal was successful
+    ///
+    /// * See also [SCertifiedBTreeMap::remove]
     #[inline]
     pub fn remove_and_commit<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         let it = self.remove(key);
         self.commit();
@@ -75,54 +273,102 @@ impl<
         it
     }
 
+    /// Removes all key-value pairs from this map, swapping the underlying Merkle with a fresh one
+    /// and leaving it in the `commited` state
+    #[inline]
+    pub fn clear(&mut self) {
+        self.uncommited = false;
+        self.modified = LeveledList::new();
+
+        self.inner.clear();
+    }
+
+    /// See [SBTreeMap::get]
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<SRef<'_, V>>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.inner.get(key)
     }
 
+    /// Allows mutation of the value stored by the provided key, accepting a lambda to perform it
+    ///
+    /// This method recomputes the underlying Merkle tree, if the key-value pair is found
+    #[inline]
+    pub fn with_key<Q, R, F: FnOnce(Option<SRefMut<V>>) -> R>(&mut self, key: &Q, f: F) -> R
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let val = self.inner._get_mut(key, &mut self.modified);
+
+        if val.is_some() && !self.uncommited {
+            self.uncommited = true;
+        }
+
+        let res = f(val);
+
+        self.commit();
+
+        res
+    }
+
+    /// See [SBTreeMap::contains_key]
     #[inline]
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.inner.contains_key(key)
     }
 
+    /// See [SBTreeMap::len]
     #[inline]
     pub fn len(&self) -> u64 {
         self.inner.len()
     }
 
+    /// See [SBTreeMap::is_empty]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
 
+    /// See [SBTreeMap::iter]
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<'_, K, V> {
         self.inner.iter()
     }
 
+    /// See [SBTreeMap::first]
     #[inline]
     pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
         self.inner.first()
     }
 
+    /// See [SBTreeMap::last]
     #[inline]
     pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
         self.inner.last()
     }
 
+    /// Commits all `uncommited` changes to this data structure, recalculating the underlying Merkle
+    /// tree
+    ///
+    /// Merkle tree recomputation is a very expensive operation. But you can save a lot of cycles,
+    /// if you're able to commit changes in batches.
+    ///
+    /// While [SCertifiedBTreeMap] is in the `uncommited` state, every call that touches the underlying
+    /// Merkle tree will panic ([SCertifiedBTreeMap::prove_absence], [SCertifiedBTreeMap::witness_with],
+    /// [SCertifiedBTreeMap::prove_range], [SCertifiedBTreeMap::as_hash_tree]).
     pub fn commit(&mut self) {
-        if !self.frozen {
+        if !self.uncommited {
             return;
         }
-        self.frozen = false;
+        self.uncommited = false;
 
         while let Some(ptr) = self.modified.pop() {
             let mut node = BTreeNode::<K, V>::from_ptr(ptr);
@@ -133,12 +379,24 @@ impl<
         }
     }
 
+    /// Constructs a Merkle proof that is enough to be sure that the requested key **is not** present
+    /// in this [SCertifiedBTreeMap]
+    ///
+    /// This proof is simply a proof that two keys around the requested one (remember, this is a BTree,
+    /// keys are arranged in the ascending order) don't have anything in between them.
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
+    ///
+    /// # Panics
+    /// Panics if this map is the `uncommited` state.
+    /// Panics if the key is actually present in this map.
     pub fn prove_absence<Q>(&self, index: &Q) -> HashTree
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
-        assert!(!self.frozen);
+        assert!(!self.uncommited);
 
         let root_opt = self.inner.get_root();
         if root_opt.is_none() {
@@ -166,12 +424,19 @@ impl<
         }
     }
 
+    /// Constructs a Merkle proof that includes all keys of the requested range
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
+    ///
+    /// # Panics
+    /// Panics if this map is the `uncommited` state.
     pub fn prove_range<Q>(&self, from: &Q, to: &Q) -> HashTree
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
-        assert!(!self.frozen);
+        assert!(!self.uncommited);
         assert!(from.le(to));
 
         let root_opt = self.inner.get_root();
@@ -186,23 +451,21 @@ impl<
         }
     }
 
-    pub fn as_hash_tree(&self) -> HashTree {
-        let e1 = self.inner.first();
-        let e2 = self.inner.last();
-
-        match (e1, e2) {
-            (None, None) => HashTree::Empty,
-            (Some((k1, _)), Some((k2, _))) => self.prove_range(k1.deref(), k2.deref()),
-            _ => unreachable!(),
-        }
-    }
-
+    /// Proves that the key-value pair is present in this [SCertifiedBTreeMap], revealing the value itself
+    ///
+    /// This method accepts a lambda, so it is possible to witness nested [SCertifiedBTreeMap]s.
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
+    ///
+    /// # Panics
+    /// Panics if this map is the `uncommited` state.
     pub fn witness_with<Q, Fn: FnMut(&V) -> HashTree>(&self, index: &Q, f: Fn) -> HashTree
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
-        assert!(!self.frozen);
+        assert!(!self.uncommited);
 
         let root_opt = self.inner.get_root();
         if root_opt.is_none() {
@@ -212,19 +475,20 @@ impl<
         let node = unsafe { root_opt.unwrap_unchecked() };
         witness_node(&node, index, f)
     }
-}
 
-impl<
-        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
-        V: StableType + AsFixedSizeBytes + AsHashTree,
-    > SCertifiedBTreeMap<K, V>
-{
+    /// Same as [SCertifiedBTreeMap::witness_with], but uses [AsHashTree::hash_tree] as lambda
+    ///
+    /// Use to witness non-nested maps
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
     #[inline]
-    pub fn clear(&mut self) {
-        self.frozen = false;
-        self.modified = LeveledList::new();
-
-        self.inner.clear();
+    pub fn witness<Q>(&self, index: &Q) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.witness_with(index, |value| value.hash_tree())
     }
 }
 
@@ -243,6 +507,28 @@ impl<
             })
             .unwrap_or_else(empty_hash)
     }
+
+    /// Returns the entire Merkle tree of this [SCertifiedBTreeMap], without revealing values
+    ///
+    /// # Important
+    /// This method can make your canister easily reach cycles message limit and is present entirely
+    /// because of compatibility with [Dfinity's RBTree](https://github.com/dfinity/cdk-rs/tree/main/library/ic-certified-map).
+    /// Only use it with small enough trees.
+    ///
+    /// # Panics
+    /// Panics if this map is the `uncommited` state.
+    fn hash_tree(&self) -> HashTree {
+        assert!(!self.uncommited);
+
+        let e1 = self.inner.first();
+        let e2 = self.inner.last();
+
+        match (e1, e2) {
+            (None, None) => HashTree::Empty,
+            (Some((k1, _)), Some((k2, _))) => self.prove_range(k1.deref(), k2.deref()),
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn witness_node<
@@ -257,7 +543,7 @@ fn witness_node<
 ) -> HashTree
 where
     K: Borrow<Q>,
-    Q: Ord,
+    Q: Ord + ?Sized,
 {
     match node {
         BTreeNode::Internal(n) => {
@@ -308,7 +594,7 @@ impl<
     type Buf = <SBTreeMap<K, V> as AsFixedSizeBytes>::Buf;
 
     fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
-        assert!(!self.frozen);
+        assert!(!self.uncommited);
 
         self.inner.as_fixed_size_bytes(buf)
     }
@@ -320,7 +606,7 @@ impl<
         Self {
             inner,
             modified: LeveledList::new(),
-            frozen: false,
+            uncommited: false,
         }
     }
 }
@@ -361,6 +647,315 @@ impl<
     }
 }
 
+impl<
+        K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
+        V: StableType + AsFixedSizeBytes + AsHashTree,
+    > LeafBTreeNode<K, V>
+{
+    pub(crate) fn commit(&mut self) {
+        let len = self.read_len();
+
+        let mut hash = HashForker::default();
+
+        for i in 0..len {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            hash.fork_with(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()));
+        }
+
+        self.write_root_hash(&hash.finish(), true);
+    }
+
+    #[inline]
+    pub(crate) fn root_hash(&self) -> Hash {
+        self.read_root_hash(true)
+    }
+
+    pub(crate) fn prove_absence(&self, index: usize, len: usize) -> Result<HashTree, HashTree> {
+        let mut witness = WitnessForker::default();
+
+        let from = index as isize - 1;
+        let to = index;
+
+        for i in 0..len {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            // it is safe to cast from to usize, since i can never reach 2**31
+            let rh = if i == from as usize || i == to {
+                labeled(k.as_hashable_bytes(), pruned(v.root_hash()))
+            } else {
+                pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()))
+            };
+
+            witness.fork_with(rh);
+        }
+
+        if to == len && len != 0 {
+            Err(witness.finish())
+        } else {
+            Ok(witness.finish())
+        }
+    }
+
+    pub(crate) fn prove_range<Q>(&self, from: &Q, to: &Q) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let len = self.read_len();
+
+        if len == 0 {
+            return HashTree::Empty;
+        }
+
+        let from_idx = match self.binary_search(from, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let to_idx = match self.binary_search(to, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..from_idx {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
+        }
+
+        for i in from_idx..(to_idx + 1).min(len) {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            witness.fork_with(labeled(k.as_hashable_bytes(), pruned(v.root_hash())));
+        }
+
+        for i in (to_idx + 1)..len {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            witness.fork_with(pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash())));
+        }
+
+        witness.finish()
+    }
+
+    pub(crate) fn witness_with<Q, Fn: FnMut(&V) -> HashTree>(
+        &self,
+        index: &Q,
+        mut f: Fn,
+    ) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let len = self.read_len();
+
+        assert!(len > 0, "The key is NOT present!");
+
+        let index = match self.binary_search(index, len) {
+            Ok(idx) => idx,
+            Err(_) => panic!("The key is NOT present!"),
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..len {
+            let k = self.get_key(i);
+            let v = self.get_value(i);
+
+            let rh = if i == index {
+                labeled(k.as_hashable_bytes(), f(&v))
+            } else {
+                pruned(labeled_hash(&k.as_hashable_bytes(), &v.root_hash()))
+            };
+
+            witness.fork_with(rh);
+        }
+
+        witness.finish()
+    }
+}
+
+impl<K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes> InternalBTreeNode<K> {
+    pub(crate) fn commit<V: StableType + AsFixedSizeBytes + AsHashTree>(&mut self) {
+        let len = self.read_len();
+        let mut hash = HashForker::default();
+
+        for i in 0..(len + 1) {
+            hash.fork_with(self.read_child_root_hash::<V>(i, true));
+        }
+
+        self.write_root_hash(&hash.finish(), true);
+    }
+
+    #[inline]
+    pub(crate) fn root_hash(&self) -> Hash {
+        self.read_root_hash(true)
+    }
+
+    pub(crate) fn prove_absence<V: StableType + AsFixedSizeBytes + AsHashTree, Q>(
+        &self,
+        key: &Q,
+    ) -> Result<HashTree, HashTree>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let len = self.read_len();
+
+        debug_assert!(len > 0);
+
+        let index = match self.binary_search(key, len) {
+            Ok(_) => panic!("The key is present!"),
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        let mut i = 0;
+        loop {
+            if i == len + 1 {
+                break;
+            }
+
+            let mut ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i));
+            let mut child = BTreeNode::<K, V>::from_ptr(ptr);
+
+            let result = if i == index {
+                match child {
+                    BTreeNode::Internal(n) => n.prove_absence::<V, Q>(key),
+                    BTreeNode::Leaf(n) => {
+                        let len = n.read_len();
+                        let idx = match n.binary_search(key, len) {
+                            Ok(_) => panic!("The key is present!"),
+                            Err(idx) => idx,
+                        };
+
+                        n.prove_absence(idx, len)
+                    }
+                }
+            } else {
+                match child {
+                    BTreeNode::Internal(n) => Ok(HashTree::Pruned(n.read_root_hash(true))),
+                    BTreeNode::Leaf(n) => Ok(HashTree::Pruned(n.read_root_hash(true))),
+                }
+            };
+
+            match result {
+                Ok(h) => {
+                    witness.fork_with(h);
+
+                    i += 1;
+                }
+                Err(h) => {
+                    witness.fork_with(h);
+
+                    if i == len {
+                        return Err(witness.finish());
+                    }
+
+                    // simply take from the next one
+                    ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i + 1));
+                    child = BTreeNode::<K, V>::from_ptr(ptr);
+
+                    let rh = match child {
+                        BTreeNode::Internal(n) => n.prove_absence::<V, Q>(key),
+                        BTreeNode::Leaf(n) => {
+                            let len = n.read_len();
+                            n.prove_absence(0, len)
+                        }
+                    }
+                    .unwrap();
+
+                    witness.fork_with(rh);
+
+                    i += 2;
+                }
+            }
+        }
+
+        Ok(witness.finish())
+    }
+
+    pub(crate) fn prove_range<V: AsHashTree + StableType + AsFixedSizeBytes, Q>(
+        &self,
+        from: &Q,
+        to: &Q,
+    ) -> HashTree
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        let len = self.read_len();
+
+        debug_assert!(len > 0);
+
+        let from_idx = match self.binary_search(from, len) {
+            Ok(idx) => idx,
+            Err(idx) => idx,
+        };
+
+        let to_idx = match self.binary_search(to, len) {
+            Ok(idx) => idx + 1,
+            Err(idx) => idx,
+        };
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..from_idx {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        for i in from_idx..(to_idx + 1).min(len + 1) {
+            let ptr = u64::from_fixed_size_bytes(&self.read_child_ptr_buf(i));
+            let child = BTreeNode::<K, V>::from_ptr(ptr);
+
+            let rh = match child {
+                BTreeNode::Internal(n) => n.prove_range::<V, Q>(from, to),
+                BTreeNode::Leaf(n) => n.prove_range(from, to),
+            };
+
+            witness.fork_with(rh);
+        }
+
+        for i in (to_idx + 1)..(len + 1) {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        witness.finish()
+    }
+
+    pub(crate) fn witness_with_replacement<V: StableType + AsFixedSizeBytes + AsHashTree>(
+        &self,
+        index: usize,
+        replace: HashTree,
+        len: usize,
+    ) -> HashTree {
+        debug_assert!(len > 0);
+
+        let mut witness = WitnessForker::default();
+
+        for i in 0..index {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        witness.fork_with(replace);
+
+        for i in (index + 1)..(len + 1) {
+            witness.fork_with(pruned(self.read_child_root_hash::<V>(i, true)));
+        }
+
+        witness.finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections::certified_btree_map::SCertifiedBTreeMap;
@@ -383,6 +978,10 @@ mod tests {
     impl AsHashTree for u64 {
         fn root_hash(&self) -> Hash {
             leaf_hash(&self.to_le_bytes())
+        }
+
+        fn hash_tree(&self) -> HashTree {
+            leaf(self.to_le_bytes().to_vec())
         }
     }
 
@@ -781,6 +1380,10 @@ mod tests {
         fn root_hash(&self) -> Hash {
             leaf_hash(&self.as_hashable_bytes())
         }
+
+        fn hash_tree(&self) -> HashTree {
+            leaf(self.as_hashable_bytes())
+        }
     }
 
     impl AsHashableBytes for String {
@@ -794,6 +1397,7 @@ mod tests {
         Insert,
         Batch,
         Remove,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -879,6 +1483,12 @@ mod tests {
                         self.map = Some(map);
                     }
                 },
+                100..=101 => {
+                    self.map().clear();
+                    self.keys.clear();
+
+                    self.log.push(Action::Clear);
+                }
                 // BATCH
                 _ => {
                     let count = self.rng.gen_range(0..10);

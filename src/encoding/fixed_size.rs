@@ -1,13 +1,48 @@
+//! Sized data encoding algorithms that power this crate.
+//! 
+//! The main idea is to make sized data encoding as fast as possible, taking as little space as possible.
+//! Each type implementing [AsFixedSizeBytes] trait is aware of its encoded size and of data type of 
+//! the byte buffer that is used to encode it. Constant generics enable us to encode such fixed size 
+//! types in `[u8; N]`, which is very good, since arrays are stack-based data structures and don't 
+//! involve expensive heap allocations, so most types encode themselves into such generic arrays.
+//! 
+//! Generic types (such as [Option]) are not yet compatible with constant generics and therefore they
+//! are encoded to [Vec] of [u8].
+//! 
+//! [AsFixedSizeBytes] trait encapusaltes these differences providing a simple API.
+
 use candid::{Int, Nat, Principal};
 use num_bigint::{BigInt, BigUint, Sign};
 
+/// Allows fast and space-efficient fixed size data encoding.
+/// 
+/// This trait can be implemented by using [derive::AsFixedSizeBytes] macro.
+/// By default it is implemented for the following types:
+/// 1. All primitive types: [i8], [u8], [i16], [u16], [i32], [u32], [i64], [u64], [i128], [u128], [f32], [f64], [bool], [()]
+/// 2. Primitive type generic arrays: [i8; N], [u8; N], [i16; N], [u16; N], [i32; N], [u32; N], [i64: N], [u64; N], [i128; N], [u128; N], [f32; N], [f64; N], [bool; N], [(); N]
+/// 3. Tuples up to 6 elements, where each element implements [AsFixedSizeBytes]
+/// 4. [Option] of `T`, where `T`: [AsFixedSizeBytes]
+/// 5. IC native types: [candid::Principal], [candid::Nat], [candid::Int]
 pub trait AsFixedSizeBytes: Sized {
+    /// Size of self when encoded
     const SIZE: usize;
+    
+    /// [Buffer] that is used to encode this value into
     type Buf: Buffer;
 
+    /// Encodes itself into a slice of bytes.
+    /// 
+    /// # Panics
+    /// Will panic if out of bounds.
     fn as_fixed_size_bytes(&self, buf: &mut [u8]);
+    
+    /// Decodes itself from a slice of bytes.
+    /// 
+    /// # Panics
+    /// Will panic if out of bounds.
     fn from_fixed_size_bytes(buf: &[u8]) -> Self;
 
+    /// Encodes itself into a new [Self::Buf] of size == [Self::SIZE]
     fn as_new_fixed_size_bytes(&self) -> Self::Buf {
         let mut buf = Self::Buf::new(Self::SIZE);
         self.as_fixed_size_bytes(buf._deref_mut());
@@ -434,6 +469,9 @@ impl AsFixedSizeBytes for Int {
     }
 }
 
+/// Either [u8; N] or [Vec] of [u8]
+/// 
+/// You can't implement this trait for any other type than these two.
 pub trait Buffer: private::Sealed {
     fn new(size: usize) -> Self;
     fn _deref(&self) -> &[u8];

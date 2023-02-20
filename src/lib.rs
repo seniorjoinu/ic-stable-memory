@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-#![deny(missing_doc_code_examples)]
 
 //! This crate provides a number of "stable" data structures - collections that use canister's stable
 //! memory for storage, as well as other primitives that allow storing all data of your canister in stable memory.
@@ -8,7 +7,16 @@
 //!
 //! This documentation only covers API and some implementation details. For more useful info and
 //! tutorials, please visit [project's Github page](https://github.com/seniorjoinu/ic-stable-memory).
-
+//!
+//! # Features
+//! 1. Stable data structures release their memory automatically, following Rust's ownership rules.
+//! 2. Stable data structures also obey and enforce Rust's borrowing and lifetime rules.
+//! 3. Each data structure is aware of the limited nature of memory in IC and allows programmatic
+//! reaction for situations when your canister is out of stable memory.
+//! 3. Each data structure's performance is reasonably close to its std's analog.
+//! 4. Supported stable data structures: box, vec, log, hash-map, hash-set, btree-map, btree-set, certified-map.
+//! 5. In addition to these data structures, this crate provides you with a fully featured toolset
+//! to build your own data structure, if you need something more domain-specific.
 use crate::mem::allocator::StableMemoryAllocator;
 use mem::s_slice::SSlice;
 use std::cell::RefCell;
@@ -32,6 +40,7 @@ pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 pub use encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 pub use primitive::s_box::SBox;
 pub use primitive::StableType;
+pub use utils::certification::{fork, fork_hash, leaf, leaf_hash, AsHashTree, AsHashableBytes};
 
 thread_local! {
     static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);
@@ -251,12 +260,14 @@ pub fn reinit_allocator() {
 /// # Example
 /// ```rust
 /// # use ic_stable_memory::collections::SHashMap;
-/// # use ic_stable_memory::{retrieve_custom_data, SBox, stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data};
-/// // "let mut" instead of "thread_local" for simplicity
-/// let mut state = SHashMap::<u64, u64>::default();
+/// # use ic_stable_memory::{retrieve_custom_data, SBox, stable_memory_init, stable_memory_post_upgrade, stable_memory_pre_upgrade, store_custom_data};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// static mut STATE: Option<SHashMap<u64, u64>> = None;
 ///
 /// #[ic_cdk_macros::pre_upgrade]
 /// fn pre_upgrade() {
+///     let state = unsafe { STATE.take().unwrap() };
 ///     let boxed_state = SBox::new(state).expect("Out of memory");
 ///
 ///     store_custom_data(1, boxed_state);
@@ -273,7 +284,7 @@ pub fn reinit_allocator() {
 ///     let boxed_state = retrieve_custom_data::<SHashMap<u64, u64>>(1)
 ///         .expect("Key not found");
 ///
-///     state = boxed_state.into_inner();
+///     unsafe { STATE = Some(boxed_state.into_inner()); }
 /// }
 /// ```
 ///
@@ -371,13 +382,21 @@ pub fn retrieve_custom_data<T: StableType + AsDynSizeBytes>(idx: usize) -> Optio
 /// # Example
 /// ```rust
 /// // slice size is in [104..136) bytes range, despite requesting for only 100 bytes
+/// # use ic_stable_memory::{allocate, stable_memory_init};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// # unsafe {
 /// let slice = allocate(100).expect("Not enough stable memory");
+/// # }
 /// ```
 ///
 /// # Panics
 /// Panics if there is no initialized stable memory allocator.
+///
+/// # Safety
+/// Don't forget to [deallocate] the memory block, when you're done!
 #[inline]
-pub fn allocate(size: u64) -> Result<SSlice, OutOfMemory> {
+pub unsafe fn allocate(size: u64) -> Result<SSlice, OutOfMemory> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
             alloc.allocate(size)
@@ -396,8 +415,13 @@ pub fn allocate(size: u64) -> Result<SSlice, OutOfMemory> {
 ///
 /// # Example
 /// ```rust
+/// # use ic_stable_memory::{allocate, deallocate, stable_memory_init};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// # unsafe {
 /// let slice = allocate(100).expect("Out of memory");
 /// deallocate(slice);
+/// # }
 /// ```
 ///
 /// # Panics
@@ -436,15 +460,23 @@ pub fn deallocate(slice: SSlice) {
 ///
 /// # Example
 /// ```rust
+/// # use ic_stable_memory::{allocate, stable_memory_init, reallocate};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// # unsafe {
 /// let slice = allocate(100).expect("Out of memory");
 /// let bigger_slice = reallocate(slice, 200).expect("Out of memory");
+/// # }
 /// ```
 ///
 /// # Panics
 /// Panics if there is no initialized stable memory allocator.
 /// Reallocating [SSlice]s bigger than [u32::MAX] bytes will also panic.
+///
+/// # Safety
+/// Don't forget to [deallocate] the memory block, when you're done!
 #[inline]
-pub fn reallocate(slice: SSlice, new_size: u64) -> Result<SSlice, OutOfMemory> {
+pub unsafe fn reallocate(slice: SSlice, new_size: u64) -> Result<SSlice, OutOfMemory> {
     STABLE_MEMORY_ALLOCATOR.with(|it| {
         if let Some(alloc) = &mut *it.borrow_mut() {
             alloc.reallocate(slice, new_size)
@@ -466,9 +498,11 @@ pub fn reallocate(slice: SSlice, new_size: u64) -> Result<SSlice, OutOfMemory> {
 ///
 /// # Example
 /// ```rust
-/// # use ic_stable_memory::make_sure_can_allocate;
+/// # use ic_stable_memory::{make_sure_can_allocate, stable_memory_init};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
 /// if make_sure_can_allocate(1_000_000) {
-///     ic_cdk::print("It is possible to allocate a million bytes of stable memory");
+///     println!("It is possible to allocate a million bytes of stable memory");
 /// }
 /// ```
 ///
@@ -594,7 +628,7 @@ mod tests {
         stable_memory_pre_upgrade();
         stable_memory_post_upgrade();
 
-        let b = allocate(100).unwrap();
+        let b = unsafe { allocate(100).unwrap() };
         let b = unsafe { reallocate(b, 200).unwrap() };
         deallocate(b);
 
@@ -633,7 +667,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn allocate_without_allocator_should_panic() {
-        allocate(10);
+        unsafe { allocate(10) };
     }
 
     #[test]

@@ -9,10 +9,29 @@ use crate::{allocate, deallocate, OutOfMemory, SSlice};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+#[doc(hidden)]
 pub mod iter;
 
 pub(crate) const DEFAULT_CAPACITY: u64 = 2;
 
+/// Non-reallocating growing vector optimized for storing logs or history entries
+///
+/// Very similar to [SVec](crate::collections::SVec), but internally does not perform reallocations
+/// nor moves of data. Instead, when the capacity is reached, a new block of stable memory (which
+/// here is called a `Sector`) is allocated and attached to the end of the current block. So, in
+/// some sense, this is a linked list, where each node can hold multiple elements.
+///
+/// `T` has to implement both [StableType] and [AsFixedSizeBytes]. [SLog] itself also implements these
+/// trait, which means that you can store it inside an another stable structure.
+///
+/// This data structure is "infinite" - it can handle up to [u64::MAX] elements.
+///
+/// [SLog] grows exponentially - each new `Sector` is twice as big as the previous one. But if the
+/// canister is short on stable memory, the newly created `Sector` may be shrunk, to be able to continue
+/// to grow.
+///
+/// It is well optimized when you access elements near the end (the most recently added). The further
+/// the element you access from the end, the worser the performance.
 pub struct SLog<T: StableType + AsFixedSizeBytes> {
     len: u64,
     first_sector_ptr: StablePtr,
@@ -24,13 +43,10 @@ pub struct SLog<T: StableType + AsFixedSizeBytes> {
     _marker: PhantomData<T>,
 }
 
-impl<T: StableType + AsFixedSizeBytes> Default for SLog<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T: StableType + AsFixedSizeBytes> SLog<T> {
+    /// Creates a new [SLog]
+    ///
+    /// Does not allocate any heap or stable memory.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -45,6 +61,21 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         }
     }
 
+    /// Inserts a new element at the end of the [SLog]
+    ///
+    /// May allocate a new `Sector`. If the canister is out of stable memory, will return [Err] with
+    /// the element that was about to get inserted.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SLog;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut log = SLog::new();
+    ///
+    /// log.push(10u64).expect("Out of memory");
+    /// ```
     pub fn push(&mut self, it: T) -> Result<(), T> {
         if let Ok(mut sector) = self.get_or_create_current_sector() {
             if self.move_to_next_sector_if_needed(&mut sector).is_ok() {
@@ -62,6 +93,10 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         }
     }
 
+    /// Removes an element from the end of the [SLog]
+    ///
+    /// If the [SLog] is empty, returns [None]. If it was the last element of the last `Sector` and
+    /// there are more `Sectors` before it, the last `Sector` gets deallocated, freeing the memory.
     pub fn pop(&mut self) -> Option<T> {
         if self.len == 0 {
             return None;
@@ -80,11 +115,30 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         Some(it)
     }
 
+    /// Removes all elements from this [SLog]
+    ///
+    /// Deallocates all `Sectors`, but the first one, freeing the memory.
     #[inline]
     pub fn clear(&mut self) {
         while self.pop().is_some() {}
     }
 
+    /// Returns an immutable reference [SRef] to the last element of this [SLog]
+    ///
+    /// If the [SLog] is empty, returns [None].
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SLog;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut log = SLog::new();
+    ///
+    /// log.push(10u64).expect("Out of memory");
+    ///
+    /// assert_eq!(*log.last().unwrap(), 10);
+    /// ```
     pub fn last(&self) -> Option<SRef<T>> {
         if self.len == 0 {
             return None;
@@ -93,10 +147,26 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         let sector = self.get_current_sector()?;
         let ptr = sector.get_element_ptr(self.cur_sector_last_item_offset - T::SIZE as u64);
 
-        Some(SRef::new(ptr))
+        unsafe { Some(SRef::new(ptr)) }
     }
 
-    pub fn first(&self) -> Option<SRef<'_, T>> {
+    /// Efficiently returns an immutable reference [SRef] to the first element of this [SLog]
+    ///
+    /// If the [SLog] is empty, returns [None].
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SLog;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut log = SLog::new();
+    ///
+    /// log.push(10u64).expect("Out of memory");
+    ///
+    /// assert_eq!(*log.first().unwrap(), 10);
+    /// ```
+    pub fn first(&self) -> Option<SRef<T>> {
         if self.len == 0 {
             return None;
         }
@@ -104,35 +174,73 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
         let sector = self.get_first_sector()?;
         let ptr = sector.get_element_ptr(0);
 
-        Some(SRef::new(ptr))
+        unsafe { Some(SRef::new(ptr)) }
     }
 
+    /// Returns an immutable reference [SRef] to an element at the requested index
+    ///
+    /// See also [SLog::get_mut].
+    ///
+    /// The closer the index to `0`, the worser the performance of this call.
+    ///
+    /// If the [SLog] is empty, returns [None]
     #[inline]
-    pub fn get(&self, idx: u64) -> Option<SRef<'_, T>> {
+    pub fn get(&self, idx: u64) -> Option<SRef<T>> {
         let (sector, dif) = self.find_sector_for_idx(idx)?;
         let ptr = sector.get_element_ptr((idx - dif) * T::SIZE as u64);
 
-        Some(SRef::new(ptr))
+        unsafe { Some(SRef::new(ptr)) }
     }
 
+    /// Returns a mutable reference [SRefMut] to an element at the requested index
+    ///
+    /// See also [SLog::get].
+    ///
+    /// The closer the index to `0`, the worser the performance of this call.
+    ///
+    /// If the [SLog] is empty, returns [None]
     #[inline]
-    pub fn get_mut(&mut self, idx: u64) -> Option<SRefMut<'_, T>> {
+    pub fn get_mut(&mut self, idx: u64) -> Option<SRefMut<T>> {
         let (sector, dif) = self.find_sector_for_idx(idx)?;
         let ptr = sector.get_element_ptr((idx - dif) * T::SIZE as u64);
 
-        Some(SRefMut::new(ptr))
+        unsafe { Some(SRefMut::new(ptr)) }
     }
 
+    /// Returns the length of this [SLog]
     #[inline]
     pub fn len(&self) -> u64 {
         self.len
     }
 
+    /// Returns true if the length of this [SLog] is `0`
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Returns a back-to-front iterator over this [SLog]
+    ///
+    /// This iterator contains elements from last to first.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SLog;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut log = SLog::new();
+    ///
+    /// for i in 0..100 {
+    ///     log.push(i).expect("Out of memory");
+    /// }
+    ///
+    /// let mut i = 99;
+    /// for elem in log.rev_iter() {
+    ///     assert_eq!(*elem, i);
+    ///     i -= 1;
+    /// }
+    /// ```
     #[inline]
     pub fn rev_iter(&self) -> SLogIter<'_, T> {
         SLogIter::new(self)
@@ -250,15 +358,9 @@ impl<T: StableType + AsFixedSizeBytes> SLog<T> {
     }
 }
 
-impl<T: StableType + AsFixedSizeBytes> From<SLog<T>> for Vec<T> {
-    fn from(mut slog: SLog<T>) -> Self {
-        let mut vec = Self::new();
-
-        while let Some(it) = slog.pop() {
-            vec.insert(0, it);
-        }
-
-        vec
+impl<T: StableType + AsFixedSizeBytes> Default for SLog<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -271,7 +373,7 @@ struct Sector<T>(u64, PhantomData<T>);
 
 impl<T: StableType + AsFixedSizeBytes> Sector<T> {
     fn new(cap: u64, prev: StablePtr) -> Result<Self, OutOfMemory> {
-        let slice = allocate(u64::SIZE as u64 * 3 + cap * T::SIZE as u64)?;
+        let slice = unsafe { allocate(u64::SIZE as u64 * 3 + cap * T::SIZE as u64)? };
 
         let mut it = Self(slice.as_ptr(), PhantomData::default());
         it.write_prev_ptr(prev);
@@ -282,7 +384,7 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
     }
 
     fn destroy(self) {
-        let slice = SSlice::from_ptr(self.0).unwrap();
+        let slice = unsafe { SSlice::from_ptr(self.0).unwrap() };
         deallocate(slice);
     }
 
@@ -338,12 +440,12 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 
     #[inline]
     fn get_element(&self, offset: u64) -> SRef<T> {
-        SRef::new(self.get_element_ptr(offset))
+        unsafe { SRef::new(self.get_element_ptr(offset)) }
     }
 
     #[inline]
     fn get_element_mut(&mut self, offset: u64) -> SRefMut<T> {
-        SRefMut::new(self.get_element_ptr(offset))
+        unsafe { SRefMut::new(self.get_element_ptr(offset)) }
     }
 
     #[inline]
@@ -353,6 +455,9 @@ impl<T: StableType + AsFixedSizeBytes> Sector<T> {
 }
 
 impl<T: StableType + AsFixedSizeBytes + Debug> SLog<T> {
+    /// Prints sectored representation of this [SLog]
+    ///
+    /// Useful for tests
     pub fn debug_print(&self) {
         let mut sector = if let Some(s) = self.get_first_sector() {
             s
@@ -413,8 +518,8 @@ impl<T: StableType + AsFixedSizeBytes + Debug> SLog<T> {
 }
 
 impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
-    const SIZE: usize = u64::SIZE * 6;
-    type Buf = [u8; u64::SIZE * 6];
+    const SIZE: usize = u64::SIZE * 6 + usize::SIZE;
+    type Buf = [u8; u64::SIZE * 6 + usize::SIZE];
 
     fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
         self.len.as_fixed_size_bytes(&mut buf[0..u64::SIZE]);
@@ -423,13 +528,11 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
         self.cur_sector_ptr
             .as_fixed_size_bytes(&mut buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
         self.cur_sector_last_item_offset
-            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
-        self.cur_sector_capacity.as_fixed_size_bytes(
-            &mut buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)],
-        );
-        self.cur_sector_len.as_fixed_size_bytes(
-            &mut buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)],
-        );
+            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 3)..(u64::SIZE * 4)]);
+        self.cur_sector_capacity
+            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 4)..(u64::SIZE * 5)]);
+        self.cur_sector_len
+            .as_fixed_size_bytes(&mut buf[(u64::SIZE * 5)..(u64::SIZE * 6)]);
     }
 
     fn from_fixed_size_bytes(buf: &[u8]) -> Self {
@@ -437,13 +540,10 @@ impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SLog<T> {
         let first_sector_ptr = u64::from_fixed_size_bytes(&buf[u64::SIZE..(u64::SIZE * 2)]);
         let cur_sector_ptr = u64::from_fixed_size_bytes(&buf[(u64::SIZE * 2)..(u64::SIZE * 3)]);
         let cur_sector_last_item_offset =
-            u64::from_fixed_size_bytes(&buf[(u64::SIZE * 3)..(u64::SIZE * 3 + usize::SIZE)]);
-        let cur_sector_capacity = u64::from_fixed_size_bytes(
-            &buf[(u64::SIZE * 3 + usize::SIZE)..(u64::SIZE * 3 + usize::SIZE * 2)],
-        );
-        let cur_sector_len = u64::from_fixed_size_bytes(
-            &buf[(u64::SIZE * 3 + usize::SIZE * 2)..(u64::SIZE * 3 + usize::SIZE * 3)],
-        );
+            u64::from_fixed_size_bytes(&buf[(u64::SIZE * 3)..(u64::SIZE * 4)]);
+        let cur_sector_capacity =
+            u64::from_fixed_size_bytes(&buf[(u64::SIZE * 4)..(u64::SIZE * 5)]);
+        let cur_sector_len = u64::from_fixed_size_bytes(&buf[(u64::SIZE * 5)..(u64::SIZE * 6)]);
 
         Self {
             len,
@@ -605,6 +705,7 @@ mod tests {
     enum Action {
         Push,
         Pop,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -630,7 +731,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..100);
+            let action = self.rng.gen_range(0..101);
 
             match action {
                 // PUSH ~60%
@@ -649,7 +750,14 @@ mod tests {
                     self.it().pop();
                     self.example.pop();
 
-                    self.log.push(Action::Pop)
+                    self.log.push(Action::Pop);
+                }
+                // CLEAR
+                91..=92 => {
+                    self.it().clear();
+                    self.example.clear();
+
+                    self.log.push(Action::Clear);
                 }
                 // CANISTER UPGRADE ~10%
                 _ => match SBox::new(self.state.take().unwrap()) {

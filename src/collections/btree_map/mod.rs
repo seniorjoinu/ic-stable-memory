@@ -1,7 +1,7 @@
 use crate::collections::btree_map::internal_node::InternalBTreeNode;
 use crate::collections::btree_map::iter::SBTreeMapIter;
 use crate::collections::btree_map::leaf_node::LeafBTreeNode;
-use crate::encoding::{AsFixedSizeBytes, Buffer};
+use crate::encoding::AsFixedSizeBytes;
 use crate::mem::allocator::EMPTY_PTR;
 use crate::mem::free_block::FreeBlock;
 use crate::mem::{StablePtr, StablePtrBuf};
@@ -10,26 +10,37 @@ use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
 use crate::{isoprint, make_sure_can_allocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
-use std::fmt::{Debug, Formatter, Write};
+use std::fmt::{Debug, Formatter};
 use std::mem;
 
-pub const B: usize = 8;
-pub const CAPACITY: usize = 2 * B - 1;
-pub const MIN_LEN_AFTER_SPLIT: usize = B - 1;
+pub(crate) const B: usize = 8;
+pub(crate) const CAPACITY: usize = 2 * B - 1;
+pub(crate) const MIN_LEN_AFTER_SPLIT: usize = B - 1;
 
-pub const CHILDREN_CAPACITY: usize = 2 * B;
-pub const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
+pub(crate) const CHILDREN_CAPACITY: usize = 2 * B;
+pub(crate) const CHILDREN_MIN_LEN_AFTER_SPLIT: usize = B;
 
-pub const NODE_TYPE_INTERNAL: u8 = 127;
-pub const NODE_TYPE_LEAF: u8 = 255;
-pub const NODE_TYPE_OFFSET: u64 = 0;
+pub(crate) const NODE_TYPE_INTERNAL: u8 = 127;
+pub(crate) const NODE_TYPE_LEAF: u8 = 255;
+pub(crate) const NODE_TYPE_OFFSET: u64 = 0;
 
 pub(crate) mod internal_node;
 pub mod iter;
 pub(crate) mod leaf_node;
 
-// LEFT CHILD - LESS THAN
-// RIGHT CHILD - MORE OR EQUAL THAN
+/// Right-biased B-plus tree based map data structure
+///
+/// Entries are stored in ascending order of their keys. Use [std::cmp::Reverse] or a custom [std::cmp::Ord]
+/// impl, to differ the order.
+///
+/// `B` is `8`. This implementation is optimized to perform as few stable memory (de)allocations
+/// as possible. Also, this data structure implements several non-conventional functions in order to
+/// share code with other data structures, based on this one.
+///
+/// This is an "infinite" data structure - it can handle up to [u64::MAX] key-value entries.
+///
+/// Both `K` and `V` have to implement [StableType] and [AsFixedSizeBytes] traits. [SBTreeMap] also
+/// implements these trait, so you can nest it in other stable structures.
 pub struct SBTreeMap<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> {
     root: Option<BTreeNode<K, V>>,
     len: u64,
@@ -40,6 +51,9 @@ pub struct SBTreeMap<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsF
 }
 
 impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> SBTreeMap<K, V> {
+    /// Creates a new [SBTreeMap]
+    ///
+    /// Does not allocate any heap or stable memory.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -64,6 +78,27 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         }
     }
 
+    /// Inserts the provided key-value pair into this [SBTreeMap]
+    ///
+    /// May allocate stable and heap memory. If your canister is out of stable memory, will return
+    /// [Err] with the key-value pair that was about to get inserted.
+    ///
+    /// If the insertion is successful, returns [Option] with a value, that was previously stored
+    /// under this key.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// match map.insert(10u64, 100u64) {
+    ///     Ok(prev) => println!("Success! Previous value == {prev:?}"),
+    ///     Err((k, v)) => println!("Out of memory. Unable to insert pair: {k}, {v}"),
+    /// };
+    /// ```
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         self._insert(key, value, &mut LeveledList::None)
@@ -158,11 +193,45 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         }
     }
 
+    /// Removes a key-value pair by the provided key
+    ///
+    /// Returns [None] if no pair was found by this key. May release some of stable memory occupied
+    /// by this stable structure.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// map.insert(1, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(map.remove(&1).unwrap(), 10);
+    /// ```
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can remove the pair by [String].
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::{SBox, stable_memory_init};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// let str_key = String::from("The key");
+    /// let key = SBox::new(str_key.clone()).expect("Out of memory");
+    ///
+    /// map.insert(key, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(map.remove(&str_key).unwrap(), 10);
+    /// ```
     #[inline]
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self._remove(key, &mut LeveledList::None)
     }
@@ -170,7 +239,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     pub(crate) fn _remove<Q>(&mut self, key: &Q, modified: &mut LeveledList) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.root.as_ref()?;
 
@@ -242,52 +311,166 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         )
     }
 
+    /// Returns an immutable reference [SRef] to a value stored by the key
+    ///
+    /// See also [SBTreeMap::get_mut].
+    ///
+    /// If no such key-value pair is found, returns [None]
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::{SBox, stable_memory_init};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// let str_key = String::from("The key");
+    /// let key = SBox::new(str_key.clone()).expect("Out of memory");
+    ///
+    /// map.insert(key, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(*map.get(&str_key).unwrap(), 10);
+    /// ```
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<SRef<V>>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         let (leaf_node, idx) = self.lookup(key, false)?;
 
         Some(leaf_node.get_value(idx))
     }
 
+    /// Returns a mutable reference [SRefMut] to a value stored by the key
+    ///
+    /// See also [SBTreeMap::get].
+    ///
+    /// If no such key-value pair is found, returns [None]
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
     #[inline]
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<V>>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
+        self._get_mut(key, &mut LeveledList::None)
+    }
+
+    #[inline]
+    pub(crate) fn _get_mut<Q>(&mut self, key: &Q, modified: &mut LeveledList) -> Option<SRefMut<V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        if modified.is_some() {
+            let mut modified_buf = Vec::new();
+
+            let mut level = 0;
+            let mut node = self.get_root()?;
+            loop {
+                match node {
+                    BTreeNode::Internal(internal_node) => {
+                        let child_idx =
+                            match internal_node.binary_search(key, internal_node.read_len()) {
+                                Ok(idx) => idx + 1,
+                                Err(idx) => idx,
+                            };
+
+                        modified_buf.push((level, internal_node.as_ptr()));
+                        level += 1;
+
+                        let child_ptr = u64::from_fixed_size_bytes(
+                            &internal_node.read_child_ptr_buf(child_idx),
+                        );
+                        node = BTreeNode::from_ptr(child_ptr);
+                    }
+                    BTreeNode::Leaf(mut leaf_node) => {
+                        return match leaf_node.binary_search(key, leaf_node.read_len()) {
+                            Ok(idx) => {
+                                for (l, ptr) in modified_buf {
+                                    modified.push(l, ptr);
+                                }
+
+                                modified.push(level, leaf_node.as_ptr());
+
+                                Some(leaf_node.get_value_mut(idx))
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+            }
+        }
+
         let (mut leaf_node, idx) = self.lookup(key, false)?;
 
         Some(leaf_node.get_value_mut(idx))
     }
 
+    /// Returns true if there exists a key-value pair stored by the provided key
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
     #[inline]
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.lookup(key, true).is_some()
     }
 
+    /// Returns an iterator over entries of this [SBTreeMap]
+    ///
+    /// Elements of this iterator are presented in ascending order.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// for i in 0..100 {
+    ///     map.insert(i, i).expect("Out of memory");
+    /// }
+    ///
+    /// let mut i = 0;
+    /// for (k, v) in map.iter() {
+    ///     assert_eq!(*k, i);
+    ///     assert_eq!(*v, i);
+    ///
+    ///     i += 1;
+    /// }
+    /// ```
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
         SBTreeMapIter::<K, V>::new(self)
     }
 
+    /// Returns the length of this [SBTreeMap]
     #[inline]
     pub fn len(&self) -> u64 {
         self.len
     }
 
+    /// Returns [true] if the length of this [SBTreeMap] is `0`
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Returns an immutable reference [SRef] to the first key-value pair in order
+    ///
+    /// If the collection is empty, returns [None]
     pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
         let mut node = self.get_root()?;
 
@@ -304,6 +487,9 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         }
     }
 
+    /// Returns a mutable reference [SRefMut] to the first key-value pair in order
+    ///
+    /// If the collection is empty, returns [None]
     pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
         let mut node = self.get_root()?;
 
@@ -322,6 +508,16 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
                 }
             }
         }
+    }
+
+    /// Removes all key-value pairs from this collection, releasing all occupied stable memory
+    #[inline]
+    pub fn clear(&mut self) {
+        let mut old = mem::replace(self, Self::new());
+        self.stable_drop_flag = old.stable_drop_flag;
+        self.certified = old.certified;
+
+        unsafe { old.stable_drop() };
     }
 
     #[inline]
@@ -365,7 +561,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     fn lookup<Q>(&self, key: &Q, return_early: bool) -> Option<(LeafBTreeNode<K, V>, usize)>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         let mut node = self.get_root()?;
         loop {
@@ -1286,17 +1482,6 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     }
 }
 
-impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> SBTreeMap<K, V> {
-    #[inline]
-    pub fn clear(&mut self) {
-        let mut old = mem::replace(self, Self::new());
-        self.stable_drop_flag = old.stable_drop_flag;
-        self.certified = old.certified;
-
-        unsafe { old.stable_drop() };
-    }
-}
-
 impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> StableType
     for SBTreeMap<K, V>
 {
@@ -1485,6 +1670,13 @@ impl LeveledList {
         Self::Some((vec![Vec::new()], 0))
     }
 
+    fn is_some(&self) -> bool {
+        match self {
+            LeveledList::None => false,
+            _ => true,
+        }
+    }
+
     fn insert_root(&mut self, ptr: u64) {
         match self {
             LeveledList::None => {}
@@ -1595,7 +1787,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord + Debug, V: StableType + AsFixedSize
     }
 }
 
-pub trait IBTreeNode {
+pub(crate) trait IBTreeNode {
     unsafe fn from_ptr(ptr: StablePtr) -> Self;
     fn as_ptr(&self) -> StablePtr;
     unsafe fn copy(&self) -> Self;
@@ -1767,6 +1959,7 @@ mod tests {
     enum Action {
         Insert,
         Remove,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -1794,7 +1987,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..100);
+            let action = self.rng.gen_range(0..101);
 
             match action {
                 // INSERT ~60%
@@ -1835,6 +2028,15 @@ mod tests {
                     self.example.remove(&key).unwrap();
 
                     self.log.push(Action::Remove);
+                }
+                // CLEAR
+                90..=91 => {
+                    self.map().clear();
+                    self.example.clear();
+
+                    self.keys.clear();
+
+                    self.log.push(Action::Clear);
                 }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.map.take().unwrap()) {

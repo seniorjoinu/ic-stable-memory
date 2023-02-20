@@ -4,6 +4,14 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::Deref;
 
+/// Immutable reference to data stored in stable memory
+///
+/// See also [SRefMut](crate::primitive::s_ref_mut::SRefMut).
+///
+/// Lazy - only loads and deserializes the data, when it gets accessed. Useful when building your
+/// own stable data structure. Immutable access is provided by dereferencing.
+///
+/// `T` has to implement [StableType] and [AsFixedSizeBytes].
 pub struct SRef<'o, T> {
     ptr: u64,
     inner: UnsafeCell<Option<T>>,
@@ -11,8 +19,12 @@ pub struct SRef<'o, T> {
 }
 
 impl<'o, T> SRef<'o, T> {
+    /// Creates reference from raw pointer.
+    ///
+    /// # Safety
+    /// Make sure your raw pointer points to a valid location.
     #[inline]
-    pub(crate) fn new(ptr: u64) -> Self {
+    pub unsafe fn new(ptr: u64) -> Self {
         Self {
             ptr,
             inner: UnsafeCell::new(None),

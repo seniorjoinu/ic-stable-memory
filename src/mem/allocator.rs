@@ -204,7 +204,7 @@ impl StableMemoryAllocator {
 
     pub fn retrieve() -> Self {
         let slice_ptr = unsafe { crate::mem::read_fixed_for_reference(0) };
-        let slice = SSlice::from_ptr(slice_ptr).unwrap();
+        let slice = unsafe { SSlice::from_ptr(slice_ptr).unwrap() };
 
         let mut buf = vec![0u8; slice.get_size_bytes() as usize];
         unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf) };

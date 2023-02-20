@@ -76,6 +76,6 @@ impl<'a, T: StableType + AsFixedSizeBytes> Iterator for SLogIter<'a, T> {
             cur_sector.idx -= 1;
         }
 
-        Some(SRef::new(ptr))
+        unsafe { Some(SRef::new(ptr)) }
     }
 }

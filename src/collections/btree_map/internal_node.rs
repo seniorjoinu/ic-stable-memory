@@ -46,7 +46,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
     }
 
     pub fn create_empty(certified: bool) -> Result<Self, OutOfMemory> {
-        let slice = allocate(Self::calc_byte_size(certified))?;
+        let slice = unsafe { allocate(Self::calc_byte_size(certified))? };
         let mut it = Self {
             ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
@@ -64,7 +64,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         rcp: &StablePtrBuf,
         certified: bool,
     ) -> Result<Self, OutOfMemory> {
-        let slice = allocate(Self::calc_byte_size(certified))?;
+        let slice = unsafe { allocate(Self::calc_byte_size(certified))? };
         let mut it = Self {
             ptr: slice.as_ptr(),
             _marker_k: PhantomData::default(),
@@ -83,14 +83,14 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
 
     #[inline]
     pub fn destroy(self) {
-        let slice = SSlice::from_ptr(self.ptr).unwrap();
+        let slice = unsafe { SSlice::from_ptr(self.ptr).unwrap() };
         deallocate(slice);
     }
 
     pub fn binary_search<Q>(&self, k: &Q, len: usize) -> Result<usize, usize>
     where
         K: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         let mut min = 0;
         let mut max = len;
@@ -278,7 +278,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         self.write_many_child_ptrs_from_buf(idx, buf);
     }
 
-    pub fn read_left_sibling<T: IBTreeNode>(&self, idx: usize) -> Option<T> {
+    pub(crate) fn read_left_sibling<T: IBTreeNode>(&self, idx: usize) -> Option<T> {
         if idx == 0 {
             return None;
         }
@@ -288,7 +288,7 @@ impl<K: StableType + AsFixedSizeBytes + Ord> InternalBTreeNode<K> {
         unsafe { Some(T::from_ptr(left_sibling_ptr)) }
     }
 
-    pub fn read_right_sibling<T: IBTreeNode>(&self, idx: usize, len: usize) -> Option<T> {
+    pub(crate) fn read_right_sibling<T: IBTreeNode>(&self, idx: usize, len: usize) -> Option<T> {
         if idx == len {
             return None;
         }

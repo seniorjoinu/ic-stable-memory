@@ -7,36 +7,36 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
         panic!("Generics not supported");
     }
 
-    let (assume_owned_body, assume_not_owned_body) = match data {
+    let (flag_off_body, flag_on_body) = match data {
         Data::Struct(d) => {
-            let mut assume_owned_body = quote! {};
-            let mut assume_not_owned_body = quote! {};
+            let mut flag_off_body = quote! {};
+            let mut flag_on_body = quote! {};
 
             for (idx, f) in d.fields.iter().enumerate() {
                 let t = &f.ty;
 
                 if let Some(i) = f.ident.clone() {
-                    assume_owned_body = quote! { #assume_owned_body <#t as ic_stable_memory::StableType>::assume_owned_by_stable_memory(&mut self.#i); };
-                    assume_not_owned_body = quote! { #assume_not_owned_body <#t as ic_stable_memory::StableType>::assume_not_owned_by_stable_memory(&mut self.#i); };
+                    flag_off_body = quote! { #flag_off_body <#t as ic_stable_memory::StableType>::stable_drop_flag_off(&mut self.#i); };
+                    flag_on_body = quote! { #flag_on_body <#t as ic_stable_memory::StableType>::stable_drop_flag_on(&mut self.#i); };
                 } else {
                     let idx = Index::from(idx);
 
-                    assume_owned_body = quote! { #assume_owned_body <#t as ic_stable_memory::StableType>::assume_owned_by_stable_memory(&mut self.#idx); };
-                    assume_not_owned_body = quote! { #assume_not_owned_body <#t as ic_stable_memory::StableType>::assume_not_owned_by_stable_memory(&mut self.#idx); };
+                    flag_off_body = quote! { #flag_off_body <#t as ic_stable_memory::StableType>::stable_drop_flag_off(&mut self.#idx); };
+                    flag_on_body = quote! { #flag_on_body <#t as ic_stable_memory::StableType>::stable_drop_flag_on(&mut self.#idx); };
                 };
             }
 
-            (assume_owned_body, assume_not_owned_body)
+            (flag_off_body, flag_on_body)
         }
         Data::Enum(d) => {
-            let mut assume_owned_body_total = quote! {};
-            let mut assume_not_owned_body_total = quote! {};
+            let mut flag_off_body_total = quote! {};
+            let mut flag_on_body_total = quote! {};
 
             for v in d.variants.iter() {
                 let v_name = &v.ident;
 
-                let mut assume_owned_body = quote! {};
-                let mut assume_not_owned_body = quote! {};
+                let mut flag_off_body = quote! {};
+                let mut flag_on_body = quote! {};
 
                 let mut enum_header = quote! {};
 
@@ -46,27 +46,27 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
                     if let Some(i) = f.ident.clone() {
                         enum_header = quote! { #enum_header #i, };
 
-                        assume_owned_body = quote! { #assume_owned_body <#t as ic_stable_memory::StableType>::assume_owned_by_stable_memory(#i); };
-                        assume_not_owned_body = quote! { #assume_not_owned_body <#t as ic_stable_memory::StableType>::assume_not_owned_by_stable_memory(#i); };
+                        flag_off_body = quote! { #flag_off_body <#t as ic_stable_memory::StableType>::stable_drop_flag_off(#i); };
+                        flag_on_body = quote! { #flag_on_body <#t as ic_stable_memory::StableType>::stable_drop_flag_on(#i); };
                     } else {
                         let val_i = format_ident!("val_{}", idx);
 
                         enum_header = quote! { #enum_header #val_i, };
 
-                        assume_owned_body = quote! { #assume_owned_body <#t as ic_stable_memory::StableType>::assume_owned_by_stable_memory(#val_i); };
-                        assume_not_owned_body = quote! { #assume_not_owned_body <#t as ic_stable_memory::StableType>::assume_not_owned_by_stable_memory(#val_i); };
+                        flag_off_body = quote! { #flag_off_body <#t as ic_stable_memory::StableType>::stable_drop_flag_off(#val_i); };
+                        flag_on_body = quote! { #flag_on_body <#t as ic_stable_memory::StableType>::stable_drop_flag_on(#val_i); };
                     };
                 }
 
-                (assume_owned_body_total, assume_not_owned_body_total) = match &v.fields {
+                (flag_off_body_total, flag_on_body_total) = match &v.fields {
                     Fields::Unit => {
                         let owned = quote! {
-                            #assume_owned_body_total
+                            #flag_off_body_total
                             Self::#v_name => {}
                         };
 
                         let not_owned = quote! {
-                            #assume_not_owned_body_total
+                            #flag_on_body_total
                             Self::#v_name => {}
                         };
 
@@ -74,16 +74,16 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
                     }
                     Fields::Named(_) => {
                         let owned = quote! {
-                            #assume_owned_body_total
+                            #flag_off_body_total
                             Self::#v_name { #enum_header } => {
-                                #assume_owned_body
+                                #flag_off_body
                             }
                         };
 
                         let not_owned = quote! {
-                            #assume_not_owned_body_total
+                            #flag_on_body_total
                             Self::#v_name { #enum_header } => {
-                                #assume_not_owned_body
+                                #flag_on_body
                             }
                         };
 
@@ -91,16 +91,16 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
                     }
                     Fields::Unnamed(_) => {
                         let owned = quote! {
-                            #assume_owned_body_total
+                            #flag_off_body_total
                             Self::#v_name(#enum_header) => {
-                                #assume_owned_body
+                                #flag_off_body
                             }
                         };
 
                         let not_owned = quote! {
-                            #assume_not_owned_body_total
+                            #flag_on_body_total
                             Self::#v_name(#enum_header) => {
-                                #assume_not_owned_body
+                                #flag_on_body
                             }
                         };
 
@@ -109,23 +109,23 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
                 };
             }
 
-            assume_owned_body_total = quote! {
+            flag_off_body_total = quote! {
                 unsafe {
                     match self {
-                        #assume_owned_body_total
+                        #flag_off_body_total
                     }
                 }
             };
 
-            assume_not_owned_body_total = quote! {
+            flag_on_body_total = quote! {
                 unsafe {
                     match self {
-                        #assume_not_owned_body_total
+                        #flag_on_body_total
                     }
                 }
             };
 
-            (assume_owned_body_total, assume_not_owned_body_total)
+            (flag_off_body_total, flag_on_body_total)
         }
         _ => panic!("Unions not supported!"),
     };
@@ -133,13 +133,13 @@ pub fn derive_stable_type_impl(ident: &Ident, data: &Data, generics: &Generics) 
     quote! {
         impl ic_stable_memory::StableType for #ident {
             #[inline]
-            unsafe fn assume_owned_by_stable_memory(&mut self) {
-                #assume_owned_body
+            unsafe fn stable_drop_flag_off(&mut self) {
+                #flag_off_body
             }
 
             #[inline]
-            unsafe fn assume_not_owned_by_stable_memory(&mut self) {
-                #assume_not_owned_body
+            unsafe fn stable_drop_flag_on(&mut self) {
+                #flag_on_body
             }
         }
     }

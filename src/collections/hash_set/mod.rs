@@ -7,13 +7,18 @@ use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 use std::hash::Hash;
 
+#[doc(hidden)]
 pub mod iter;
 
+/// Hashmap-based hashset
+///
+/// This is just a wrapper around [SHashMap]`<T, ()>`, read it's documentation to get info on the internals.
 pub struct SHashSet<T: StableType + AsFixedSizeBytes + Hash + Eq> {
     map: SHashMap<T, ()>,
 }
 
 impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
+    /// See [SHashMap::new]
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -21,6 +26,7 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
         }
     }
 
+    /// See [SHashMap::new_with_capacity]
     #[inline]
     pub fn new_with_capacity(capacity: usize) -> Result<Self, OutOfMemory> {
         Ok(Self {
@@ -28,6 +34,7 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
         })
     }
 
+    /// See [SHashMap::insert]
     #[inline]
     pub fn insert(&mut self, value: T) -> Result<bool, T> {
         self.map
@@ -36,49 +43,57 @@ impl<T: StableType + AsFixedSizeBytes + Hash + Eq> SHashSet<T> {
             .map_err(|(k, _)| k)
     }
 
+    /// See [SHashMap::remove]
     #[inline]
     pub fn remove<Q>(&mut self, value: &Q) -> bool
     where
         T: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         self.map.remove(value).is_some()
     }
 
+    /// See [SHashMap::contains_key]
     #[inline]
     pub fn contains<Q>(&self, value: &Q) -> bool
     where
         T: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         self.map.contains_key(value)
     }
 
+    /// See [SHashMap::len]
     #[inline]
     pub fn len(&self) -> usize {
         self.map.len()
     }
 
+    /// See [SHashMap::capacity]
     #[inline]
     pub fn capacity(&self) -> usize {
         self.map.capacity()
     }
 
+    /// See [SHashMap::is_empty]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
+    /// See [SHashMap::is_full]
     #[inline]
     pub fn is_full(&self) -> bool {
         self.map.is_full()
     }
 
+    /// See [SHashMap::iter]
     #[inline]
     pub fn iter(&self) -> SHashSetIter<T> {
         SHashSetIter::new(self)
     }
 
+    /// See [SHashMap::clear]
     #[inline]
     pub fn clear(&mut self) {
         self.map.clear();
@@ -228,6 +243,7 @@ mod tests {
     enum Action {
         Insert,
         Remove,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -255,7 +271,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..100);
+            let action = self.rng.gen_range(0..101);
 
             match action {
                 // INSERT ~60%
@@ -292,6 +308,13 @@ mod tests {
                     self.example.remove(&key);
 
                     self.log.push(Action::Remove);
+                }
+                90..=91 => {
+                    self.set().clear();
+                    self.example.clear();
+                    self.keys.clear();
+
+                    self.log.push(Action::Clear);
                 }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.set.take().unwrap()) {

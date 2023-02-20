@@ -2,8 +2,36 @@ use candid::de::IDLDeserialize;
 use candid::utils::ArgumentDecoder;
 use candid::{CandidType, Deserialize, Result};
 
+/// Trait allowing encoding and decoding of unsized data.
+///
+/// See also [SBox].
+///
+/// By default is implemented for:
+/// 1. Every [AsFixedSizeBytes] type
+/// 2. `Vec<u8>`
+/// 3. `String`
+///
+/// This trait can be easily implemented using derive macros:
+/// 1. [derive::CandidAsDynSizeBytes] implements this trait for types which
+/// already implement [candid::CandidType] and [candid::Deserialize].
+/// 2. [derive::FixedSizeAsDynSizeBytes] implements this trait for types which already
+/// implement [AsFixedSizeBytes].
 pub trait AsDynSizeBytes {
+    /// Encodes self into vector of bytes
+    /// 
+    /// # Panics
+    /// Should panic if data encoding failed.
     fn as_dyn_size_bytes(&self) -> Vec<u8>;
+
+    /// Decodes self from a slice of bytes.
+    ///
+    /// # Important
+    /// The slice *can* have trailing bytes with unmeaningful.
+    /// It means, that if your data encoded value is [1, 0, 1, 0], then it should also be able to
+    /// decode itself from a slice like [1, 0, 1, 0, 0, 0, 0, 0, 0] or [1, 0, 1, 0, 1, 1, 0, 1].
+    /// 
+    /// # Panics
+    /// Should panic if data decoding failed.
     fn from_dyn_size_bytes(buf: &[u8]) -> Self;
 }
 

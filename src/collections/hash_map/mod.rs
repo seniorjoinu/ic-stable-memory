@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use zwohash::ZwoHasher;
 
+#[doc(hidden)]
 pub mod iter;
 
 // Layout:
@@ -33,8 +34,18 @@ const OCCUPIED: u8 = 255;
 
 type KeyHash = usize;
 
-// all for maximum cache-efficiency
-// fixed-size, open addressing, linear probing, 3/4 load factor, no tombstones / non-lazy removal (https://stackoverflow.com/a/60709252/7171515)
+/// Reallocating, open addressing, linear probing, eager removes hash map
+///
+/// Conceptually the same thing as [std::collections::HashMap], but with a couple of twists:
+/// 1. [zwohash](https://github.com/jix/zwohash) is used, instead of `SipHash`, to make hashes faster
+/// and deterministic between canister upgrades.
+/// 2. eager removes (no tombstones) are performed in order to prevent performance degradation.
+///
+/// This is a "finite" data structure - it can only handle up to [u32::MAX] / `(1 + K::SIZE + V::SIZE)`
+/// elements total. Putting more elements inside will panic.
+///
+/// Both `K` and `V` have to implement [StableType] and [AsFixedSizeBytes] traits. [SHashMap] also
+/// implements these traits itself, so you can nest it inside other stable structures.
 pub struct SHashMap<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
 {
     table_ptr: u64,
@@ -48,18 +59,19 @@ pub struct SHashMap<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType 
 impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBytes>
     SHashMap<K, V>
 {
-    #[inline]
-    pub const fn max_capacity() -> usize {
-        u32::MAX as usize / (K::SIZE + V::SIZE)
-    }
-
-    fn hash<T: Hash>(val: &T) -> KeyHash {
-        let mut hasher = ZwoHasher::default();
-        val.hash(&mut hasher);
-
-        hasher.finish() as KeyHash
-    }
-
+    /// Creates a new [SHashMap] of default capacity
+    ///
+    /// Does not allocate any heap or stable memory.
+    ///
+    /// # Example
+    /// ```rust
+    /// // won't allocate until you insert something in it
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut number_pairs = SHashMap::<u64, u64>::new();
+    /// ```
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -72,11 +84,26 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         }
     }
 
+    /// Creates a [SHashMap] of requested capacity.
+    ///
+    /// Does allocate stable memory, returning [OutOfMemory] if there is not enough of it.
+    /// If this function returns [Ok], you are guaranteed to have enough stable memory to store at
+    /// least `capacity` entries in it.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut at_least_10_number_pairs = SHashMap::<u64, u64>::new_with_capacity(10)
+    ///     .expect("Out of memory");
+    /// ```
     pub fn new_with_capacity(capacity: usize) -> Result<Self, OutOfMemory> {
         assert!(capacity <= Self::max_capacity());
 
         let size = (1 + K::SIZE + V::SIZE) * capacity;
-        let table = allocate(size as u64)?;
+        let table = unsafe { allocate(size as u64)? };
 
         let zeroed = vec![0u8; size];
         unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
@@ -91,10 +118,34 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         })
     }
 
+    /// Inserts a key-value pair in this [SHashMap]
+    ///
+    /// Will try to reallocate, if `length == capacity * 3/4` and there is no key-value pair stored by the
+    /// same key. If the canister is out of stable memory, will return [Err] with the key-value pair
+    /// that was about to get inserted.
+    ///
+    /// If the insertion was successful, returns [Option] with a previous value stored by this key,
+    /// if there was one.
+    ///
+    /// Reallocation triggers a process of complete rehashing of keys.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SHashMap::new();
+    ///
+    /// match map.insert(1, 10) {
+    ///     Ok(prev) => println!("Success! Previous value == {prev:?}"),
+    ///     Err((k, v)) => println!("Out of memory. Unable to insert: {k}, {v}"),
+    /// };
+    /// ```
     pub fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
         if self.table_ptr == EMPTY_PTR {
             let size = (1 + K::SIZE + V::SIZE) * self.capacity();
-            if let Ok(table) = allocate(size as u64) {
+            if let Ok(table) = unsafe { allocate(size as u64) } {
                 let zeroed = vec![0u8; size];
                 unsafe { crate::mem::write_bytes(table.offset(0), &zeroed) };
 
@@ -138,7 +189,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
                             }
 
                             let res = new.insert(key, value).debugless_unwrap();
-                            let slice = SSlice::from_ptr(self.table_ptr).unwrap();
+                            let slice = unsafe { SSlice::from_ptr(self.table_ptr).unwrap() };
                             deallocate(slice);
 
                             // dirty hack to make it not call stable_drop() when it is dropped
@@ -165,66 +216,165 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         }
     }
 
+    /// Removes a key-value pair by the provided key
+    ///
+    /// Returns [None] if no pair was found by this key
+    ///
+    /// # Examples
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SHashMap::new();
+    ///
+    /// map.insert(1, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(map.remove(&1).unwrap(), 10);
+    /// ```
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can remove the pair by [String].
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::{SBox, stable_memory_init};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SHashMap::new();
+    /// let str_key = String::from("The key");
+    /// let key = SBox::new(str_key.clone()).expect("Out of memory");
+    ///
+    /// map.insert(key, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(map.remove(&str_key).unwrap(), 10);
+    /// ```
     pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         Some(self.remove_by_idx(self.find_inner_idx(key)?))
     }
 
+    /// Returns an immutable reference [SRef] to a value stored by the key
+    ///
+    /// See also [SHashMap::get_mut].
+    ///
+    /// If no such key-value pair is found, returns [None]
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::{SBox, stable_memory_init};
+    /// # stable_memory_init();
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// let mut map = SHashMap::new();   
+    ///
+    /// let str_key = String::from("The key");
+    /// let key = SBox::new(str_key.clone()).expect("Out of memory");
+    ///
+    /// map.insert(key, 10).expect("Out of memory");
+    ///
+    /// assert_eq!(*map.get(&str_key).unwrap(), 10);
+    /// ```
     #[inline]
     pub fn get<Q>(&self, key: &Q) -> Option<SRef<V>>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         Some(self.get_val(self.find_inner_idx(key)?))
     }
 
+    /// Returns a mutable reference [SRefMut] to a value stored by the key
+    ///
+    /// See also [SHashMap::get].
+    ///
+    /// If no such key-value pair is found, returns [None]
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
     #[inline]
     pub fn get_mut<Q>(&mut self, key: &Q) -> Option<SRefMut<V>>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         Some(self.get_val_mut(self.find_inner_idx(key)?))
     }
 
+    /// Returns true if there exists a key-value pair stored by the provided key
+    ///
+    /// Borrowed type is also accepted. If your key type is, for example, [SBox] of [String],
+    /// then you can get the value by [String].
     #[inline]
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         self.find_inner_idx(key).is_some()
     }
 
+    /// Returns the length of this [SHashMap]
     #[inline]
     pub const fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns the capacity of this [SHashMap]
     #[inline]
     pub const fn capacity(&self) -> usize {
         self.cap
     }
 
+    /// Returns the maximum possible capacity of this [SHashMap]
+    #[inline]
+    pub const fn max_capacity() -> usize {
+        u32::MAX as usize / (K::SIZE + V::SIZE)
+    }
+
+    /// Returns true if the length of this [SHashMap] is `0`
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Returns true if the next unique key insert will trigger the reallocation and rehashing
     #[inline]
     pub const fn is_full(&self) -> bool {
         self.len() == (self.capacity() >> 2) * 3
     }
 
+    /// Returns an iterator over entries of this [SHashMap]
+    ///
+    /// Elements of this iterator are presented in unpredictable and non-deterministic order.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SHashMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # stable_memory_init();
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// let mut map = SHashMap::new();
+    ///
+    /// for i in 0..100 {
+    ///     map.insert(i, i).expect("Out of memory");
+    /// }
+    ///
+    /// for (k, v) in map.iter() {
+    ///     println!("{}, {}", *k, *v);
+    /// }
+    /// ```
     #[inline]
     pub fn iter(&self) -> SHashMapIter<K, V> {
         SHashMapIter::new(self)
     }
 
+    /// Removes all elements from this [SHashMap]
     pub fn clear(&mut self) {
         if self.is_empty() {
             return;
@@ -241,6 +391,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         self.len = 0;
     }
 
+    /// Filters this [SHashMap], so only entries for which the provided lambda returns [true] are left
     pub fn retain<F>(&mut self, mut f: F)
     where
         F: FnMut(&K, &V) -> bool,
@@ -267,6 +418,13 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
             continue;
         }
+    }
+
+    fn hash<T: Hash + ?Sized>(val: &T) -> KeyHash {
+        let mut hasher = ZwoHasher::default();
+        val.hash(&mut hasher);
+
+        hasher.finish() as KeyHash
     }
 
     fn remove_by_idx(&mut self, idx: usize) -> V {
@@ -307,7 +465,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
     fn find_inner_idx<Q>(&self, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,
-        Q: Hash + Eq,
+        Q: Hash + Eq + ?Sized,
     {
         if self.is_empty() {
             return None;
@@ -331,7 +489,7 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
         match flag {
             EMPTY => None,
-            OCCUPIED => Some(SRef::new(ptr + 1)),
+            OCCUPIED => Some(unsafe { SRef::new(ptr + 1) }),
             _ => unreachable!(),
         }
     }
@@ -373,12 +531,12 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
 
     #[inline]
     fn get_val(&self, idx: usize) -> SRef<V> {
-        SRef::new(self.get_value_ptr(idx))
+        unsafe { SRef::new(self.get_value_ptr(idx)) }
     }
 
     #[inline]
     fn get_val_mut(&self, idx: usize) -> SRefMut<V> {
-        SRefMut::new(self.get_value_ptr(idx))
+        unsafe { SRefMut::new(self.get_value_ptr(idx)) }
     }
 
     #[inline]
@@ -412,6 +570,9 @@ impl<K: StableType + AsFixedSizeBytes + Hash + Eq, V: StableType + AsFixedSizeBy
         )
     }
 
+    /// Prints byte representation of this [SHashMap]
+    ///
+    /// Useful for tests
     pub fn debug_print(&self) {
         print!("Node({}, {})[", self.len(), self.capacity());
         for i in 0..self.capacity() {
@@ -784,6 +945,7 @@ mod tests {
     enum Action {
         Insert,
         Remove,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -811,7 +973,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..100);
+            let action = self.rng.gen_range(0..101);
 
             match action {
                 // INSERT ~60%
@@ -852,6 +1014,13 @@ mod tests {
                     self.example.remove(&key).unwrap();
 
                     self.log.push(Action::Remove);
+                }
+                90..=91 => {
+                    self.map().clear();
+                    self.example.clear();
+                    self.keys.clear();
+
+                    self.log.push(Action::Clear);
                 }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.map.take().unwrap()) {

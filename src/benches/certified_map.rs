@@ -32,6 +32,10 @@ mod certified_btree_map_benchmark {
         fn root_hash(&self) -> crate::utils::certification::Hash {
             leaf_hash(&self.as_hashable_bytes())
         }
+
+        fn hash_tree(&self) -> crate::utils::certification::HashTree {
+            leaf(self.as_hashable_bytes())
+        }
     }
 
     #[test]

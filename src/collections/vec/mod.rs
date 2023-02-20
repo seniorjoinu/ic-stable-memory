@@ -11,10 +11,22 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
+#[doc(hidden)]
 pub mod iter;
 
 const DEFAULT_CAPACITY: usize = 4;
 
+/// Stable analog of [Vec]
+///
+/// May reallocate on inserts. In this case will copy the underlying data to a new location.
+///
+/// This is a "finite" data structure, it can only holp up to [u32::MAX] / `T::SIZE` elements. Putting
+/// more elements inside will panic.
+///
+/// `T` has to implement both [StableType] and [AsFixedSizeBytes]. [SVec] itself implements these
+/// traits and can be nested inside other stable data structures.
+///
+/// When [SVec] is stable-dropped, its elements are also stable-dropped but in reverse order.
 pub struct SVec<T: StableType + AsFixedSizeBytes> {
     ptr: u64,
     len: usize,
@@ -24,6 +36,19 @@ pub struct SVec<T: StableType + AsFixedSizeBytes> {
 }
 
 impl<T: StableType + AsFixedSizeBytes> SVec<T> {
+    /// Creates a [SVec] of capacity equal to 4 elements.
+    ///
+    /// Does not allocate any heap or stable memory.
+    ///
+    /// # Example
+    /// ```rust
+    /// // won't allocate until you insert something in it
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut numbers = SVec::<u64>::new();
+    /// ```
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -35,6 +60,21 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
     }
 
+    /// Creates a [SVec] of requested capacity.
+    ///
+    /// Does allocate stable memory, returning [OutOfMemory] if there is not enough of it.
+    /// If this function returns [Ok], you are guaranteed to have enough stable memory to store at
+    /// least `capacity` elements in it.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut at_least_10_numbers = SVec::<u64>::new_with_capacity(10)
+    ///     .expect("Out of memory");
+    /// ```
     #[inline]
     pub fn new_with_capacity(capacity: usize) -> Result<Self, OutOfMemory> {
         assert!(capacity <= Self::max_capacity());
@@ -42,53 +82,40 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         Ok(Self {
             len: 0,
             cap: capacity,
-            ptr: allocate((capacity * T::SIZE) as u64)?.as_ptr(),
+            ptr: unsafe { allocate((capacity * T::SIZE) as u64)?.as_ptr() },
             stable_drop_flag: true,
             _marker_t: PhantomData::default(),
         })
     }
 
+    /// Returns the capacity of this [SVec]
     #[inline]
     pub fn capacity(&self) -> usize {
         self.cap
     }
 
+    /// Returns the length of this [SVec]
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns [true] if the length of this [SVec] is `0`
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Returns the maximum possible capacity of this [SVec]
     #[inline]
     pub const fn max_capacity() -> usize {
         u32::MAX as usize / T::SIZE
     }
 
-    fn maybe_reallocate(&mut self) -> Result<(), OutOfMemory> {
-        if self.ptr == EMPTY_PTR {
-            self.ptr = allocate((self.capacity() * T::SIZE) as u64)?.as_ptr();
-            return Ok(());
-        }
-
-        if self.len() == self.capacity() {
-            self.cap = self.cap.checked_mul(2).unwrap();
-            assert!(self.cap <= Self::max_capacity());
-
-            let slice = SSlice::from_ptr(self.ptr).unwrap();
-
-            // safe, since SVec's byte-capacity is always less than u32::MAX
-            unsafe {
-                self.ptr = reallocate(slice, (self.cap * T::SIZE) as u64)?.as_ptr();
-            }
-        }
-
-        Ok(())
-    }
-
+    /// Inserts a new element at the end of this [SVec]
+    ///
+    /// Will try to reallocate if `capacity == length`. If the canister is out of stable memory,
+    /// will return [Err] with the element that was about to get inserted.
     #[inline]
     pub fn push(&mut self, mut element: T) -> Result<(), T> {
         if self.maybe_reallocate().is_ok() {
@@ -103,6 +130,9 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
     }
 
+    /// Removes the last element of the [SVec]
+    ///
+    /// If the [SVec] is empty, returns [None].
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
         if self.is_empty() {
@@ -115,20 +145,76 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         Some(unsafe { crate::mem::read_fixed_for_move(elem_ptr) })
     }
 
+    /// Returns a [SRef] pointing to the element at requested index
+    ///
+    /// See also [SVec::get_mut].
+    ///
+    /// If out of bounds, returns [None]
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut vec = SVec::<u64>::new();
+    /// vec.push(20).expect("Out of memory");
+    ///
+    /// let elem = vec.get(0).unwrap();
+    ///
+    /// assert_eq!(*elem, 20);
+    /// ```
     #[inline]
     pub fn get(&self, idx: usize) -> Option<SRef<'_, T>> {
         let ptr = self.get_element_ptr(idx)?;
 
-        Some(SRef::new(ptr))
+        unsafe { Some(SRef::new(ptr)) }
     }
 
+    /// Returns [SRefMut] pointing to the element at requested index
+    ///
+    /// See also [SVec::get].
+    ///
+    /// If out of bounds, returns [None]
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut vec = SVec::<u64>::new();
+    /// vec.push(20).expect("Out of memory");
+    ///
+    /// let mut elem = vec.get_mut(0).unwrap();
+    /// *elem = 100;
+    /// ```
     #[inline]
     pub fn get_mut(&mut self, idx: usize) -> Option<SRefMut<'_, T>> {
         let ptr = self.get_element_ptr(idx)?;
 
-        Some(SRefMut::new(ptr))
+        unsafe { Some(SRefMut::new(ptr)) }
     }
 
+    /// Replaces an element at requested index with a provided value
+    ///
+    /// # Panics
+    /// Panics if out of bounds.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut vec = SVec::<u64>::new();
+    /// vec.push(10).expect("Out of memory");
+    ///
+    /// let prev = vec.replace(0, 20);
+    ///
+    /// assert_eq!(prev, 10);
+    /// assert_eq!(*vec.get(0).unwrap(), 20);
+    /// ```
     pub fn replace(&mut self, idx: usize, mut element: T) -> T {
         assert!(idx < self.len(), "Out of bounds");
 
@@ -140,6 +226,13 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         prev_element
     }
 
+    /// Inserts a new element at the requested index, forward-shifting all elements after it
+    ///
+    /// Will try to reallocate, if `capacity == length`. If the canister is out of stable memory,
+    /// will return [Err] with the element that was about to get inserted.
+    ///
+    /// # Panics
+    /// Panics if out of bounds.
     pub fn insert(&mut self, idx: usize, mut element: T) -> Result<(), T> {
         if idx == self.len {
             return self.push(element);
@@ -166,6 +259,10 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
     }
 
+    /// Removes element at the requested index, back-shifting all elements after it
+    ///
+    /// # Panics
+    /// Panics if out of bounds.
     pub fn remove(&mut self, idx: usize) -> T {
         assert!(idx < self.len, "out of bounds");
 
@@ -185,6 +282,10 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         elem
     }
 
+    /// Swaps elements at requested indices with each other
+    ///
+    /// # Panics
+    /// Panics if `idx1` == `idx2` or if any of indices are out of bounds.
     pub fn swap(&mut self, idx1: usize, idx2: usize) {
         assert!(
             idx1 < self.len() && idx2 < self.len() && idx1 != idx2,
@@ -204,11 +305,34 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         unsafe { crate::mem::write_bytes(ptr1, buf_2._deref()) };
     }
 
+    /// Clears the [SVec] from elements
+    ///
+    /// Does not reallocate or shrink the underlying memory block.
     #[inline]
     pub fn clear(&mut self) {
         while self.pop().is_some() {}
     }
 
+    /// Performs binary search on a sorted [SVec], using the provided lambda
+    ///
+    /// Works the same way as in [Vec].
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut vec = SVec::new_with_capacity(100).expect("Out of memory");
+    ///
+    /// for i in 0..100 {
+    ///     vec.push(i);
+    /// }
+    ///
+    /// let idx = vec.binary_search_by(|it| it.cmp(&10)).unwrap();
+    ///
+    /// assert_eq!(idx, 10);
+    /// ```
     pub fn binary_search_by<FN>(&self, mut f: FN) -> Result<usize, usize>
     where
         FN: FnMut(&T) -> Ordering,
@@ -255,11 +379,32 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
     }
 
+    /// Returns an immutable iterator over this collection
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SVec;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut vec = SVec::new_with_capacity(100).expect("Out of memory");
+    ///
+    /// for i in 0..100 {
+    ///     vec.push(i);
+    /// }
+    ///
+    /// for elem in vec.iter() {
+    ///     println!("{}", *elem); // will print '0, 1, 2, 3, 4, ...'
+    /// }
+    /// ```
     #[inline]
     pub fn iter(&self) -> SVecIter<T> {
         SVecIter::new(self)
     }
 
+    /// Prints byte representation of this collection
+    ///
+    /// Useful for tests
     pub fn debug_print(&self) {
         print!("SVec[");
         for i in 0..self.len {
@@ -279,6 +424,24 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         }
 
         println!("]");
+    }
+
+    fn maybe_reallocate(&mut self) -> Result<(), OutOfMemory> {
+        if self.ptr == EMPTY_PTR {
+            self.ptr = unsafe { allocate((self.capacity() * T::SIZE) as u64)?.as_ptr() };
+            return Ok(());
+        }
+
+        if self.len() == self.capacity() {
+            self.cap = self.cap.checked_mul(2).unwrap();
+            assert!(self.cap <= Self::max_capacity());
+
+            let slice = unsafe { SSlice::from_ptr(self.ptr).unwrap() };
+
+            self.ptr = unsafe { reallocate(slice, (self.cap * T::SIZE) as u64)?.as_ptr() };
+        }
+
+        Ok(())
     }
 
     pub(crate) fn get_element_ptr(&self, idx: usize) -> Option<StablePtr> {
@@ -312,8 +475,8 @@ impl<T: StableType + AsFixedSizeBytes + Debug> Debug for SVec<T> {
 }
 
 impl<T: StableType + AsFixedSizeBytes> AsFixedSizeBytes for SVec<T> {
-    const SIZE: usize = u64::SIZE + usize::SIZE + usize::SIZE;
-    type Buf = [u8; u64::SIZE + usize::SIZE + usize::SIZE];
+    const SIZE: usize = u64::SIZE + usize::SIZE * 2;
+    type Buf = [u8; u64::SIZE + usize::SIZE * 2];
 
     fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
         self.ptr.as_fixed_size_bytes(&mut buf[0..u64::SIZE]);

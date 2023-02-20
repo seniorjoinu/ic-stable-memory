@@ -41,12 +41,15 @@ impl SSlice {
     }
 
     /// Recreate an [SSlice] from a pointer to the front of the memory block.
-    /// 
+    ///
     /// See also [SSlice::from_rear_ptr].
-    /// 
+    ///
     /// This call will check whether a pointer is valid (points to an *allocated* memory block) and
     /// if it's not, it will return [None].
-    pub fn from_ptr(ptr: StablePtr) -> Option<Self> {
+    ///
+    /// # Safety
+    /// By calling this function, you're basically create a copy of an [SSlice], be careful
+    pub unsafe fn from_ptr(ptr: StablePtr) -> Option<Self> {
         if ptr == 0 || ptr == EMPTY_PTR {
             return None;
         }
@@ -57,9 +60,12 @@ impl SSlice {
     }
 
     /// Recreate an [SSlice] from a pointer to the back of the memory block.
-    /// 
+    ///
     /// See also [SSlice::from_ptr].
-    pub fn from_rear_ptr(ptr: StablePtr) -> Option<Self> {
+    ///
+    /// # Safety
+    /// By calling this function, you're basically create a copy of an [SSlice], be careful
+    pub unsafe fn from_rear_ptr(ptr: StablePtr) -> Option<Self> {
         if ptr == 0 || ptr == EMPTY_PTR {
             return None;
         }
@@ -72,9 +78,9 @@ impl SSlice {
             false,
         ))
     }
-    
+
     /// Returns a pointer to the memory block.
-    /// 
+    ///
     /// *Don't use this function to point to the data inside this memory block!* Use [SSlice::offset]
     /// instead.
     #[inline]
@@ -95,7 +101,7 @@ impl SSlice {
     }
 
     /// Static analog of [SSlice::offset].
-    /// 
+    ///
     /// Does not perform boundary check.
     #[inline]
     pub fn _offset(self_ptr: u64, offset: u64) -> StablePtr {
@@ -105,31 +111,33 @@ impl SSlice {
     }
 
     /// Returns a pointer to the data inside [SSlice].
-    /// 
+    ///
     /// One should use this function to write data in a memory block by using [mem::write_fixed] or
     /// [mem::write_bytes].
-    /// 
+    ///
     /// # Panics
     /// Panics if boundary check fails (if the offset is outside the memory block).
     ///
     /// # Example
     /// ```rust
-    /// # use ic_stable_memory::{allocate, mem};
-    /// let slice = allocate(100);
+    /// # use ic_stable_memory::{allocate, mem, stable_memory_init};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let slice = unsafe { allocate(100).expect("Out of memory") };
     /// let ptr = slice.offset(20);
-    /// 
+    ///
     /// // will write `10` as little endian bytes into the memory block
     /// // starting from 20th byte
-    /// unsafe { mem::write_fixed(ptr, 10u64); }
-    /// ``` 
+    /// unsafe { mem::write_fixed(ptr, &mut 10u64); }
+    /// ```
     #[inline]
     pub fn offset(&self, offset: u64) -> StablePtr {
         let ptr = Self::_offset(self.as_ptr(), offset);
         assert!(ptr <= self.as_ptr() + StablePtr::SIZE as u64 + self.get_size_bytes());
-        
+
         ptr
     }
-    
+
     #[inline]
     pub(crate) fn to_free_block(self) -> FreeBlock {
         FreeBlock::new(self.ptr, self.size)
@@ -180,10 +188,12 @@ mod tests {
         stable::grow(10).expect("Unable to grow");
 
         let m1 = SSlice::new(MIN_PTR, 100, true);
-        let m1 = SSlice::from_rear_ptr(
-            MIN_PTR + m1.get_total_size_bytes() as u64 - StablePtr::SIZE as u64,
-        )
-        .unwrap();
+        let m1 = unsafe {
+            SSlice::from_rear_ptr(
+                MIN_PTR + m1.get_total_size_bytes() as u64 - StablePtr::SIZE as u64,
+            )
+            .unwrap()
+        };
 
         let a = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let b = vec![1u8, 3, 3, 7];

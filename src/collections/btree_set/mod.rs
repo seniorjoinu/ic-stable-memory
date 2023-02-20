@@ -2,17 +2,20 @@ use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableType;
-use crate::OutOfMemory;
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
 
 pub mod iter;
 
+/// B-plus tree based set data structure
+///
+/// This is just a wrapper around [SBTreeMap]`<T, ()>`, read its documentation for more info on the internals
 pub struct SBTreeSet<T: StableType + AsFixedSizeBytes + Ord> {
     map: SBTreeMap<T, ()>,
 }
 
 impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
+    /// See [SBTreeMap::new]
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -20,16 +23,19 @@ impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
         }
     }
 
+    /// See [SBTreeMap::len]
     #[inline]
     pub fn len(&self) -> u64 {
         self.map.len()
     }
 
+    /// See [SBTreeMap::is_empty]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
+    /// See [SBTreeMap::insert]
     #[inline]
     pub fn insert(&mut self, value: T) -> Result<bool, T> {
         self.map
@@ -38,34 +44,36 @@ impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
             .map_err(|(k, _)| k)
     }
 
+    /// See [SBTreeMap::remove]
     #[inline]
     pub fn remove<Q>(&mut self, value: &Q) -> bool
     where
         T: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.map.remove(value).is_some()
     }
 
+    /// See [SBTreeMap::clear]
+    #[inline]
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    /// See [SBTreeMap::contains_key]
     #[inline]
     pub fn contains<Q>(&self, value: &Q) -> bool
     where
         T: Borrow<Q>,
-        Q: Ord,
+        Q: Ord + ?Sized,
     {
         self.map.contains_key(value)
     }
 
+    /// See [SBTreeMap::iter]
     #[inline]
     pub fn iter(&self) -> SBTreeSetIter<T> {
         SBTreeSetIter::new(self)
-    }
-}
-
-impl<T: StableType + AsFixedSizeBytes + Ord> SBTreeSet<T> {
-    #[inline]
-    pub fn clear(&mut self) {
-        self.map.clear();
     }
 }
 
@@ -196,6 +204,7 @@ mod tests {
     enum Action {
         Insert,
         Remove,
+        Clear,
         CanisterUpgrade,
     }
 
@@ -223,7 +232,7 @@ mod tests {
         }
 
         fn next(&mut self) {
-            let action = self.rng.gen_range(0..100);
+            let action = self.rng.gen_range(0..101);
 
             match action {
                 // INSERT ~60%
@@ -260,6 +269,14 @@ mod tests {
                     self.example.remove(&key);
 
                     self.log.push(Action::Remove);
+                }
+                90..=91 => {
+                    self.set().clear();
+                    self.example.clear();
+
+                    self.keys.clear();
+
+                    self.log.push(Action::Clear);
                 }
                 // CANISTER UPGRADE
                 _ => match SBox::new(self.set.take().unwrap()) {

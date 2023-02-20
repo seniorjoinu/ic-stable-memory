@@ -1,7 +1,7 @@
 use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes};
 use crate::mem::s_slice::SSlice;
 use crate::primitive::StableType;
-use crate::utils::certification::{AsHashTree, AsHashableBytes};
+use crate::utils::certification::{AsHashTree, AsHashableBytes, HashTree};
 use crate::{allocate, deallocate, reallocate, OutOfMemory};
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
@@ -11,6 +11,38 @@ use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
 
+/// Smart-pointer that allows storing any dynamic sized data on stable memory.
+///
+/// `T` should implement both [StableType] and [AsDynSizeBytes]. [SBox] itself implements [StableType],
+/// so it will be stable-dropped automatically, when it is no longer needed. [SBox] also implements [AsFixedSizeBytes],
+/// so you can put it in any other stable structure (e.g. [SVec](crate::collections::SVec)).
+///
+/// It is eager on writes, but lazy on reads. When you create or update it, the underlying value gets
+/// immediately serialized and written to stable memory, but when you read it after it was stored in
+/// some other stable data structure, it's underlying value gets read and deserialized only when you
+/// access it.
+///
+/// You can access the underlying data by dereferencing it, for immutable access. For mutable access
+/// you have to use [SBox::with] method (similar to `thread_local!`'s `with()` method).
+///
+/// # Examples
+/// ```rust
+/// # use ic_stable_memory::{stable_memory_init, SBox};
+/// # unsafe { ic_stable_memory::mem::clear(); }
+/// # stable_memory_init();
+/// {
+///     let mut boxed_string = SBox::new(String::from("Test string"))
+///         .expect("Out of memory");
+///
+///     assert_eq!(&*boxed_string, "Test string");
+///
+///     boxed_string.with(|it| {
+///         *it = String::from("Much much longer test string");
+///     }).expect("Out of memory");
+///
+///     assert_eq!(&*boxed_string, "Much much longer test string");
+/// } // <- gets stable-dropped here automatically
+/// ```
 pub struct SBox<T: AsDynSizeBytes + StableType> {
     slice: Option<SSlice>,
     inner: UnsafeCell<Option<T>>,
@@ -18,11 +50,13 @@ pub struct SBox<T: AsDynSizeBytes + StableType> {
 }
 
 impl<T: AsDynSizeBytes + StableType> SBox<T> {
-    /// DONT PUT REFERENCES INSIDE
+    /// Stores dynamic sized data on stable memory, immediately serializing and allocating.
+    ///
+    /// Returns `Err` and the data, if the canister is `OutOfMemory`.
     #[inline]
     pub fn new(mut it: T) -> Result<Self, T> {
         let buf = it.as_dyn_size_bytes();
-        if let Ok(slice) = allocate(buf.len() as u64) {
+        if let Ok(slice) = unsafe { allocate(buf.len() as u64) } {
             unsafe {
                 crate::mem::write_bytes(slice.offset(0), &buf);
                 it.stable_drop_flag_off();
@@ -38,11 +72,15 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         }
     }
 
+    /// Returns a pointer to the underlying [SSlice] of stable memory.
+    ///
+    /// See also [SBox::from_ptr].
     #[inline]
     pub fn as_ptr(&self) -> u64 {
         self.slice.unwrap().as_ptr()
     }
 
+    /// Returns the underlying data, releasing occupied stable memory.
     #[inline]
     pub fn into_inner(mut self) -> T {
         unsafe {
@@ -59,6 +97,28 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         res
     }
 
+    /// Creates [SBox] from a pointer to the underlying [SSlice] of stable memory.
+    ///
+    /// See also [SBox::as_ptr].
+    ///
+    /// # Panics
+    /// Panics if the pointer points to an invalid (or free) block of stable memory.
+    ///
+    /// # Safety
+    /// This method basically allows you to clone the smart-pointer, which breaks ownership and
+    /// stable-drop rules. Always make sure you restore stable-drop rules manually. Always destroy
+    /// other copies of the same [SBox] before mutating it or the underlying data.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::{SBox, stable_memory_init, StableType};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut b = SBox::new(10u64).expect("Out of memory");
+    /// unsafe { b.stable_drop_flag_off() };
+    ///
+    /// b = unsafe { SBox::from_ptr(b.as_ptr()) };
+    /// ```
     pub unsafe fn from_ptr(ptr: u64) -> Self {
         let slice = SSlice::from_ptr(ptr).unwrap();
 
@@ -69,6 +129,30 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
         }
     }
 
+    /// Provides mutable access to the underlying data, by accepting a lambda function.
+    ///
+    /// Returns [OutOfMemory] error if it was impossible to reallocate the underlying [SSlice] to
+    /// make it bugger.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::{SBox, stable_memory_init};
+    /// # use ic_stable_memory::derive::{StableType, CandidAsDynSizeBytes};
+    /// # use candid::{CandidType, Deserialize};
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    ///
+    /// #[derive(CandidType, Deserialize, CandidAsDynSizeBytes, StableType, Debug)]
+    /// struct A {
+    ///     name: String,
+    ///     id: u64,
+    /// }
+    ///
+    /// let it = A { name: String::from("Sasha"), id: 1 };
+    /// let mut b = SBox::new(it).expect("Out of memory");
+    ///
+    /// b.with(|it| it.id += 1).unwrap();
+    /// ```
     #[inline]
     pub fn with<R, F: FnOnce(&mut T) -> R>(&mut self, func: F) -> Result<R, OutOfMemory> {
         unsafe {
@@ -114,7 +198,7 @@ impl<T: AsDynSizeBytes + StableType> SBox<T> {
 
         if slice.get_size_bytes() < buf.len() as u64 {
             // won't panic, because buf.len() is always less or equal to u32::MAX
-            match reallocate(slice, buf.len() as u64) {
+            match unsafe { reallocate(slice, buf.len() as u64) } {
                 Ok(s) => {
                     slice = s;
                 }
@@ -200,6 +284,15 @@ impl<T: AsHashTree + AsDynSizeBytes + StableType> AsHashTree for SBox<T> {
             self.lazy_read(false);
 
             (*self.inner.get()).as_ref().unwrap().root_hash()
+        }
+    }
+
+    #[inline]
+    fn hash_tree(&self) -> HashTree {
+        unsafe {
+            self.lazy_read(false);
+
+            (*self.inner.get()).as_ref().unwrap().hash_tree()
         }
     }
 }
@@ -293,6 +386,7 @@ impl<T: AsDynSizeBytes + StableType> Deref for SBox<T> {
 
 #[cfg(test)]
 mod tests {
+    use crate::collections::SVec;
     use crate::primitive::s_box::SBox;
     use crate::{
         _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
@@ -361,6 +455,37 @@ mod tests {
 
             let sbox = SBox::<i32>::new(i32::default()).unwrap();
             assert!(matches!(sbox1.cmp(&sbox), Ordering::Greater));
+        }
+
+        _debug_validate_allocator();
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn complex_nested_structures_work_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let mut b = SBox::new(Some(SVec::new())).unwrap();
+
+            b.with(|it: &mut Option<SVec<u64>>| {
+                if let Some(v) = it.as_mut() {
+                    v.push(10);
+                }
+            });
+
+            assert_eq!(*b.as_ref().unwrap().get(0).unwrap(), 10);
+
+            store_custom_data(0, b);
+
+            b = retrieve_custom_data(0).unwrap();
+
+            assert_eq!(*b.as_ref().unwrap().get(0).unwrap(), 10);
+
+            b.with(|it: &mut Option<SVec<u64>>| {
+                *it = None;
+            });
         }
 
         _debug_validate_allocator();

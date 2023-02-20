@@ -1,7 +1,22 @@
+//! This module defines an isomorphic wrapper around raw stable memory API from `ic_cdk` crate.
+//!
+//! When compiled to wasm, each function simply inlines into a call to the same function of raw API.
+//! For example, [MemContext::size_pages()] on wasm simply transforms into [ic_cdk::api::stable::stable64_size()].
+//!
+//! But when compiled to something else, a stable memory emulation is enabled, which allows all APIs
+//! continue to work even when running inside a `cargo test`, allocating stable memory on heap. This
+//! emulation is pretty accurate in terms of performance. If your algorithm is 4 times slower in stable
+//! memory tests, than in heap, than it is pretty likely that it will be 4 times expensive inside a read
+//! canister's stable memory, than in its heap.
+//!
+//! This makes it possible to write full-scale tests which use stable memory as their main memory.
+
 use std::cmp::min;
 
+/// Each wasm memory page is 64K in size
 pub const PAGE_SIZE_BYTES: u64 = 64 * 1024;
 
+/// Indicates that the canister is out of stable memory at this moment.
 #[derive(Debug, Copy, Clone)]
 pub struct OutOfMemory;
 
@@ -69,8 +84,8 @@ impl MemContext for TestMemContext {
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        let start_page_idx = (offset / PAGE_SIZE_BYTES as u64) as usize;
-        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES as u64) as usize;
+        let start_page_idx = (offset / PAGE_SIZE_BYTES) as usize;
+        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES) as usize;
         let start_page_size = min(PAGE_SIZE_BYTES as usize - start_page_inner_idx, buf.len());
 
         let (pages_in_between, last_page_size) = if start_page_size == buf.len() {
