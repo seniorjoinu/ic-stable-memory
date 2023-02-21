@@ -100,11 +100,12 @@ mod tests {
     };
     use ic_stable_memory::derive::{AsFixedSizeBytes, CandidAsDynSizeBytes, StableType};
     use ic_stable_memory::utils::certification::{
-        leaf, leaf_hash, AsHashTree, AsHashableBytes, Hash,
+        leaf, leaf_hash, AsHashTree, AsHashableBytes, Hash, HashTree,
     };
     use ic_stable_memory::utils::DebuglessUnwrap;
     use ic_stable_memory::{
-        get_allocated_size, retrieve_custom_data, stable_memory_init, store_custom_data, SBox,
+        get_allocated_size, retrieve_custom_data, stable_memory_init, stable_memory_pre_upgrade,
+        store_custom_data, SBox, _debug_validate_allocator, stable_memory_post_upgrade,
     };
     use rand::rngs::ThreadRng;
     use rand::{thread_rng, Rng};
@@ -149,6 +150,9 @@ mod tests {
     impl AsHashTree for WrappedString {
         fn root_hash(&self) -> Hash {
             leaf_hash(self.0.as_bytes())
+        }
+        fn hash_tree(&self) -> HashTree {
+            leaf(self.0.as_bytes().to_vec())
         }
     }
 
@@ -221,27 +225,121 @@ mod tests {
                     assert_eq!(*state.btree_map.get(&*val).unwrap(), *val);
                     assert!(state.btree_set.contains(&*val));
                     assert_eq!(
-                        *state
+                        **state
                             .certified_btree_map
-                            .get(&WrappedString(val.get().clone()))
-                            .unwrap()
-                            .get(),
-                        WrappedString(val.get().clone())
+                            .get(&WrappedString(val.clone()))
+                            .unwrap(),
+                        WrappedString(val.clone())
                     );
 
                     let w = state
                         .certified_btree_map
-                        .witness_with(&WrappedString(val.get().clone()), |v| {
-                            leaf(v.get().as_hashable_bytes())
-                        });
+                        .witness_with(&WrappedString(val.clone()), |v| leaf(v.as_hashable_bytes()));
                     assert_eq!(w.reconstruct(), state.certified_btree_map.root_hash());
 
                     store_custom_data(1, SBox::new(state).debugless_unwrap());
-                    state = retrieve_custom_data(1).unwrap().into_inner();
+                    state = retrieve_custom_data::<State>(1).unwrap().into_inner();
                 }
             }
         }
 
+        assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn upgrades_work_fine() {
+        ic_stable_memory::stable::clear();
+        stable_memory_init();
+
+        #[derive(CandidType, Deserialize, CandidAsDynSizeBytes, StableType)]
+        enum UserDetails1 {
+            V001(String),
+        }
+
+        #[derive(AsFixedSizeBytes, StableType)]
+        struct User1 {
+            id: u64,
+            details: SBox<UserDetails1>,
+        }
+
+        {
+            let mut vec = SVec::<User1>::new();
+
+            for i in 0..5 {
+                let user = User1 {
+                    id: i,
+                    details: SBox::new(UserDetails1::V001(String::from("str"))).debugless_unwrap(),
+                };
+
+                vec.push(user).debugless_unwrap();
+            }
+
+            store_custom_data(1, SBox::new(vec).debugless_unwrap());
+
+            stable_memory_pre_upgrade().debugless_unwrap();
+        }
+
+        // upgrade happens
+
+        #[derive(CandidType, Deserialize, StableType)]
+        struct V002 {
+            s: String,
+            n: u64,
+        }
+
+        #[derive(CandidType, Deserialize, CandidAsDynSizeBytes, StableType)]
+        enum UserDetails2 {
+            V001(String),
+            V002(V002),
+        }
+
+        #[derive(AsFixedSizeBytes, StableType)]
+        struct User2 {
+            id: u64,
+            details: SBox<UserDetails2>,
+        }
+
+        stable_memory_post_upgrade();
+
+        {
+            let mut vec = retrieve_custom_data::<SVec<User2>>(1).unwrap().into_inner();
+
+            for i in 5..10 {
+                let details = UserDetails2::V002(V002 {
+                    s: String::from("str 2"),
+                    n: i,
+                });
+
+                let user = User2 {
+                    id: i,
+                    details: SBox::new(details).debugless_unwrap(),
+                };
+
+                vec.push(user).debugless_unwrap();
+            }
+
+            assert_eq!(vec.len(), 10);
+
+            for i in 0..10 {
+                let user = vec.get(i).unwrap();
+
+                assert_eq!(user.id, i as u64);
+
+                match &*user.details {
+                    UserDetails2::V001(str) => {
+                        assert!(i < 5);
+                        assert_eq!(str, "str")
+                    }
+                    UserDetails2::V002(it) => {
+                        assert!(i >= 5 && i < 10);
+                        assert_eq!(it.s, String::from("str 2"));
+                        assert_eq!(it.n, i as u64)
+                    }
+                }
+            }
+        }
+
+        _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
     }
 }

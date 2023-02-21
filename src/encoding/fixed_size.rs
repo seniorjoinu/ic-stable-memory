@@ -1,21 +1,21 @@
 //! Sized data encoding algorithms that power this crate.
-//! 
+//!
 //! The main idea is to make sized data encoding as fast as possible, taking as little space as possible.
-//! Each type implementing [AsFixedSizeBytes] trait is aware of its encoded size and of data type of 
-//! the byte buffer that is used to encode it. Constant generics enable us to encode such fixed size 
-//! types in `[u8; N]`, which is very good, since arrays are stack-based data structures and don't 
+//! Each type implementing [AsFixedSizeBytes] trait is aware of its encoded size and of data type of
+//! the byte buffer that is used to encode it. Constant generics enable us to encode such fixed size
+//! types in `[u8; N]`, which is very good, since arrays are stack-based data structures and don't
 //! involve expensive heap allocations, so most types encode themselves into such generic arrays.
-//! 
+//!
 //! Generic types (such as [Option]) are not yet compatible with constant generics and therefore they
 //! are encoded to [Vec] of [u8].
-//! 
+//!
 //! [AsFixedSizeBytes] trait encapusaltes these differences providing a simple API.
 
 use candid::{Int, Nat, Principal};
 use num_bigint::{BigInt, BigUint, Sign};
 
 /// Allows fast and space-efficient fixed size data encoding.
-/// 
+///
 /// This trait can be implemented by using [derive::AsFixedSizeBytes] macro.
 /// By default it is implemented for the following types:
 /// 1. All primitive types: [i8], [u8], [i16], [u16], [i32], [u32], [i64], [u64], [i128], [u128], [f32], [f64], [bool], [()]
@@ -26,18 +26,18 @@ use num_bigint::{BigInt, BigUint, Sign};
 pub trait AsFixedSizeBytes: Sized {
     /// Size of self when encoded
     const SIZE: usize;
-    
+
     /// [Buffer] that is used to encode this value into
     type Buf: Buffer;
 
     /// Encodes itself into a slice of bytes.
-    /// 
+    ///
     /// # Panics
     /// Will panic if out of bounds.
     fn as_fixed_size_bytes(&self, buf: &mut [u8]);
-    
+
     /// Decodes itself from a slice of bytes.
-    /// 
+    ///
     /// # Panics
     /// Will panic if out of bounds.
     fn from_fixed_size_bytes(buf: &[u8]) -> Self;
@@ -87,6 +87,19 @@ impl_for_number!(isize);
 impl_for_number!(usize);
 impl_for_number!(f32);
 impl_for_number!(f64);
+
+impl AsFixedSizeBytes for char {
+    const SIZE: usize = u32::SIZE;
+    type Buf = [u8; Self::SIZE];
+
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        u32::from(*self).as_fixed_size_bytes(buf)
+    }
+
+    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
+        char::try_from(u32::from_fixed_size_bytes(buf)).unwrap()
+    }
+}
 
 impl AsFixedSizeBytes for () {
     const SIZE: usize = 0;
@@ -235,6 +248,31 @@ impl_for_number_arr!(isize, 0);
 impl_for_number_arr!(usize, 0);
 impl_for_number_arr!(f32, 0.0);
 impl_for_number_arr!(f64, 0.0);
+
+impl<const N: usize> AsFixedSizeBytes for [char; N] {
+    const SIZE: usize = N * char::SIZE;
+    type Buf = Vec<u8>;
+
+    fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
+        let mut from = 0;
+
+        for c in self {
+            c.as_fixed_size_bytes(&mut buf[from..(from + u32::SIZE)]);
+            from += u32::SIZE;
+        }
+    }
+
+    fn from_fixed_size_bytes(buf: &[u8]) -> Self {
+        let mut s = [char::default(); N];
+
+        for from in 0..N {
+            s[from] =
+                char::from_fixed_size_bytes(&buf[(from * u32::SIZE)..((from + 1) * u32::SIZE)]);
+        }
+
+        s
+    }
+}
 
 impl<A: AsFixedSizeBytes> AsFixedSizeBytes for (A,) {
     const SIZE: usize = A::SIZE;
@@ -470,7 +508,7 @@ impl AsFixedSizeBytes for Int {
 }
 
 /// Either [u8; N] or [Vec] of [u8]
-/// 
+///
 /// You can't implement this trait for any other type than these two.
 pub trait Buffer: private::Sealed {
     fn new(size: usize) -> Self;

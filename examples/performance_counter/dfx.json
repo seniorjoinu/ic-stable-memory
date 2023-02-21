@@ -1,17 +1,15 @@
 {
   "canisters": {
-    "performance-counter": {
-      "build": "./build.sh",
+    "performance_counter": {
       "candid": "./can.did",
-      "wasm": "target/wasm32-unknown-unknown/release/performance-counter-opt.wasm",
-      "type": "custom"
+      "package": "performance_counter",
+      "type": "rust"
     }
   },
-  "dfx": "0.11.2",
-  "networks": {
-    "local": {
-      "bind": "127.0.0.1:8000",
-      "type": "ephemeral"
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
     }
   },
   "version": 1

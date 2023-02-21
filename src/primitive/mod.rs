@@ -177,6 +177,7 @@ impl StableType for usize {}
 impl StableType for isize {}
 impl StableType for f32 {}
 impl StableType for f64 {}
+impl StableType for char {}
 
 impl<const N: usize> StableType for [(); N] {}
 impl<const N: usize> StableType for [bool; N] {}
@@ -194,6 +195,7 @@ impl<const N: usize> StableType for [usize; N] {}
 impl<const N: usize> StableType for [isize; N] {}
 impl<const N: usize> StableType for [f32; N] {}
 impl<const N: usize> StableType for [f64; N] {}
+impl<const N: usize> StableType for [char; N] {}
 
 impl StableType for Principal {}
 impl StableType for Nat {}
@@ -233,6 +235,7 @@ impl StableType for Vec<f32> {}
 impl StableType for Vec<f64> {}
 impl StableType for Vec<()> {}
 impl StableType for Vec<bool> {}
+impl StableType for Vec<char> {}
 
 impl StableType for Vec<Principal> {}
 impl StableType for Vec<Nat> {}
@@ -254,6 +257,7 @@ impl StableType for HashSet<f32> {}
 impl StableType for HashSet<f64> {}
 impl StableType for HashSet<()> {}
 impl StableType for HashSet<bool> {}
+impl StableType for HashSet<char> {}
 
 impl StableType for BTreeSet<u8> {}
 impl StableType for BTreeSet<i8> {}
@@ -271,3 +275,4 @@ impl StableType for BTreeSet<f32> {}
 impl StableType for BTreeSet<f64> {}
 impl StableType for BTreeSet<()> {}
 impl StableType for BTreeSet<bool> {}
+impl StableType for BTreeSet<char> {}

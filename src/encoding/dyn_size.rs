@@ -18,7 +18,7 @@ use candid::{CandidType, Deserialize, Result};
 /// implement [AsFixedSizeBytes].
 pub trait AsDynSizeBytes {
     /// Encodes self into vector of bytes
-    /// 
+    ///
     /// # Panics
     /// Should panic if data encoding failed.
     fn as_dyn_size_bytes(&self) -> Vec<u8>;
@@ -29,7 +29,7 @@ pub trait AsDynSizeBytes {
     /// The slice *can* have trailing bytes with unmeaningful.
     /// It means, that if your data encoded value is [1, 0, 1, 0], then it should also be able to
     /// decode itself from a slice like [1, 0, 1, 0, 0, 0, 0, 0, 0] or [1, 0, 1, 0, 1, 1, 0, 1].
-    /// 
+    ///
     /// # Panics
     /// Should panic if data decoding failed.
     fn from_dyn_size_bytes(buf: &[u8]) -> Self;
