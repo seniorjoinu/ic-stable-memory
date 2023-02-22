@@ -1,17 +1,15 @@
 {
   "canisters": {
-    "stable-token": {
-      "build": "./build.sh",
+    "stable_token": {
       "candid": "./can.did",
-      "wasm": "target/wasm32-unknown-unknown/release/stable-token-opt.wasm",
-      "type": "custom"
+      "package": "stable_token",
+      "type": "rust"
     }
   },
-  "dfx": "0.11.2",
-  "networks": {
-    "local": {
-      "bind": "127.0.0.1:8000",
-      "type": "ephemeral"
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
     }
   },
   "version": 1

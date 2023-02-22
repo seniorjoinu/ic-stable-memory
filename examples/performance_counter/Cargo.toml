@@ -1,5 +1,5 @@
 [package]
-name = "performance-counter"
+name = "performance_counter"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,9 +14,9 @@ path = "src/actor.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-ic-cdk = "0.6.1"
-ic-cdk-macros = "0.6.1"
-serde = "1.0.147"
-candid = "0.8.3"
-speedy = "0.8.3"
+ic-cdk = "0.7.0"
+ic-cdk-macros = "0.6.8"
+serde = "1.0.152"
+candid = "0.8.4"
+ic-certified-map = "0.3.2"
 ic-stable-memory = { path = "../../../ic-stable-memory" }

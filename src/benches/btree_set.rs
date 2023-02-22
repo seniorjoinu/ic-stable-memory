@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod btree_set_benchmark {
     use crate::collections::btree_set::SBTreeSet;
-    use crate::{init_allocator, measure, stable};
+    use crate::{measure, stable, stable_memory_init};
     use rand::seq::SliceRandom;
     use rand::thread_rng;
     use std::collections::BTreeSet;
@@ -41,8 +41,7 @@ mod btree_set_benchmark {
 
         {
             stable::clear();
-            stable::grow(1).unwrap();
-            init_allocator(0);
+            stable_memory_init();
 
             let mut stable_btree_map = SBTreeSet::new();
 

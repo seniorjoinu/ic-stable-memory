@@ -1,9 +1,22 @@
-use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
+//! This module defines an isomorphic wrapper around raw stable memory API from `ic_cdk` crate.
+//!
+//! When compiled to wasm, each function simply inlines into a call to the same function of raw API.
+//! For example, [MemContext::size_pages()] on wasm simply transforms into [ic_cdk::api::stable::stable64_size()].
+//!
+//! But when compiled to something else, a stable memory emulation is enabled, which allows all APIs
+//! continue to work even when running inside a `cargo test`, allocating stable memory on heap. This
+//! emulation is pretty accurate in terms of performance. If your algorithm is 4 times slower in stable
+//! memory tests, than in heap, than it is pretty likely that it will be 4 times expensive inside a read
+//! canister's stable memory, than in its heap.
+//!
+//! This makes it possible to write full-scale tests which use stable memory as their main memory.
+
 use std::cmp::min;
-use std::ptr::copy_nonoverlapping;
 
-pub const PAGE_SIZE_BYTES: usize = 64 * 1024;
+/// Each wasm memory page is 64K in size
+pub const PAGE_SIZE_BYTES: u64 = 64 * 1024;
 
+/// Indicates that the canister is out of stable memory at this moment.
 #[derive(Debug, Copy, Clone)]
 pub struct OutOfMemory;
 
@@ -16,6 +29,9 @@ pub(crate) trait MemContext {
 
 #[derive(Clone)]
 pub(crate) struct StableMemContext;
+
+#[cfg(target_family = "wasm")]
+use ic_cdk::api::stable::{stable64_grow, stable64_read, stable64_size, stable64_write};
 
 #[cfg(target_family = "wasm")]
 impl MemContext for StableMemContext {
@@ -42,7 +58,7 @@ impl MemContext for StableMemContext {
 
 #[derive(Clone)]
 pub(crate) struct TestMemContext {
-    pub pages: Vec<[u8; PAGE_SIZE_BYTES]>,
+    pub pages: Vec<[u8; PAGE_SIZE_BYTES as usize]>,
 }
 
 impl TestMemContext {
@@ -61,23 +77,23 @@ impl MemContext for TestMemContext {
         let prev_pages = self.size_pages();
 
         for _ in 0..new_pages {
-            self.pages.push([0u8; PAGE_SIZE_BYTES]);
+            self.pages.push([0u8; PAGE_SIZE_BYTES as usize]);
         }
 
         Ok(prev_pages)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) {
-        let start_page_idx = (offset / PAGE_SIZE_BYTES as u64) as usize;
-        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES as u64) as usize;
-        let start_page_size = min(PAGE_SIZE_BYTES - start_page_inner_idx, buf.len());
+        let start_page_idx = (offset / PAGE_SIZE_BYTES) as usize;
+        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES) as usize;
+        let start_page_size = min(PAGE_SIZE_BYTES as usize - start_page_inner_idx, buf.len());
 
         let (pages_in_between, last_page_size) = if start_page_size == buf.len() {
             (0usize, 0usize)
         } else {
             (
-                (buf.len() - start_page_size) / PAGE_SIZE_BYTES,
-                (buf.len() - start_page_size) % PAGE_SIZE_BYTES,
+                (buf.len() - start_page_size) / PAGE_SIZE_BYTES as usize,
+                (buf.len() - start_page_size) % PAGE_SIZE_BYTES as usize,
             )
         };
 
@@ -89,8 +105,8 @@ impl MemContext for TestMemContext {
 
         // read pages in-between
         for i in 0..pages_in_between {
-            buf[(start_page_size + i * PAGE_SIZE_BYTES)
-                ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES)]
+            buf[(start_page_size + i * PAGE_SIZE_BYTES as usize)
+                ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES as usize)]
                 .copy_from_slice(&self.pages[start_page_idx + i + 1]);
         }
 
@@ -99,22 +115,22 @@ impl MemContext for TestMemContext {
             return;
         }
 
-        buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES)
-            ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES + last_page_size)]
+        buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES as usize)
+            ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES as usize + last_page_size)]
             .copy_from_slice(&self.pages[start_page_idx + pages_in_between + 1][0..last_page_size]);
     }
 
     fn write(&mut self, offset: u64, buf: &[u8]) {
-        let start_page_idx = (offset / PAGE_SIZE_BYTES as u64) as usize;
-        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES as u64) as usize;
-        let start_page_size = min(PAGE_SIZE_BYTES - start_page_inner_idx, buf.len());
+        let start_page_idx = (offset / PAGE_SIZE_BYTES) as usize;
+        let start_page_inner_idx = (offset % PAGE_SIZE_BYTES) as usize;
+        let start_page_size = min(PAGE_SIZE_BYTES as usize - start_page_inner_idx, buf.len());
 
         let (pages_in_between, last_page_size) = if start_page_size == buf.len() {
             (0usize, 0usize)
         } else {
             (
-                (buf.len() - start_page_size) / PAGE_SIZE_BYTES,
-                (buf.len() - start_page_size) % PAGE_SIZE_BYTES,
+                (buf.len() - start_page_size) / PAGE_SIZE_BYTES as usize,
+                (buf.len() - start_page_size) % PAGE_SIZE_BYTES as usize,
             )
         };
 
@@ -125,8 +141,8 @@ impl MemContext for TestMemContext {
         // write to pages in-between
         for i in 0..pages_in_between {
             self.pages[start_page_idx + i + 1].copy_from_slice(
-                &buf[(start_page_size + i * PAGE_SIZE_BYTES)
-                    ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES)],
+                &buf[(start_page_size + i * PAGE_SIZE_BYTES as usize)
+                    ..(start_page_size + (i + 1) * PAGE_SIZE_BYTES as usize)],
             );
         }
 
@@ -136,8 +152,8 @@ impl MemContext for TestMemContext {
         }
 
         self.pages[start_page_idx + pages_in_between + 1][0..last_page_size].copy_from_slice(
-            &buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES)
-                ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES + last_page_size)],
+            &buf[(start_page_size + pages_in_between * PAGE_SIZE_BYTES as usize)
+                ..(start_page_size + pages_in_between * PAGE_SIZE_BYTES as usize + last_page_size)],
         );
     }
 }
@@ -172,50 +188,89 @@ pub mod stable {
     use crate::utils::mem_context::{MemContext, OutOfMemory, TestMemContext};
     use std::cell::RefCell;
 
-    #[thread_local]
-    static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
+    thread_local! {
+        static CONTEXT: RefCell<TestMemContext> = RefCell::new(TestMemContext::default());
+    }
 
     #[inline]
     pub fn clear() {
-        CONTEXT.borrow_mut().pages.clear()
+        CONTEXT.with(|it| it.borrow_mut().pages.clear())
     }
 
     #[inline]
     pub fn size_pages() -> u64 {
-        CONTEXT.borrow().size_pages()
+        CONTEXT.with(|it| it.borrow().size_pages())
     }
 
     #[inline]
     pub fn grow(new_pages: u64) -> Result<u64, OutOfMemory> {
-        CONTEXT.borrow_mut().grow(new_pages)
+        CONTEXT.with(|it| it.borrow_mut().grow(new_pages))
     }
 
     #[inline]
     pub fn read(offset: u64, buf: &mut [u8]) {
-        CONTEXT.borrow().read(offset, buf)
+        CONTEXT.with(|it| it.borrow().read(offset, buf))
     }
 
     #[inline]
     pub fn write(offset: u64, buf: &[u8]) {
-        CONTEXT.borrow_mut().write(offset, buf)
+        CONTEXT.with(|it| it.borrow_mut().write(offset, buf))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{stable, PAGE_SIZE_BYTES};
+    use rand::seq::SliceRandom;
+    use rand::{thread_rng, Rng};
+
+    #[test]
+    fn random_works_fine() {
+        for _ in 0..100 {
+            stable::clear();
+            stable::grow(1000).unwrap();
+
+            let mut rng = thread_rng();
+            let iterations = 500usize;
+            let size_range = (0..(u16::MAX as usize * 2));
+
+            let mut sizes = Vec::new();
+            let mut cur_ptr = 0;
+            for i in 0..iterations {
+                let size = rng.gen_range(size_range.clone());
+                let buf = vec![(i % 256) as u8; size];
+
+                stable::write(cur_ptr, &buf);
+
+                sizes.push(size);
+                cur_ptr += size as u64;
+
+                let mut c_ptr = 0u64;
+                for j in 0..i {
+                    let size = sizes[j];
+                    let mut buf = vec![0u8; size];
+
+                    stable::read(c_ptr, &mut buf);
+
+                    assert_eq!(buf, vec![(j % 256) as u8; size]);
+
+                    c_ptr += size as u64;
+                }
+            }
+        }
+    }
 
     #[test]
     fn big_reads_writes_work_fine() {
         stable::clear();
         stable::grow(10).unwrap();
 
-        let buf = [10u8; PAGE_SIZE_BYTES * 10];
+        let buf = [10u8; PAGE_SIZE_BYTES as usize * 10];
         stable::write(0, &buf);
 
-        let mut buf1 = [0u8; PAGE_SIZE_BYTES * 10 - 50];
+        let mut buf1 = [0u8; PAGE_SIZE_BYTES as usize * 10 - 50];
         stable::read(25, &mut buf1);
 
-        assert_eq!(buf[25..PAGE_SIZE_BYTES * 10 - 25], buf1);
+        assert_eq!(buf[25..PAGE_SIZE_BYTES as usize * 10 - 25], buf1);
     }
 }

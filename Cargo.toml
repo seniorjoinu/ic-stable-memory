@@ -1,6 +1,6 @@
 [package]
 name = "ic-stable-memory"
-version = "0.4.0-rc2"
+version = "0.4.1"
 authors = ["Александр Втюрин <senior.joinu@gmail.com>"]
 edition = "2021"
 description = "Internet Computer's stable memory collections and tools"
@@ -19,8 +19,7 @@ serde_bytes = "0.11.8"
 num-bigint = "0.4.3"
 sha2 = "0.10.6"
 zwohash = "0.1.2"
-
-ic-stable-memory-derive = { path = "ic-stable-memory-derive" }
+ic-stable-memory-derive = "0.4.2"
 
 [dev-dependencies]
 rand = "0.8.5"
@@ -30,5 +29,4 @@ ic-certified-map = "0.3.2"
 serde_test = "1.0.152"
 
 [features]
-default = ["default_dyn_size_encoding"]
-default_dyn_size_encoding = []
+custom_dyn_encoding = []

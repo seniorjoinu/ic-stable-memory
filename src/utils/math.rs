@@ -1,11 +1,20 @@
 use std::num::Wrapping;
 
+/// Efficient ceiling division of [u64]
+///
+/// # Important
+/// Can overflow if a + b > [u64::MAX]
+pub fn ceil_div(a: u64, b: u64) -> u64 {
+    (a + b - 1) / b
+}
+
 const TAB64: [u64; 64] = [
     63, 0, 58, 1, 59, 47, 53, 2, 60, 39, 48, 27, 54, 33, 42, 3, 61, 51, 37, 40, 49, 18, 28, 20, 55,
     30, 34, 11, 43, 14, 22, 4, 62, 57, 46, 52, 38, 26, 32, 41, 50, 36, 17, 19, 29, 10, 13, 21, 56,
     45, 25, 31, 35, 16, 9, 12, 44, 24, 15, 8, 23, 7, 6, 5,
 ];
 
+/// Efficient log2 of [u64] implementation
 #[ignore]
 pub fn fast_log2_64(mut value: u64) -> u64 {
     value |= value >> 1;
@@ -23,6 +32,7 @@ const TAB32: [u32; 32] = [
     27, 23, 6, 26, 5, 4, 31,
 ];
 
+/// Efficient log2 of [u32] implementation
 #[ignore]
 pub fn fast_log2_32(mut value: u32) -> u32 {
     value |= value >> 1;
@@ -34,6 +44,7 @@ pub fn fast_log2_32(mut value: u32) -> u32 {
     TAB32[((Wrapping(value) * Wrapping(0x07C4ACDD)) >> 27).0 as usize]
 }
 
+/// Efficient log2 of [usize] implementation
 #[ignore]
 pub fn fast_log2(value: usize) -> u32 {
     if usize::MAX == u32::MAX as usize {
@@ -43,6 +54,7 @@ pub fn fast_log2(value: usize) -> u32 {
     }
 }
 
+/// Constant analog to [usize::max] function
 #[inline]
 pub const fn max_usize(a: usize, b: usize) -> usize {
     if a > b {
