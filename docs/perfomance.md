@@ -1,4 +1,4 @@
-# How to gain maximum performance out of ic-stable-memory
+# How to gain maximum performance out of `ic-stable-memory`
 
 ## 1. Reduce usage of SBox
 
@@ -6,7 +6,7 @@ Most commonly suggested optimization advices list for any programming system alw
 1. Allocate memory as rarely as possible.
 2. Use as little indirection as possible.
 
-For `ic-stable-memory` both of these dogmas boil down to a single advice - **use as few `SBox`-es as bossible**.
+For `ic-stable-memory` both of these dogmas boil down to a single advice - **use as few `SBox`-es as possible**.
 
 When you create a `SBox`, the following happens:
 1. The value you want to put inside gets serialized using `AsDynSizeBytes` trait, which will probably allocate heap memory.
@@ -14,7 +14,8 @@ When you create a `SBox`, the following happens:
 
 So it is basically two allocations (one on heap and another on stable memory) per create operation.
 When you read a `SBox` from stable memory or update it, you trigger one heap allocation again (because of (de)serialization).
-All these allocations greately increase your cycles consumption.
+All these allocations greately increase your cycles consumption. Plus a lot of performance is lost because of inefficient
+serialization engine, that one might use to implement `AsDynSizeBytes`.
 
 ### SBox map/set keys
 
@@ -75,7 +76,7 @@ let users = SBTreeMap::<u64, User>::new(); // <- won't compile
 ```
 In order to store `User` objects without wrapping it in `SBox`, we have to implement `AsFixedSizeBytes` trait for it. But 
 it seems impossible, because both `String` and `Vec<u64>` do not implement this trait and therefore cannot be serialized
-into a fixed size byte buffer. But this data type also has a lot of fixed size fields (`id`, `last_seen_timestamp` and 
+into a fixed size byte buffer (read more [here](./encoding.md)). But this data type also has a lot of fixed size fields (`id`, `last_seen_timestamp` and 
 `is_premium`), fast access to which would greately improve the overall performance of our canister. 
 
 It is recommended for most use-cases to divide your data type in two parts: the one that can be serialized as fixed size bytes

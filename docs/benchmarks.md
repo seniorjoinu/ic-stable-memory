@@ -1,6 +1,6 @@
 # Benchmarks in real canister using performance counter API
 [Here](../examples/performance_counter) is the canister. Run it, open the Candid UI interface and use it
-to run each method by yourself.
+to check each method yourself.
 
 ## `Vec` vs `SVec` vs `SLog`
 

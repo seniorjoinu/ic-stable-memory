@@ -50,7 +50,7 @@ enum User {
 let mut users = SHashMap::<u64, SBox<User>>::new();
 ```
 
-Now, if we want to change this data type, adding a phone number to it, we can simply introduce a new version of it:
+Now, if we want to change this data type, by adding a phone number to it, we can simply introduce a new version of it:
 ```rust
 #[derive(StableType, CandidType, Deserialize)]
 struct UserV001 {
@@ -86,14 +86,15 @@ another version of `User` and it should enough.
 
 > Warning!
 >
-> Upgradability relies heavily on how does your `AsDynSizeBytes` trait implementation works. In this example, `Candid` serialization is used
-under the hood. This serialization encodes enums by first sorting their identifiers lexicographically and then writing
+> Upgradability relies heavily on how does your encoding implementation works. In this example, `Candid` serialization is used
+under the hood (because of `CandidAsDynSizeBytes`). This serialization encodes enums by first sorting their identifiers lexicographically and then writing
 an index of the current enum variant in this sorted list to the output buffer. So, if you use `Candid` for dynamic-size 
 serialization and carefully follow the lexicographical order coming up with names for new versions, you're fine.
 > 
 > But if you use a different serialization library for `AsDynSizeBytes`, or do not follow naming conventions, you might want
 to implement `AsDynSizeBytes` trait for `User` enum manually, to make sure versions are always correctly (de)serialized.
->
+> The same goes for `AsFixedSizeBytes`.
+> 
 > More on manual implementation of encoding traits for `ic-stable-memory` is [here](./encoding.md).
 
 ### 3. Make your data fixed-size
@@ -158,6 +159,6 @@ struct User {
 let mut users = SHashMap::<u64, User>::new();
 ```
 
-This approach, in fact, is so superiour to other, that you're strongly suggested to include such a version-aware `details`
+This approach, in fact, is so superiour to others, that you're strongly suggested to include such a version-aware `details`
 field in every data type of you're canister's state. Even if you don't think this data can change over time, in most cases
 you'll end up with a better performance AND an ability to upgrade this type one day in future.

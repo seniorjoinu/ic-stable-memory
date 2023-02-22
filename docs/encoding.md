@@ -1,14 +1,13 @@
 # How to implement `AsFixedSizeBytes` and `AsDynSizeBytes` traits
 
-> Read more about this in the [API documentation](???)
+> Read more about this in the [API documentation](https://docs.rs/ic-stable-memory/)
 
-`ic-stable-memory` library requires its users to understand the difference between sized and unsized data. Sized
-data is referenced as fixed-size data, and unsized data is referenced as dynamically-sized here.
+`ic-stable-memory` library requires its users to understand the difference between sized and unsized data.
 
 Every stable collection **inlines** the data it stores. For example, `SVec` allocates a big block of stable memory 
 and stores each element inside this memory block sequentially. So far, this is exactly how `std` collections work,
-but there is a difference. `std` collections use native Rust's data byte representation, that, as stated by Rust's
-documentation, is not deterministic and can't be relied on, especially if your program is supposed to persist a lot
+but there is a difference. `std` collections use native Rust's data byte representation, which is, as stated by Rust's
+documentation, not deterministic and can't be relied on, especially if your program is supposed to persist a lot
 of data.
 
 This is why a serialization engine is used in `ic-stable-memory` - to make data persist itself deterministically, even
@@ -16,7 +15,7 @@ if a new canister version is compiled with a different Rust compiler version.
 
 `ic-stable-memory` splits all data in two categories:
 1. Fixed-size data, that can efficiently and deterministically serialize itself into a buffer of fixed size, known at compile-time.
-2. Dynamically-sized data, that can deterministically serialize itself atleast somehow.
+2. Dynamically-sized data, that can deterministically serialize itself at least somehow.
 
 Types of the first category have to implement `AsFixedSizeBytes` trait. Types of the second category - `AsDynSizeBytes` trait.
 Types of the first category may also implement `AsDynSizeBytes`, if needed.
@@ -157,7 +156,7 @@ when we want to store a dynamically-sized data, like `String`? In that case, we 
 this data and add a layer of indirection with `SBox`. `SBox` is the only stable data structure that accepts types
 which implement `AsDynSizeBytes` trait.
 
-This trait is, by default implemented for a bunch of types:
+This trait is, by default, implemented for a bunch of types:
 * for all `AsFixedSizeBytes` types;
 * for `String`
 * for `Vec<u8>`

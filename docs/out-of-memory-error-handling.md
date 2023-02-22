@@ -1,7 +1,7 @@
 # What to do if your canister is out of stable memory
 
 As you know, stable memory is a limited resource - you're canister might get lucky by getting assigned to a fresh subnet
-with a lot of spare stable memory, but even if this is the case, eventually this memory will end, occupied by your and 
+with a lot of free memory, but even if this is the case, eventually this memory will drain, occupied by your and 
 other canisters in that subnet.
 
 In `ic-stable-memory` every API method that may potentially allocate stable memory returns `Result`, where `Err` variant 
@@ -73,7 +73,9 @@ of the same canister and redirecting all new requests to that new canister:
 
 ```rust
 async fn scale_horizonally() -> Result<(), String> {
-    // ...
+    // horizontal scaling is a rich separate topic to go too deep in it here
+    // but you can imagine that this functions deploys a fresh copy of this exact canister
+    // and then somehow redirects all incoming requests to that new canister
 }
 
 #[update]

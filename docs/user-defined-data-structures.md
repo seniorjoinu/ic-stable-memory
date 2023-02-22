@@ -6,7 +6,7 @@ First of all, try to use existing stable data structures as a base. For example,
 This is much easier, than building a data structure from scratch.
 
 If you **need** a new data structure, start from reading all the docs on this crate - there is a lot of details scattered
-throughout the whole documentation (including the API documentation from docs.rs). Then try to understand [SVec's source code](../src/collections/vec/mod.rs).
+through the whole documentation ([including the API documentation](https://docs.rs/ic-stable-memory/)). Then try to understand [SVec's source code](../src/collections/vec/mod.rs).
 This is the simplest data structure you'll find in this crate and it is good for learning.
 
 Use `allocate`, `deallocate` and `reallocate` functions to manage stable memory. Don't forget to implement `StableType::stable_drop` 

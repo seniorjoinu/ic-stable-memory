@@ -1,4 +1,4 @@
-# How to migrate from `std` collections
+# How to migrate running canisters from `std` collections to `ic-stable-memory`
 
 > Warning!
 >
@@ -10,6 +10,9 @@
 > find a way to include them into the rest of your app. 
 > 
 > **But do not migrate old heavy canisters**.
+
+First of all, `ic-stable-memory` collections have a very similar API to `std` collections. So, you should be able to
+migrate with as few changes as possible.
 
 Let's imagine we have a canister like this
 ```rust
@@ -42,7 +45,7 @@ fn pre_upgrade() {
 ```
 
 Migration to `ic-stable-memory` takes **two** canister upgrades. During the first one you transfer all your data from
-`std` collection into stable ones. During the second upgrade you clean up the migrating code.
+`std` collections into stable ones. During the second upgrade you clean up the migration code.
 
 ### First upgrade
 ```rust
@@ -91,6 +94,7 @@ fn pre_upgrade() {
     stable_memory_pre_upgrade().expect("Out of memory");
 }
 ```
+### Second upgrade
 
 For the next canister upgrade you have to only update the `#[post_upgrade]` hook - everything else stays the same:
 ```rust
@@ -114,3 +118,8 @@ fn post_upgrade() {
 This is a simple example, but essentially you will have to complete the same steps for any other situation:
 * Move data from `std` collections to `ic-stable-memory` collections, during first canister upgrade.
 * Replace the `#[post_upgrade]` method with the one that only works with stable structures, during the second canister upgrade.
+
+### Rest of the code
+Everything else should work as usual. `ic-stable-memory` collections API is not as rich as `std`'s one, so sometimes
+you'll have to find a way of how to transform a high-level method into a set of lower-level ones, but there is no difference
+between them besides that.

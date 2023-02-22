@@ -1,6 +1,5 @@
 ![test coverage 88.82%](https://badgen.net/badge/coverage/88.82%25/green)
 
-
 # IC Stable Memory
 
 Allows using canister's stable memory as main memory.
@@ -56,35 +55,6 @@ thread_local! {
   static STATE: RefCell<Option<State>> = RefCell::default();
 }
 
-#[init]
-fn init() {
-  stable_memory_init();
-
-  STATE.with(|s| {
-    *s.borrow_mut() = Some(SVec::new());
-  });
-}
-
-#[pre_upgrade]
-fn pre_upgrade() {
-  let state: State = STATE.with(|s| s.borrow_mut().take().unwrap());
-  let boxed_state = SBox::new(state).expect("Out of memory");
-
-  store_custom_data(0, boxed_state);
-
-  stable_memory_pre_upgrade().expect("Out of memory");
-}
-
-#[post_upgrade]
-fn post_upgrade() {
-  stable_memory_post_upgrade();
-
-  let state = retrieve_custom_data::<State>(0).unwrap().into_inner();
-  STATE.with(|s| {
-    *s.borrow_mut() = Some(state);
-  });
-}
-
 #[update]
 fn add_task(task: Task) {
   STATE.with(|s| {
@@ -126,6 +96,35 @@ fn get_todo_list() -> Vec<Task> {
     result
   })
 }
+
+#[init]
+fn init() {
+  stable_memory_init();
+
+  STATE.with(|s| {
+    *s.borrow_mut() = Some(SVec::new());
+  });
+}
+
+#[pre_upgrade]
+fn pre_upgrade() {
+  let state: State = STATE.with(|s| s.borrow_mut().take().unwrap());
+  let boxed_state = SBox::new(state).expect("Out of memory");
+
+  store_custom_data(0, boxed_state);
+
+  stable_memory_pre_upgrade().expect("Out of memory");
+}
+
+#[post_upgrade]
+fn post_upgrade() {
+  stable_memory_post_upgrade();
+
+  let state = retrieve_custom_data::<State>(0).unwrap().into_inner();
+  STATE.with(|s| {
+    *s.borrow_mut() = Some(state);
+  });
+}
 ```
 
 ## Documentation
@@ -134,7 +133,7 @@ fn get_todo_list() -> Vec<Task> {
 3. [How to handle OutOfMemory errors](./docs/out-of-memory-error-handling.md)
 4. [How to ensure data upgradability](./docs/upgradeability.md)
 5. [How to implement encoding traits](./docs/encoding.md)
-6. [Performance tips](./docs/perfomance.md)
+6. [How to save cycles](./docs/perfomance.md)
 7. [Benchmarks](./docs/benchmarks.md)
 8. [How to build your own stable data structure](./docs/user-defined-data-structures.md)
 
@@ -145,7 +144,7 @@ fn get_todo_list() -> Vec<Task> {
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.
-Feel free to propose PR's, architecture tips, bug reports or any other feedback.
+Feel free to propose PR's, architecture tips, bug reports or any other feedback via Github issues.
 
 ## Test coverage check
 * `cargo install grcov`
