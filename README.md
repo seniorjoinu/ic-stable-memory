@@ -142,6 +142,12 @@ fn post_upgrade() {
 * [Performance counter canister](./examples/performance_counter)
 * [Stable certified assets canister](https://github.com/seniorjoinu/ic-stable-certified-assets)
 
+## Versioning
+`ic-stable-memory` follows semantic versioning guidelines and takes them one step further. You're safe to update this
+dependency when minor or patch version changes. But if the major version changes, it means that your canister won't be
+able to work with the new version and you shouldn't update. Such an event won't happen often and, in fact, this library
+has a lot of room to improve without breaking changes, but this may happen.
+
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.
 Feel free to propose PR's, architecture tips, bug reports or any other feedback via Github issues.
