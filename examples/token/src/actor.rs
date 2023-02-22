@@ -1,187 +1,198 @@
 use candid::{CandidType, Deserialize, Principal};
 use ic_cdk::api::time;
-use ic_cdk::{caller, print};
-use ic_cdk_macros::{heartbeat, init, post_upgrade, pre_upgrade, query, update};
-use ic_stable_memory::collections::hash_map::SHashMap;
-use ic_stable_memory::collections::vec::SVec;
-use ic_stable_memory::utils::ic_types::SPrincipal;
+use ic_cdk::caller;
+use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
+use ic_stable_memory::collections::{SHashMap, SLog};
+use ic_stable_memory::derive::{AsFixedSizeBytes, StableType};
+use ic_stable_memory::utils::DebuglessUnwrap;
 use ic_stable_memory::{
-    get_allocated_size, get_free_size, s, set_max_grow_pages, stable, stable_memory_init,
-    stable_memory_post_upgrade, stable_memory_pre_upgrade, PAGE_SIZE_BYTES,
+    retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
+    stable_memory_pre_upgrade, store_custom_data, SBox,
 };
-use speedy::{Readable, Writable};
+use std::cell::RefCell;
 
-type AccountBalances = SHashMap<SPrincipal, u64>;
-type TransactionLedger = SVec<HistoryEntry>;
-type TotalSupply = u64;
-
-#[derive(CandidType, Deserialize, Readable, Writable)]
+#[derive(CandidType, Deserialize, AsFixedSizeBytes, StableType, Debug, Copy, Clone)]
 struct HistoryEntry {
-    pub from: Option<SPrincipal>,
-    pub to: Option<SPrincipal>,
+    pub from: Option<Principal>,
+    pub to: Option<Principal>,
     pub qty: u64,
     pub timestamp: u64,
 }
 
-#[update]
-fn mint(to: SPrincipal, qty: u64) {
-    // update balances
-    let mut balances = s!(AccountBalances);
-    let balance = balances.get_cloned(&to).unwrap_or_default();
+#[derive(StableType, AsFixedSizeBytes)]
+struct State {
+    balances: SHashMap<Principal, u64>,
+    transactions: SLog<HistoryEntry>,
+    total_supply: u64,
+}
 
-    balances.insert(to, &(balance + qty));
-
-    s! { AccountBalances = balances };
-
-    // update total supply
-    let total_supply: u64 = s!(TotalSupply);
-    s! { TotalSupply = total_supply + qty };
-
-    // emit ledger entry
-    let entry = HistoryEntry {
-        from: None,
-        to: Some(to),
-        qty,
-        timestamp: time(),
-    };
-    let mut ledger = s!(TransactionLedger);
-    ledger.push(&entry);
-
-    s! { TransactionLedger = ledger };
+thread_local! {
+    static STATE: RefCell<Option<State>> = RefCell::default();
 }
 
 #[update]
-fn transfer(to: SPrincipal, qty: u64) {
-    let from = SPrincipal(caller());
+fn mint(to: Principal, qty: u64) {
+    STATE.with(|s| {
+        s.borrow_mut().as_mut().unwrap().mint(to, qty, time());
+    });
+}
 
-    // update balances
-    let mut balances = s!(AccountBalances);
-
-    let from_balance = balances.get_cloned(&from).unwrap_or_default();
-    assert!(from_balance >= qty, "Insufficient funds");
-    balances.insert(from, &(from_balance - qty));
-
-    let to_balance = balances.get_cloned(&to).unwrap_or_default();
-    balances.insert(to, &(to_balance + qty));
-
-    s! { AccountBalances = balances };
-
-    // emit ledger entry
-    let entry = HistoryEntry {
-        from: Some(from),
-        to: Some(to),
-        qty,
-        timestamp: time(),
-    };
-    let mut ledger = s!(TransactionLedger);
-    ledger.push(&entry);
-
-    s! { TransactionLedger = ledger };
+#[update]
+fn transfer(to: Principal, qty: u64) {
+    STATE.with(|s| {
+        s.borrow_mut()
+            .as_mut()
+            .unwrap()
+            .transfer(caller(), to, qty, time());
+    });
 }
 
 #[update]
 fn burn(qty: u64) {
-    let from = SPrincipal(caller());
-
-    // update balances
-    let mut balances = s!(AccountBalances);
-    let from_balance = balances.get_cloned(&from).unwrap_or_default();
-    assert!(from_balance >= qty, "Insufficient funds");
-
-    balances.insert(from, &(from_balance - qty));
-    s! { AccountBalances = balances };
-
-    let total_supply = s!(TotalSupply);
-    s! { TotalSupply = total_supply - qty };
-
-    // emit ledger entry
-    let entry = HistoryEntry {
-        from: Some(from),
-        to: None,
-        qty,
-        timestamp: time(),
-    };
-    let mut ledger = s!(TransactionLedger);
-    ledger.push(&entry);
-
-    s! { TransactionLedger = ledger };
+    STATE.with(|s| {
+        s.borrow_mut().as_mut().unwrap().burn(caller(), qty, time());
+    })
 }
 
 #[query]
-fn balance_of(of: SPrincipal) -> u64 {
-    s!(AccountBalances).get_cloned(&of).unwrap_or_default()
+fn balance_of(of: Principal) -> u64 {
+    STATE.with(|s| s.borrow().as_ref().unwrap().balance_of(&of))
 }
 
 #[query]
-fn total_supply() -> TotalSupply {
-    s!(TotalSupply)
+fn total_supply() -> u64 {
+    STATE.with(|s| s.borrow().as_ref().unwrap().total_supply())
 }
 
 #[query]
-fn get_history(page_index: u64, page_size: u64) -> (Vec<HistoryEntry>, u64) {
-    let from = page_index * page_size;
-    let to = page_index * page_size + page_size;
-
-    let ledger = s!(TransactionLedger);
-    let mut result = vec![];
-    let total_pages = ledger.len() / page_size + 1;
-
-    for i in from..to {
-        if let Some(entry) = ledger.get_cloned(i) {
-            result.push(entry);
-        }
-    }
-
-    (result, total_pages)
-}
-
-#[query]
-fn mem_metrics() -> (u64, u64, u64) {
-    (
-        stable::size_pages() * PAGE_SIZE_BYTES as u64, // available
-        get_allocated_size(),                          // allocated
-        get_free_size(),                               // free
-    )
+fn get_history(page_index: usize, page_size: usize) -> (Vec<HistoryEntry>, usize) {
+    STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .unwrap()
+            .get_history(page_index, page_size)
+    })
 }
 
 #[init]
 fn init() {
-    // initialize stable memory (cheap)
-    stable_memory_init(true, 0);
-    set_max_grow_pages(200);
-
-    // initialize stable variables (cheap)
-    s! { AccountBalances = AccountBalances::new() };
-    s! { TransactionLedger = TransactionLedger::new() };
-    s! { TotalSupply = TotalSupply::default() };
+    stable_memory_init();
 }
 
 #[pre_upgrade]
 fn pre_upgrade() {
-    // save stable variables meta-info (cheap)
-    stable_memory_pre_upgrade();
+    let state: State = STATE.with(|s| s.borrow_mut().take().unwrap());
+
+    store_custom_data(0, SBox::new(state).debugless_unwrap());
+
+    stable_memory_pre_upgrade().expect("Out of memory");
 }
 
 #[post_upgrade]
 fn post_upgrade() {
-    // reinitialize stable memory and variables (cheap)
-    stable_memory_post_upgrade(0);
+    stable_memory_post_upgrade();
+
+    let state = retrieve_custom_data::<State>(0).unwrap().into_inner();
+
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(state);
+    });
 }
 
-#[heartbeat]
-fn tick() {
-    for _ in 0..100 {
-        mint(SPrincipal(Principal::management_canister()), 1000);
+impl State {
+    fn transfer(&mut self, from: Principal, to: Principal, qty: u64, timestamp: u64) {
+        let from_balance_before: u64 = self.balances.get(&from).map(|it| *it).unwrap_or_default();
+
+        assert!(from_balance_before >= qty, "Not enough funds");
+
+        let to_balance_before: u64 = self.balances.get(&to).map(|it| *it).unwrap_or_default();
+
+        let from_balance_after = from_balance_before - qty;
+        let to_balance_after = to_balance_before + qty;
+
+        self.balances
+            .insert(from, from_balance_after)
+            .expect("Out of memory");
+
+        self.balances
+            .insert(to, to_balance_after)
+            .expect("Out of memory");
+
+        let entry = HistoryEntry {
+            from: Some(from),
+            to: Some(to),
+            qty,
+            timestamp,
+        };
+
+        self.transactions.push(entry).expect("Out of memory");
     }
-}
 
-// ON LOW MEMORY CALLBACK
-#[update]
-fn on_low_stable_memory() {
-    print("!!! CANISTER IS LOW ON STABLE MEMORY !!!");
-    print(format!(
-        "total allocated: {} bytes, total free: {} bytes",
-        get_allocated_size(),
-        get_free_size()
-    ));
+    fn mint(&mut self, to: Principal, qty: u64, timestamp: u64) {
+        let to_balance = self.balances.get(&to).map(|it| *it).unwrap_or_default();
+
+        self.balances
+            .insert(to, to_balance + qty)
+            .expect("Out of memory");
+
+        let entry = HistoryEntry {
+            from: None,
+            to: Some(to),
+            qty,
+            timestamp,
+        };
+
+        self.transactions.push(entry).expect("Out of memory");
+
+        self.total_supply += qty;
+    }
+
+    fn burn(&mut self, from: Principal, qty: u64, timestamp: u64) {
+        let mut to_balance = if let Some(b) = self.balances.get_mut(&from) {
+            b
+        } else {
+            panic!("Not enough funds");
+        };
+
+        if *to_balance < qty {
+            panic!("Not enough funds");
+        }
+
+        *to_balance -= qty;
+
+        let entry = HistoryEntry {
+            from: Some(from),
+            to: None,
+            qty,
+            timestamp,
+        };
+
+        self.transactions.push(entry).expect("Out of memory");
+
+        self.total_supply -= qty;
+    }
+
+    fn balance_of(&self, of: &Principal) -> u64 {
+        self.balances.get(of).map(|it| *it).unwrap_or_default()
+    }
+
+    fn total_supply(&self) -> u64 {
+        self.total_supply
+    }
+
+    fn get_history(&self, page_index: usize, page_size: usize) -> (Vec<HistoryEntry>, usize) {
+        let skip = page_index * page_size;
+        let take = page_size;
+        let total_pages = (self.transactions.len() / page_size as u64) as usize;
+
+        let it = self
+            .transactions
+            .rev_iter()
+            .skip(skip)
+            .take(take)
+            .map(|it| *it)
+            .collect::<Vec<_>>();
+
+        (it, total_pages)
+    }
 }

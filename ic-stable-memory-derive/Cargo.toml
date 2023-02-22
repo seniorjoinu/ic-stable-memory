@@ -1,0 +1,16 @@
+[package]
+name = "ic-stable-memory-derive"
+authors = ["Александр Втюрин <senior.joinu@gmail.com>"]
+edition = "2021"
+description = "Derive macros for ic-stable-memory"
+license = "MIT"
+keywords = ["dfinity", "internet-computer", "ic", "stable-memory", "collections"]
+version = "0.4.2"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0.23"
+proc-macro2 = "1.0.50"
+syn = { version = "1.0.107", features = ["full"] }

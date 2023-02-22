@@ -1,685 +1,791 @@
-use crate::primitive::s_slice::{Side, CELL_MIN_SIZE, PTR_SIZE};
-use crate::utils::math::fast_log2;
-use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
-use crate::SSlice;
-use ic_cdk::api::call::call_raw;
-use ic_cdk::{id, print, spawn, trap};
-use std::fmt::{Debug, Formatter};
-use std::usize;
+//! Stable memory allocator used by every data collection in this crate.
+//!
+//! `O(logN)` in both: allocation and deallocation, where `N` is the number of free blocks.
+//! Free-list is simply a [BTreeMap](std::collections::BTreeMap). Custom data storage is simply a
+//! [HashMap](std::collections::HashMap).
+//!
+//! Persisted between canister upgrades by serializing itself with [CandidType](candid::CandidType),
+//! putting itself in an [SBox] and writing a pointer to that [SBox] into stable memory at location (0..8).
+//!
+//! This allocator shouldn't be used directly - instead use top-level functions exposed by this crate.
 
-pub(crate) const EMPTY_PTR: u64 = u64::MAX;
-pub(crate) const MAGIC: [u8; 4] = [b'S', b'M', b'A', b'M'];
-pub(crate) const SEG_CLASS_PTRS_COUNT: u32 = usize::BITS - 4;
-pub(crate) const CUSTOM_DATA_PTRS_COUNT: usize = 4;
-pub(crate) const DEFAULT_MAX_ALLOCATION_PAGES: u32 = 180; // 180 * 64k = ~10MB
-pub(crate) const DEFAULT_MAX_GROW_PAGES: u64 = 0;
-pub(crate) const LOW_ON_MEMORY_HOOK_NAME: &str = "on_low_stable_memory";
+use crate::encoding::dyn_size::candid_decode_one_allow_trailing;
+use crate::encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
+use crate::mem::free_block::FreeBlock;
+use crate::mem::s_slice::SSlice;
+use crate::mem::StablePtr;
+use crate::primitive::s_box::SBox;
+use crate::primitive::StableType;
+use crate::utils::math::ceil_div;
+use crate::{stable, OutOfMemory, PAGE_SIZE_BYTES};
+use candid::{encode_one, CandidType, Deserialize};
+use std::collections::{BTreeMap, HashMap};
 
-pub(crate) type SegClassId = u32;
+pub(crate) const ALLOCATOR_PTR: StablePtr = 0;
+pub(crate) const MIN_PTR: StablePtr = u64::SIZE as u64;
+pub(crate) const EMPTY_PTR: StablePtr = u64::MAX;
 
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct StableMemoryAllocator;
+#[doc(hidden)]
+#[derive(Debug, CandidType, Deserialize, Eq, PartialEq)]
+pub struct StableMemoryAllocator {
+    free_blocks: BTreeMap<u64, Vec<FreeBlock>>,
+    custom_data_pointers: HashMap<usize, StablePtr>,
+    free_size: u64,
+    available_size: u64,
+    max_ptr: StablePtr,
+    max_pages: u64,
+}
 
-impl SSlice<StableMemoryAllocator> {
-    const SIZE: usize = MAGIC.len()                     // magic bytes
-        + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE      // segregations classes table
-        + PTR_SIZE * 2                                  // free & allocated counters
-        + PTR_SIZE                                      // max allocation size
-        + 1                                             // was on_low_stable_memory() callback executed flag
-        + PTR_SIZE                                      // max grow pages
-        + CUSTOM_DATA_PTRS_COUNT * PTR_SIZE; // pointers to custom data
-
-    /// # Safety
-    /// Invoke only once during `init()` canister function execution
-    /// Execution more than once will lead to undefined behavior
-    pub(crate) unsafe fn init(offset: u64) -> Self {
-        let mut allocator = SSlice::<StableMemoryAllocator>::new(offset, Self::SIZE, true);
-
-        allocator._write_bytes(0, &MAGIC);
-        allocator.reset();
-
-        allocator
-    }
-
-    /// # Safety
-    /// Invoke each time your canister upgrades, in `post_upgrade()` function
-    /// It's fine to call this function more than once, but remember that using multiple copies of
-    /// a single allocator can lead to race condition in an asynchronous scenario
-    pub(crate) unsafe fn reinit(offset: u64) -> Option<Self> {
-        let membox = SSlice::<StableMemoryAllocator>::from_ptr(offset, Side::Start)?;
-        let (size, allocated) = membox.get_meta();
-        if !allocated || size != Self::SIZE {
-            return None;
-        }
-
-        let mut magic = [0u8; MAGIC.len()];
-        membox._read_bytes(0, &mut magic);
-        if magic != MAGIC {
-            return None;
-        }
-
-        Some(membox)
-    }
-
-    pub(crate) fn allocate<T>(&mut self, mut size: usize) -> SSlice<T> {
-        if size < CELL_MIN_SIZE {
-            size = CELL_MIN_SIZE
-        }
-
-        // will be called only once during first ever allocate()
-        self.handle_free_buffer();
-
-        let free_membox = match self.pop_allocated_membox(size) {
-            Ok(m) => m,
-            Err(_) => trap(format!("Not enough stable memory to allocate {} more bytes. Grown: {} bytes; Allocated: {} bytes; Free: {} bytes", size, stable::size_pages() * PAGE_SIZE_BYTES as u64, self.get_allocated_size(), self.get_free_size()).as_str())
+impl StableMemoryAllocator {
+    pub fn init(max_pages: u64) -> Self {
+        let mut it = Self {
+            max_ptr: MIN_PTR,
+            free_blocks: BTreeMap::default(),
+            custom_data_pointers: HashMap::default(),
+            free_size: 0,
+            available_size: 0,
+            max_pages,
         };
 
-        self.handle_free_buffer();
+        let available_pages = stable::size_pages();
+        if it.max_pages != 0 && available_pages > it.max_pages {
+            it.max_pages = available_pages;
+        }
 
-        let it = unsafe {
-            // shouldn't throw, since the membox was just allocated and therefore operable
-            SSlice::<T>::from_ptr(free_membox.get_ptr(), Side::Start).unwrap()
-        };
+        let real_max_ptr = available_pages * PAGE_SIZE_BYTES;
+        if real_max_ptr > it.max_ptr {
+            let free_block = FreeBlock::new_total_size(it.max_ptr, real_max_ptr - it.max_ptr);
+            it.more_free_size(free_block.get_total_size_bytes());
+            it.more_available_size(free_block.get_total_size_bytes());
 
-        let buf = vec![0u8; it.get_size_bytes()];
-        it._write_bytes(0, &buf);
+            it.push_free_block(free_block);
+            it.max_ptr = real_max_ptr;
+        }
 
         it
     }
 
-    pub(crate) fn deallocate<T>(&mut self, mut membox: SSlice<T>) {
-        let (_, allocated) = membox.get_meta();
-        membox.assert_allocated(true, Some(allocated));
-        membox.set_allocated(false);
+    pub fn make_sure_can_allocate(&mut self, mut size: u64) -> bool {
+        size = Self::pad_size(size);
 
-        let total_allocated = self.get_allocated_size();
-        self.set_allocated_size(total_allocated - membox.get_total_size_bytes() as u64);
-
-        let membox = unsafe { SSlice::<Free>::from_ptr(membox.get_ptr(), Side::Start).unwrap() };
-        self.push_free_membox(membox);
-    }
-
-    // TODO: reallocate inplace
-
-    pub(crate) fn reallocate<T>(&mut self, membox: SSlice<T>, new_size: usize) -> SSlice<T> {
-        let mut data = vec![0u8; membox.get_size_bytes()];
-        membox._read_bytes(0, &mut data);
-
-        self.deallocate(membox);
-        let new_membox = self.allocate(new_size);
-        new_membox._write_bytes(0, &data);
-
-        new_membox
-    }
-
-    pub(crate) fn reset(&mut self) {
-        let empty_ptr_bytes = EMPTY_PTR.to_le_bytes();
-
-        for i in 0..(SEG_CLASS_PTRS_COUNT as usize + CUSTOM_DATA_PTRS_COUNT) {
-            self._write_bytes(MAGIC.len() + i * PTR_SIZE, &empty_ptr_bytes)
+        if self.free_blocks.range(size..).next().is_some() {
+            return true;
         }
 
-        self.set_allocated_size(0);
-        self.set_free_size(0);
-        self.set_max_allocation_pages(DEFAULT_MAX_ALLOCATION_PAGES);
-        self.set_max_grow_pages(DEFAULT_MAX_GROW_PAGES);
-        self.set_on_low_executed_flag(false);
-
-        let total_free_size =
-            stable::size_pages() * PAGE_SIZE_BYTES as u64 - self.get_next_neighbor_ptr();
-
-        if total_free_size > 0 {
-            let ptr = self.get_next_neighbor_ptr();
-
-            let free_mem_box =
-                unsafe { SSlice::<Free>::new_total_size(ptr, total_free_size as usize, false) };
-
-            self.push_free_membox(free_mem_box);
-        }
-    }
-
-    fn push_free_membox(&mut self, mut membox: SSlice<Free>) {
-        membox.assert_allocated(false, None);
-
-        membox = self.maybe_merge_with_free_neighbors(membox);
-
-        let total_free = self.get_free_size();
-        self.set_free_size(total_free + membox.get_total_size_bytes() as u64);
-
-        let (size, _) = membox.get_meta();
-        let seg_class_id = get_seg_class_id(size);
-        let head_opt = unsafe { self.get_seg_class_head(seg_class_id) };
-
-        self.set_seg_class_head(seg_class_id, membox.get_ptr());
-        membox.set_prev_free_ptr(self.get_ptr());
-
-        match head_opt {
-            None => {
-                membox.set_next_free_ptr(EMPTY_PTR);
-            }
-            Some(mut head) => {
-                membox.set_next_free_ptr(head.get_ptr());
-
-                head.set_prev_free_ptr(membox.get_ptr());
-            }
-        }
-    }
-
-    /// returns ALLOCATED membox
-    fn pop_allocated_membox(&mut self, size: usize) -> Result<SSlice<Free>, OutOfMemory> {
-        let mut seg_class_id = get_seg_class_id(size);
-        let free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
-
-        // iterate over this seg class, until big enough membox found or til it ends
-        if let Some(mut free_membox) = free_membox_opt {
-            loop {
-                let membox_size = free_membox.get_size_bytes();
-
-                // if valid membox found,
-                if membox_size >= size {
-                    self.eject_from_freelist(seg_class_id, &mut free_membox);
-
-                    let total_allocated = self.get_allocated_size();
-                    self.set_allocated_size(
-                        total_allocated + free_membox.get_total_size_bytes() as u64,
-                    );
-
-                    free_membox.set_allocated(true);
-
-                    return Ok(free_membox);
-                }
-
-                let next_ptr = free_membox.get_next_free_ptr();
-                if next_ptr == EMPTY_PTR {
-                    break;
-                }
-
-                free_membox = unsafe { SSlice::<Free>::from_ptr(next_ptr, Side::Start).unwrap() };
+        if self.max_ptr > MIN_PTR {
+            if let Some(last_free_block) =
+                FreeBlock::from_rear_ptr(self.max_ptr - StablePtr::SIZE as u64)
+            {
+                size -= last_free_block.get_size_bytes();
             }
         }
 
-        // if no appropriate membox was found previously, try to find any of larger size
-        let mut free_membox_opt = None;
-        seg_class_id += 1;
+        match self.grow(size) {
+            Ok(fb) => {
+                self.more_available_size(fb.get_total_size_bytes());
+                self.more_free_size(fb.get_total_size_bytes());
 
-        while seg_class_id < SEG_CLASS_PTRS_COUNT as u32 {
-            free_membox_opt = unsafe { self.get_seg_class_head(seg_class_id) };
+                self.push_free_block(fb);
 
-            if let Some(free_membox) = &free_membox_opt {
-                if free_membox.get_size_bytes() >= size {
-                    break;
-                }
+                true
             }
-
-            seg_class_id += 1;
+            Err(_) => false,
         }
+    }
 
-        match free_membox_opt {
-            // if at least one such a big membox found, pop it, split in two, take first, push second
-            Some(mut free_membox) => {
-                self.eject_from_freelist(seg_class_id, &mut free_membox);
+    #[allow(clippy::never_loop)]
+    pub fn allocate(&mut self, mut size: u64) -> Result<SSlice, OutOfMemory> {
+        size = Self::pad_size(size);
 
-                let res = unsafe { free_membox.split(size) };
-                match res {
-                    Ok((mut result, additional)) => {
-                        result.set_allocated(true);
-                        self.push_free_membox(additional);
+        // searching for a free block that is equal or bigger in size, than asked
+        let free_block = loop {
+            if let Some(fb) = self.pop_free_block(size) {
+                break fb;
+            } else {
+                if self.max_ptr > MIN_PTR {
+                    if let Some(last_free_block) =
+                        FreeBlock::from_rear_ptr(self.max_ptr - StablePtr::SIZE as u64)
+                    {
+                        let fb = self.grow(size - last_free_block.get_size_bytes())?;
 
-                        let total_allocated = self.get_allocated_size();
-                        self.set_allocated_size(
-                            total_allocated + result.get_total_size_bytes() as u64,
-                        );
+                        self.more_available_size(fb.get_total_size_bytes());
+                        self.more_free_size(fb.get_total_size_bytes());
 
-                        Ok(result)
-                    }
-                    Err(mut result) => {
-                        result.set_allocated(true);
+                        self.remove_free_block(&last_free_block);
 
-                        let total_allocated = self.get_allocated_size();
-                        self.set_allocated_size(
-                            total_allocated + result.get_total_size_bytes() as u64,
-                        );
-
-                        Ok(result)
+                        break FreeBlock::merge(last_free_block, fb);
                     }
                 }
+
+                let fb = self.grow(size)?;
+
+                self.more_available_size(fb.get_total_size_bytes());
+                self.more_free_size(fb.get_total_size_bytes());
+
+                break fb;
             }
-            // otherwise, throw (max allocation size limit violated)
-            None => Err(OutOfMemory),
-        }
-    }
-
-    pub(crate) fn get_allocated_size(&self) -> u64 {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE)
-    }
-
-    fn set_allocated_size(&mut self, size: u64) {
-        self._write_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE, size);
-    }
-
-    pub(crate) fn get_free_size(&self) -> u64 {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE)
-    }
-
-    fn set_free_size(&mut self, size: u64) {
-        self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE,
-            size,
-        );
-    }
-
-    pub(crate) fn get_max_allocation_pages(&self) -> u32 {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2)
-            as u32
-    }
-
-    pub(crate) fn set_max_allocation_pages(&mut self, pages: u32) {
-        self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2,
-            pages as u64,
-        );
-    }
-
-    pub(crate) fn get_on_low_executed_flag(&self) -> bool {
-        let mut buf = [0u8; 1];
-        self._read_bytes(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + 1,
-            &mut buf,
-        );
-
-        buf[0] == 1
-    }
-
-    pub(crate) fn set_on_low_executed_flag(&mut self, flag: bool) {
-        let buf = if flag { [1u8; 1] } else { [0u8; 1] };
-
-        self._write_bytes(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 2 + 1,
-            &buf,
-        );
-    }
-
-    pub(crate) fn get_max_grow_pages(&self) -> u64 {
-        self._read_word(MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3 + 1)
-    }
-
-    pub(crate) fn set_max_grow_pages(&mut self, max_pages: u64) {
-        self._write_word(
-            MAGIC.len() + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE + PTR_SIZE * 3 + 1,
-            max_pages,
-        );
-    }
-
-    pub fn set_custom_data_ptr(&mut self, idx: usize, ptr: u64) {
-        assert!(idx < CUSTOM_DATA_PTRS_COUNT);
-
-        self._write_word(
-            MAGIC.len()
-                + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
-                + PTR_SIZE * 4
-                + 1
-                + idx * PTR_SIZE,
-            ptr,
-        );
-    }
-
-    pub fn get_custom_data_ptr(&mut self, idx: usize) -> u64 {
-        assert!(idx < CUSTOM_DATA_PTRS_COUNT);
-
-        self._read_word(
-            MAGIC.len()
-                + SEG_CLASS_PTRS_COUNT as usize * PTR_SIZE
-                + PTR_SIZE * 4
-                + 1
-                + idx * PTR_SIZE,
-        )
-    }
-
-    unsafe fn get_seg_class_head(&self, id: SegClassId) -> Option<SSlice<Free>> {
-        let ptr = self._read_word(Self::get_seg_class_head_offset(id));
-        if ptr == EMPTY_PTR {
-            return None;
-        }
-
-        Some(SSlice::<Free>::from_ptr(ptr, Side::Start).unwrap())
-    }
-
-    fn eject_from_freelist(&mut self, seg_class_id: SegClassId, membox: &mut SSlice<Free>) {
-        // if membox is the head of it's seg class
-        if membox.get_prev_free_ptr() == self.get_ptr() {
-            self.set_seg_class_head(seg_class_id, membox.get_next_free_ptr());
-
-            let next_opt =
-                unsafe { SSlice::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
-
-            if let Some(mut next) = next_opt {
-                next.set_prev_free_ptr(self.get_ptr());
-            }
-        } else {
-            let mut prev = unsafe {
-                SSlice::<Free>::from_ptr(membox.get_prev_free_ptr(), Side::Start).unwrap()
-            };
-            let next_opt =
-                unsafe { SSlice::<Free>::from_ptr(membox.get_next_free_ptr(), Side::Start) };
-
-            if let Some(mut next) = next_opt {
-                prev.set_next_free_ptr(next.get_ptr());
-                next.set_prev_free_ptr(prev.get_ptr());
-            } else {
-                prev.set_next_free_ptr(EMPTY_PTR);
-            }
-        }
-
-        let total_free = self.get_free_size();
-        self.set_free_size(total_free - membox.get_total_size_bytes() as u64);
-
-        membox.set_prev_free_ptr(EMPTY_PTR);
-        membox.set_next_free_ptr(EMPTY_PTR);
-    }
-
-    fn maybe_merge_with_free_neighbors(&mut self, mut membox: SSlice<Free>) -> SSlice<Free> {
-        let prev_neighbor_opt = unsafe { membox.get_neighbor(Side::Start) };
-        membox = if let Some(mut prev_neighbor) = prev_neighbor_opt {
-            let (neighbor_size, neighbor_allocated) = prev_neighbor.get_meta();
-
-            if !neighbor_allocated {
-                let seg_class_id = get_seg_class_id(neighbor_size);
-                self.eject_from_freelist(seg_class_id, &mut prev_neighbor);
-
-                unsafe { membox.merge_with_neighbor(prev_neighbor) }
-            } else {
-                membox
-            }
-        } else {
-            membox
         };
 
-        let next_neighbor_opt = unsafe { membox.get_neighbor(Side::End) };
-        membox = if let Some(mut next_neighbor) = next_neighbor_opt {
-            let (neighbor_size, neighbor_allocated) = next_neighbor.get_meta();
+        // if it is bigger - try splitting it in two, taking the first half
+        let slice = if FreeBlock::can_split(free_block.get_size_bytes(), size) {
+            let (a, b) = free_block.split(size);
+            let s = a.to_allocated();
 
-            if !neighbor_allocated {
-                let seg_class_id = get_seg_class_id(neighbor_size);
-                self.eject_from_freelist(seg_class_id, &mut next_neighbor);
+            self.push_free_block(b);
 
-                unsafe { membox.merge_with_neighbor(next_neighbor) }
-            } else {
-                membox
-            }
+            s
         } else {
-            membox
+            free_block.to_allocated()
         };
 
-        membox
+        self.less_free_size(slice.get_total_size_bytes());
+
+        Ok(slice)
     }
 
-    // makes sure the allocator always has at least X bytes of free memory, tries to grow otherwise
-    fn handle_free_buffer(&mut self) {
-        let free = self.get_free_size();
-        let max_allocation_size = self.get_max_allocation_pages() as u64;
+    #[inline]
+    pub fn deallocate(&mut self, slice: SSlice) {
+        let free_block = slice.to_free_block();
 
-        if free >= max_allocation_size * PAGE_SIZE_BYTES as u64 {
-            return;
-        }
-
-        let pages_to_grow = max_allocation_size - free / PAGE_SIZE_BYTES as u64 + 1;
-
-        if let Some(prev_pages) = self.grow_or_trigger_low_memory_hook(pages_to_grow) {
-            let ptr = prev_pages * PAGE_SIZE_BYTES as u64;
-            let new_memory_size = stable::size_pages() * PAGE_SIZE_BYTES as u64 - ptr;
-
-            let new_free_membox =
-                unsafe { SSlice::<Free>::new_total_size(ptr, new_memory_size as usize, false) };
-
-            self.push_free_membox(new_free_membox);
-        }
+        self.more_free_size(free_block.get_total_size_bytes());
+        self.push_free_block(free_block);
     }
 
-    fn grow_or_trigger_low_memory_hook(&mut self, pages_to_grow: u64) -> Option<u64> {
-        let already_grew = stable::size_pages();
-        let max_grow_pages = self.get_max_grow_pages();
+    pub fn reallocate(&mut self, slice: SSlice, mut new_size: u64) -> Result<SSlice, OutOfMemory> {
+        new_size = Self::pad_size(new_size);
 
-        if max_grow_pages != 0 && already_grew + pages_to_grow >= max_grow_pages {
-            self.handle_low_memory();
-
-            return None;
+        if new_size <= slice.get_size_bytes() {
+            return Ok(slice);
         }
 
-        match stable::grow(pages_to_grow) {
-            Ok(prev_pages) => Some(prev_pages),
-            Err(_) => {
-                self.handle_low_memory();
+        let free_block = slice.to_free_block();
 
-                None
+        // if it is possible to simply "grow" the slice, by merging it with the next neighbor - do that
+        if let Ok(fb) = self.try_reallocate_in_place(free_block, new_size) {
+            return Ok(fb);
+        }
+
+        // FIXME: can be more accurate by checking, if can merge with back first
+        if !self.make_sure_can_allocate(new_size) {
+            return Err(OutOfMemory);
+        }
+
+        // othewise, get ready for move and copy the data
+        let mut b = vec![0u8; slice.get_size_bytes().try_into().unwrap()];
+        unsafe { crate::mem::read_bytes(slice.offset(0), &mut b) };
+
+        // deallocate the slice
+        self.more_free_size(free_block.get_total_size_bytes());
+        self.push_free_block(free_block);
+
+        // allocate a new one; unwrapping since we've just checked we can allocate that size
+        let new_slice = self.allocate(new_size).unwrap();
+
+        // put the data back
+        unsafe { crate::mem::write_bytes(new_slice.offset(0), &b) };
+
+        Ok(new_slice)
+    }
+
+    pub fn store(&mut self) -> Result<(), OutOfMemory> {
+        // first encode is simply to calculate the required size
+        let buf = self.as_dyn_size_bytes();
+
+        // reserving 100 extra bytes in order for the allocator to grow while allocating memory for itself
+        let slice = self.allocate(buf.len() as u64 + 100)?;
+
+        let buf = self.as_dyn_size_bytes();
+
+        unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
+        unsafe { crate::mem::write_fixed(0, &mut slice.as_ptr()) };
+
+        Ok(())
+    }
+
+    pub fn retrieve() -> Self {
+        let slice_ptr = unsafe { crate::mem::read_fixed_for_reference(0) };
+        let slice = unsafe { SSlice::from_ptr(slice_ptr).unwrap() };
+
+        let mut buf = vec![0u8; slice.get_size_bytes() as usize];
+        unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf) };
+
+        let mut it = Self::from_dyn_size_bytes(&buf);
+        it.deallocate(slice);
+
+        it
+    }
+
+    #[inline]
+    pub fn get_allocated_size(&self) -> u64 {
+        self.available_size - self.free_size
+    }
+
+    #[inline]
+    pub fn get_available_size(&self) -> u64 {
+        self.available_size
+    }
+
+    #[inline]
+    pub fn get_free_size(&self) -> u64 {
+        self.free_size
+    }
+
+    #[inline]
+    fn more_available_size(&mut self, additional: u64) {
+        self.available_size += additional;
+    }
+
+    #[inline]
+    fn more_free_size(&mut self, additional: u64) {
+        self.free_size += additional;
+    }
+
+    #[inline]
+    fn less_free_size(&mut self, additional: u64) {
+        self.free_size -= additional;
+    }
+
+    #[inline]
+    pub fn store_custom_data<T: AsDynSizeBytes + StableType>(
+        &mut self,
+        idx: usize,
+        mut data: SBox<T>,
+    ) {
+        unsafe { data.stable_drop_flag_off() };
+
+        self.custom_data_pointers.insert(idx, data.as_ptr());
+    }
+
+    #[inline]
+    pub fn retrieve_custom_data<T: AsDynSizeBytes + StableType>(
+        &mut self,
+        idx: usize,
+    ) -> Option<SBox<T>> {
+        let mut b = unsafe { SBox::from_ptr(self.custom_data_pointers.remove(&idx)?) };
+        unsafe { SBox::<T>::stable_drop_flag_on(&mut b) };
+
+        Some(b)
+    }
+
+    #[inline]
+    pub fn get_max_pages(&self) -> u64 {
+        self.max_pages
+    }
+
+    fn try_reallocate_in_place(
+        &mut self,
+        mut free_block: FreeBlock,
+        new_size: u64,
+    ) -> Result<SSlice, Result<FreeBlock, OutOfMemory>> {
+        if let Some(mut next_neighbor) = free_block.next_neighbor_is_free(self.max_ptr) {
+            let mut merged_size = FreeBlock::merged_size(&free_block, &next_neighbor);
+
+            if merged_size < new_size {
+                if next_neighbor.get_next_neighbor_ptr() != self.max_ptr {
+                    return Err(Ok(free_block));
+                }
+
+                let fb = self.grow(new_size).map_err(Err)?;
+
+                self.more_available_size(fb.get_total_size_bytes());
+
+                self.less_free_size(next_neighbor.get_total_size_bytes());
+                self.remove_free_block(&next_neighbor);
+
+                next_neighbor = FreeBlock::merge(next_neighbor, fb);
+                merged_size = FreeBlock::merged_size(&free_block, &next_neighbor);
+            } else {
+                self.less_free_size(next_neighbor.get_total_size_bytes());
+                self.remove_free_block(&next_neighbor);
             }
+
+            free_block = FreeBlock::merge(free_block, next_neighbor);
+
+            if !FreeBlock::can_split(merged_size, new_size) {
+                return Ok(free_block.to_allocated());
+            }
+
+            let (free_block, b) = free_block.split(new_size);
+
+            let slice = free_block.to_allocated();
+
+            self.more_free_size(b.get_total_size_bytes());
+            self.push_free_block(b);
+
+            return Ok(slice);
         }
+
+        Err(Ok(free_block))
     }
 
-    fn handle_low_memory(&mut self) {
-        if self.get_on_low_executed_flag() {
-            return;
+    fn try_merge_with_neighbors(&mut self, mut free_block: FreeBlock) -> FreeBlock {
+        if let Some(prev_neighbor) = free_block.prev_neighbor_is_free() {
+            self.remove_free_block(&prev_neighbor);
+
+            free_block = FreeBlock::merge(prev_neighbor, free_block);
+        };
+
+        if let Some(next_neighbor) = free_block.next_neighbor_is_free(self.max_ptr) {
+            self.remove_free_block(&next_neighbor);
+
+            free_block = FreeBlock::merge(free_block, next_neighbor);
         }
 
-        print(
-            format!(
-                "Low on stable memory, triggering {}()...",
-                LOW_ON_MEMORY_HOOK_NAME
-            )
-            .as_str(),
-        );
-
-        spawn(async {
-            call_raw(id(), LOW_ON_MEMORY_HOOK_NAME, &EMPTY_ARGS, 0)
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "Unable to trigger {}(), failing silently...",
-                        LOW_ON_MEMORY_HOOK_NAME
-                    )
-                });
-        });
-
-        self.set_on_low_executed_flag(true);
+        free_block
     }
 
-    fn set_seg_class_head(&mut self, id: SegClassId, head_ptr: u64) {
-        self._write_word(Self::get_seg_class_head_offset(id), head_ptr);
+    fn push_free_block(&mut self, mut free_block: FreeBlock) {
+        free_block = self.try_merge_with_neighbors(free_block);
+
+        free_block.persist();
+
+        let blocks = self
+            .free_blocks
+            .entry(free_block.get_size_bytes())
+            .or_default();
+
+        let idx = match blocks.binary_search(&free_block) {
+            Ok(_) => unreachable!("there can't be two blocks of the same ptr"),
+            Err(idx) => idx,
+        };
+
+        blocks.insert(idx, free_block);
     }
 
-    fn get_seg_class_head_offset(seg_class_id: SegClassId) -> usize {
-        assert!(seg_class_id < SEG_CLASS_PTRS_COUNT as SegClassId);
+    fn pop_free_block(&mut self, size: u64) -> Option<FreeBlock> {
+        let (&actual_size, blocks) = self.free_blocks.range_mut(size..).next()?;
 
-        MAGIC.len() + seg_class_id as usize * PTR_SIZE
-    }
-}
+        let free_block = unsafe { blocks.pop().unwrap_unchecked() };
 
-const EMPTY_ARGS: [u8; 6] = [b'D', b'I', b'D', b'L', 0, 0];
+        if blocks.is_empty() {
+            self.free_blocks.remove(&actual_size);
+        }
 
-fn get_seg_class_id(size: usize) -> SegClassId {
-    let mut log = fast_log2(size);
-
-    if 2usize.pow(log) < size {
-        log += 1;
+        Some(free_block)
     }
 
-    if log > 3 {
-        (log - 4) as SegClassId
-    } else {
-        0
-    }
-}
+    fn remove_free_block(&mut self, block: &FreeBlock) {
+        let blocks = self.free_blocks.get_mut(&block.get_size_bytes()).unwrap();
 
-impl Debug for SSlice<StableMemoryAllocator> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut d = f.debug_struct("StableMemoryAllocator");
+        match blocks.binary_search(block) {
+            Ok(idx) => {
+                blocks.remove(idx);
 
-        d.field("total_allocated", &self.get_allocated_size())
-            .field("total_free", &self.get_free_size())
-            .field("max_allocation_size", &self.get_max_allocation_pages())
-            .field("max_grow_pages", &self.get_max_grow_pages());
-
-        for id in 0..SEG_CLASS_PTRS_COUNT as u32 {
-            let head = unsafe { self.get_seg_class_head(id) };
-            let mut seg_class = vec![];
-
-            match head {
-                None => seg_class.push(String::from("EMPTY")),
-                Some(mut membox) => {
-                    seg_class.push(format!("{:?}", membox));
-
-                    let mut next_ptr = membox.get_next_free_ptr();
-                    while next_ptr != EMPTY_PTR {
-                        membox = unsafe {
-                            SSlice::from_ptr(membox.get_next_free_ptr(), Side::Start).unwrap()
-                        };
-                        seg_class.push(format!("{:?}", membox));
-                        next_ptr = membox.get_next_free_ptr();
-                    }
+                if blocks.is_empty() {
+                    self.free_blocks.remove(&block.get_size_bytes());
                 }
             }
+            Err(_) => unreachable!("Free block not found {:?} {:?}", block, self.free_blocks),
+        };
+    }
 
-            d.field(format!("up to 2**{}", id + 4).as_str(), &seg_class);
+    fn grow(&mut self, mut size: u64) -> Result<FreeBlock, OutOfMemory> {
+        size = FreeBlock::to_total_size(size);
+        let pages_to_grow = ceil_div(size, PAGE_SIZE_BYTES);
+        let available_pages = stable::size_pages();
+
+        if self.max_pages != 0 && available_pages + pages_to_grow > self.max_pages {
+            return Err(OutOfMemory);
         }
 
-        d.finish()
+        if stable::grow(pages_to_grow).is_err() {
+            return Err(OutOfMemory);
+        }
+
+        let new_max_ptr = (available_pages + pages_to_grow) * PAGE_SIZE_BYTES;
+        let it = FreeBlock::new_total_size(self.max_ptr, new_max_ptr - self.max_ptr);
+
+        self.max_ptr = new_max_ptr;
+
+        Ok(it)
+    }
+
+    pub fn debug_validate_free_blocks(&self) {
+        assert!(
+            self.available_size == 0
+                || self.available_size == stable::size_pages() * PAGE_SIZE_BYTES - MIN_PTR
+        );
+
+        let mut total_free_size = 0u64;
+        for blocks in self.free_blocks.values() {
+            for free_block in blocks {
+                free_block.debug_validate();
+
+                total_free_size += free_block.get_total_size_bytes();
+            }
+        }
+
+        assert_eq!(total_free_size, self.free_size);
+    }
+
+    pub fn _free_blocks_count(&self) -> usize {
+        let mut count = 0;
+
+        for blocks in self.free_blocks.values() {
+            for _ in blocks {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    // minimum size is 16 bytes (32 bytes total size)
+    // otherwise size is ceiled to the nearest multiple of 8
+    #[inline]
+    fn pad_size(size: u64) -> u64 {
+        if size < (StablePtr::SIZE * 2) as u64 {
+            return (StablePtr::SIZE * 2) as u64;
+        }
+
+        (size + 7) & !7
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct Free;
-
-impl SSlice<Free> {
-    pub(crate) fn set_prev_free_ptr(&mut self, prev_ptr: u64) {
-        self.assert_allocated(false, None);
-
-        self._write_word(0, prev_ptr);
+impl AsDynSizeBytes for StableMemoryAllocator {
+    #[inline]
+    fn as_dyn_size_bytes(&self) -> Vec<u8> {
+        encode_one(self).unwrap()
     }
 
-    pub(crate) fn get_prev_free_ptr(&self) -> u64 {
-        self.assert_allocated(false, None);
-
-        self._read_word(0)
-    }
-
-    pub(crate) fn set_next_free_ptr(&mut self, next_ptr: u64) {
-        self.assert_allocated(false, None);
-
-        self._write_word(PTR_SIZE, next_ptr);
-    }
-
-    pub(crate) fn get_next_free_ptr(&self) -> u64 {
-        self.assert_allocated(false, None);
-
-        self._read_word(PTR_SIZE)
-    }
-}
-
-impl Debug for SSlice<Free> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let (size, allocated) = self.get_meta();
-
-        let prev_ptr = self.get_next_free_ptr();
-        let prev = if prev_ptr == EMPTY_PTR {
-            String::from("EMPTY")
-        } else {
-            prev_ptr.to_string()
-        };
-
-        let next_ptr = self.get_next_free_ptr();
-        let next = if next_ptr == EMPTY_PTR {
-            String::from("EMPTY")
-        } else {
-            next_ptr.to_string()
-        };
-
-        f.debug_struct("FreeMemBox")
-            .field("ptr", &self.get_ptr())
-            .field("size", &size)
-            .field("is_allocated", &allocated)
-            .field("prev_free", &prev)
-            .field("next_free", &next)
-            .finish()
+    #[inline]
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+        candid_decode_one_allow_trailing(buf).unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::mem::allocator::SEG_CLASS_PTRS_COUNT;
+    use crate::encoding::AsDynSizeBytes;
+    use crate::mem::allocator::StableMemoryAllocator;
+    use crate::primitive::s_box::SBox;
     use crate::utils::mem_context::stable;
-    use crate::{SSlice, StableMemoryAllocator};
+    use crate::SSlice;
+    use rand::rngs::ThreadRng;
+    use rand::seq::SliceRandom;
+    use rand::{thread_rng, Rng};
 
     #[test]
-    fn initialization_works_fine() {
+    fn encoding_works_fine() {
+        let mut sma = StableMemoryAllocator::init(0);
+        sma.allocate(100);
+
+        let buf = sma.as_dyn_size_bytes();
+        let sma_1 = StableMemoryAllocator::from_dyn_size_bytes(&buf);
+
+        assert_eq!(sma, sma_1);
+
+        println!("original {:?}", sma);
+        println!("new {:?}", sma_1);
+    }
+
+    #[test]
+    fn initialization_growing_works_fine() {
         stable::clear();
-        stable::grow(1).expect("Unable to grow");
+        stable::grow(1).unwrap();
 
         unsafe {
-            let sma = SSlice::<StableMemoryAllocator>::init(0);
-            let free_memboxes: Vec<_> = (0..SEG_CLASS_PTRS_COUNT)
-                .filter_map(|it| sma.get_seg_class_head(it as u32))
-                .collect();
+            let mut sma = StableMemoryAllocator::init(0);
+            println!("{:?}", sma);
 
-            assert_eq!(free_memboxes.len(), 1);
-            let free_membox1 = free_memboxes[0].clone();
-            let (size1, allocated1) = free_membox1.get_meta();
+            let slice = sma.allocate(100).unwrap();
+            println!("{:?}", sma);
 
-            let sma = SSlice::<StableMemoryAllocator>::reinit(0).unwrap();
-            let free_memboxes: Vec<_> = (0..SEG_CLASS_PTRS_COUNT)
-                .filter_map(|it| sma.get_seg_class_head(it as u32))
-                .collect();
+            assert_eq!(sma._free_blocks_count(), 1);
 
-            assert_eq!(free_memboxes.len(), 1);
-            let free_membox2 = free_memboxes[0].clone();
-            let (size2, allocated2) = free_membox2.get_meta();
+            sma.store();
 
-            assert_eq!(size1, size2);
-            assert_eq!(allocated1, allocated2);
+            println!("after store {:?}", sma);
+            let mut sma = StableMemoryAllocator::retrieve();
+
+            println!("after retrieve {:?}", sma);
+            assert_eq!(sma._free_blocks_count(), 1);
+
+            sma.debug_validate_free_blocks();
+        }
+    }
+
+    #[test]
+    fn initialization_not_growing_works_fine() {
+        stable::clear();
+
+        unsafe {
+            let mut sma = StableMemoryAllocator::init(0);
+            let slice = sma.allocate(100);
+
+            assert_eq!(sma._free_blocks_count(), 1);
+
+            sma.store();
+
+            let sma = StableMemoryAllocator::retrieve();
+            assert_eq!(sma._free_blocks_count(), 1);
+
+            sma.debug_validate_free_blocks();
+        }
+    }
+
+    #[derive(Debug)]
+    enum Action {
+        Alloc(SSlice),
+        AllocOOM(u64),
+        Dealloc(SSlice),
+        Realloc(SSlice, SSlice),
+        ReallocOOM(u64),
+        CanisterUpgrade,
+        CanisterUpgradeOOM,
+    }
+
+    struct Fuzzer {
+        allocator: StableMemoryAllocator,
+        slices: Vec<SSlice>,
+        log: Vec<Action>,
+        total_allocated_size: u64,
+        rng: ThreadRng,
+    }
+
+    impl Fuzzer {
+        fn new(max_pages: u64) -> Self {
+            Self {
+                allocator: StableMemoryAllocator::init(max_pages),
+                slices: Vec::default(),
+                log: Vec::default(),
+                total_allocated_size: 0,
+                rng: thread_rng(),
+            }
+        }
+
+        fn next(&mut self) {
+            match self.rng.gen_range(0..100) {
+                // ALLOCATE ~ 50%
+                0..=50 => {
+                    let size = self.rng.gen_range(0..(u16::MAX as u64 * 2));
+
+                    if self.allocator.make_sure_can_allocate(size) {
+                        let slice = self.allocator.allocate(size).unwrap();
+
+                        self.log.push(Action::Alloc(slice));
+                        self.slices.push(slice);
+
+                        let mut buf = vec![100u8; slice.get_size_bytes() as usize];
+                        unsafe { crate::mem::write_bytes(slice.offset(0), &buf) };
+
+                        let mut buf2 = vec![0u8; slice.get_size_bytes() as usize];
+                        unsafe { crate::mem::read_bytes(slice.offset(0), &mut buf2) };
+
+                        assert_eq!(buf, buf2);
+
+                        self.total_allocated_size += slice.get_total_size_bytes() as u64;
+                    } else {
+                        assert!(self.allocator.allocate(size).is_err());
+                        self.log.push(Action::AllocOOM(size));
+                    }
+                }
+                // DEALLOCATE ~ 25%
+                51..=75 => {
+                    if self.slices.len() < 2 {
+                        return self.next();
+                    }
+
+                    let slice = self.slices.remove(self.rng.gen_range(0..self.slices.len()));
+                    self.log.push(Action::Dealloc(slice));
+
+                    self.total_allocated_size -= slice.get_total_size_bytes() as u64;
+
+                    self.allocator.deallocate(slice);
+                }
+                // REALLOCATE ~ 25%
+                76..=98 => {
+                    if self.slices.len() < 2 {
+                        return self.next();
+                    }
+
+                    let idx_to_remove = self.rng.gen_range(0..self.slices.len());
+                    let size = self.rng.gen_range(0..(u16::MAX as u64 * 2));
+
+                    let slice = self.slices[idx_to_remove];
+                    if let Ok(slice1) = unsafe { self.allocator.reallocate(slice, size) } {
+                        self.total_allocated_size -= slice.get_total_size_bytes();
+
+                        self.slices.remove(idx_to_remove);
+                        self.total_allocated_size += slice1.get_total_size_bytes();
+
+                        self.log.push(Action::Realloc(slice, slice1));
+                        self.slices.push(slice1);
+
+                        let mut buf = vec![100u8; slice1.get_size_bytes() as usize];
+                        unsafe { crate::mem::write_bytes(slice1.offset(0), &buf) };
+
+                        let mut buf2 = vec![0u8; slice1.get_size_bytes() as usize];
+                        unsafe { crate::mem::read_bytes(slice1.offset(0), &mut buf2) };
+
+                        assert_eq!(buf, buf2);
+                    } else {
+                        self.log.push(Action::ReallocOOM(size));
+                    }
+                }
+                // CANISTER UPGRADE ~1%
+                _ => {
+                    if self.allocator.store().is_ok() {
+                        self.allocator = StableMemoryAllocator::retrieve();
+
+                        self.log.push(Action::CanisterUpgrade);
+                    } else {
+                        self.log.push(Action::CanisterUpgradeOOM);
+                    }
+                }
+            };
+
+            let res = std::panic::catch_unwind(|| {
+                self.allocator.debug_validate_free_blocks();
+                assert_eq!(
+                    self.allocator.get_allocated_size(),
+                    self.total_allocated_size
+                );
+            });
+
+            if res.is_err() {
+                panic!("{:?} {:?}", self.log.last().unwrap(), self.allocator);
+            }
+        }
+    }
+
+    #[test]
+    fn random_works_fine() {
+        stable::clear();
+
+        let mut fuzzer = Fuzzer::new(0);
+
+        for i in 0..10_000 {
+            fuzzer.next();
+        }
+
+        for action in &fuzzer.log {
+            match action {
+                Action::Alloc(_)
+                | Action::Realloc(_, _)
+                | Action::Dealloc(_)
+                | Action::CanisterUpgrade => {}
+                _ => panic!("Fuzzer cant OOM here"),
+            }
+        }
+
+        let mut fuzzer = Fuzzer::new(30);
+
+        for i in 0..10_000 {
+            fuzzer.next();
         }
     }
 
     #[test]
     fn allocation_works_fine() {
         stable::clear();
-        stable::grow(1).expect("Unable to grow");
 
+        let mut sma = StableMemoryAllocator::init(0);
+
+        let mut slices = vec![];
+
+        // try to allocate 1000 MB
+        for i in 0..1024 {
+            let slice = sma.allocate(1024).unwrap();
+
+            assert!(
+                slice.get_size_bytes() >= 1024,
+                "Invalid membox size at {}",
+                i
+            );
+
+            slices.push(slice);
+        }
+
+        assert!(sma.get_allocated_size() >= 1024 * 1024);
+
+        for i in 0..1024 {
+            let mut slice = slices[i];
+            slice = unsafe { sma.reallocate(slice, 2 * 1024).unwrap() };
+
+            assert!(
+                slice.get_size_bytes() >= 2 * 1024,
+                "Invalid membox size at {}",
+                i
+            );
+
+            slices[i] = slice;
+        }
+
+        assert!(sma.get_allocated_size() >= 2 * 1024 * 1024);
+
+        for i in 0..1024 {
+            let slice = slices[i];
+            sma.deallocate(slice);
+        }
+
+        assert_eq!(sma.get_allocated_size(), 0);
+
+        sma.debug_validate_free_blocks();
+    }
+
+    #[test]
+    fn basic_flow_works_fine() {
         unsafe {
-            let mut sma = SSlice::<StableMemoryAllocator>::init(0);
-            sma.set_max_grow_pages(0);
+            stable::clear();
 
-            let mut memboxes = vec![];
+            let mut allocator = StableMemoryAllocator::init(0);
+            allocator.store();
 
-            // try to allocate 1000 MB
-            for i in 0..1024 {
-                let membox = sma.allocate::<u8>(1024);
+            let mut allocator = StableMemoryAllocator::retrieve();
 
-                assert!(membox.get_meta().0 >= 1024, "Invalid membox size at {}", i);
+            println!("before all - {:?}", allocator);
 
-                memboxes.push(membox);
+            let slice1 = allocator.allocate(100).unwrap();
+
+            println!("allocate 100 (1) - {:?}", allocator);
+
+            let slice1 = allocator.reallocate(slice1, 200).unwrap();
+
+            println!("reallocate 100 to 200 (1) - {:?}", allocator);
+
+            let slice2 = allocator.allocate(100).unwrap();
+
+            println!("allocate 100 more (2) - {:?}", allocator);
+
+            let slice3 = allocator.allocate(100).unwrap();
+
+            println!("allocate 100 more (3) - {:?}", allocator);
+
+            allocator.deallocate(slice1);
+
+            println!("deallocate (1) - {:?}", allocator);
+
+            let slice2 = allocator.reallocate(slice2, 200).unwrap();
+
+            println!("reallocate (2) - {:?}", allocator);
+
+            allocator.deallocate(slice3);
+
+            println!("deallocate (3) - {:?}", allocator);
+
+            allocator.deallocate(slice2);
+
+            println!("deallocate (2) - {:?}", allocator);
+
+            allocator.store();
+
+            let mut allocator = StableMemoryAllocator::retrieve();
+
+            let mut slices = Vec::new();
+            for _ in 0..5000 {
+                slices.push(allocator.allocate(100).unwrap());
             }
 
-            assert!(sma.get_allocated_size() >= 1024 * 1024);
+            slices.shuffle(&mut thread_rng());
 
-            for i in 0..1024 {
-                let mut membox = memboxes[i].clone();
-                membox = sma.reallocate(membox, 2 * 1024);
-
-                assert!(
-                    membox.get_meta().0 >= 2 * 1024,
-                    "Invalid membox size at {}",
-                    i
-                );
-
-                memboxes[i] = membox;
+            for slice in slices {
+                allocator.deallocate(slice);
             }
 
-            assert!(sma.get_allocated_size() >= 2 * 1024 * 1024);
-
-            for i in 0..1024 {
-                let membox = memboxes[i].clone();
-                sma.deallocate(membox);
-            }
-
-            assert_eq!(sma.get_allocated_size(), 0);
+            assert_eq!(allocator.get_allocated_size(), 0);
+            allocator.debug_validate_free_blocks();
+            println!("{:?}", allocator);
         }
     }
 }

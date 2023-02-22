@@ -1,8 +1,8 @@
 {
   "canisters": {
-    "stable_token": {
+    "performance_counter": {
       "candid": "./can.did",
-      "package": "stable_token",
+      "package": "performance_counter",
       "type": "rust"
     }
   },

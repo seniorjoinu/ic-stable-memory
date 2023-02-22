@@ -1,10 +1,9 @@
 [package]
-name = "stable_token"
+name = "performance_counter"
 version = "0.1.0"
 edition = "2021"
 
 [profile.release]
-codegen-units = 1
 strip = true
 lto = true
 opt-level = 'z'
@@ -19,4 +18,5 @@ ic-cdk = "0.7.0"
 ic-cdk-macros = "0.6.8"
 serde = "1.0.152"
 candid = "0.8.4"
+ic-certified-map = "0.3.2"
 ic-stable-memory = { path = "../../../ic-stable-memory" }

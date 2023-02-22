@@ -1,0 +1,66 @@
+service : {
+    _a1_standard_vec_push : (nat32) -> (nat64);
+    _a2_stable_vec_push : (nat32) -> (nat64);
+    _a3_stable_log_push : (nat32) -> (nat64);
+
+    _b1_standard_vec_get : (nat32) -> (nat64) query;
+    _b2_stable_vec_get : (nat32) -> (nat64) query;
+    _b3_stable_log_get : (nat32) -> (nat64) query;
+
+    _c1_standard_vec_pop : (nat32) -> (nat64);
+    _c2_stable_vec_pop : (nat32) -> (nat64);
+    _c3_stable_log_pop : (nat32) -> (nat64);
+
+    _d1_standard_vec_insert : (nat32) -> (nat64);
+    _d2_stable_vec_insert : (nat32) -> (nat64);
+
+    _e1_standard_vec_remove : (nat32) -> (nat64);
+    _e2_stable_vec_remove : (nat32) -> (nat64);
+
+    _g1_standard_hash_map_insert : (nat32) -> (nat64);
+    _g2_stable_hash_map_insert : (nat32) -> (nat64);
+
+    _h1_standard_hash_map_get : (nat32) -> (nat64) query;
+    _h2_stable_hash_map_get : (nat32) -> (nat64) query;
+
+    _i1_standard_hash_map_remove : (nat32) -> (nat64);
+    _i2_stable_hash_map_remove : (nat32) -> (nat64);
+
+    _j1_standard_hash_set_insert : (nat32) -> (nat64);
+    _j2_stable_hash_set_insert : (nat32) -> (nat64);
+
+    _k1_standard_hash_set_contains : (nat32) -> (nat64) query;
+    _k2_stable_hash_set_contains : (nat32) -> (nat64) query;
+
+    _l1_standard_hash_set_remove : (nat32) -> (nat64);
+    _l2_stable_hash_set_remove : (nat32) -> (nat64);
+
+    _m1_standard_btree_map_insert : (nat32) -> (nat64);
+    _m2_stable_btree_map_insert : (nat32) -> (nat64);
+
+    _n1_standard_btree_map_get : (nat32) -> (nat64) query;
+    _n2_stable_btree_map_get : (nat32) -> (nat64) query;
+
+    _o1_standard_btree_map_remove : (nat32) -> (nat64);
+    _o2_stable_btree_map_remove : (nat32) -> (nat64);
+
+    _p1_standard_btree_set_insert : (nat32) -> (nat64);
+    _p2_stable_btree_set_insert : (nat32) -> (nat64);
+
+    _q1_standard_btree_set_contains : (nat32) -> (nat64) query;
+    _q2_stable_btree_set_contains : (nat32) -> (nat64) query;
+
+    _r1_standard_btree_set_remove : (nat32) -> (nat64);
+    _r2_stable_btree_set_remove : (nat32) -> (nat64);
+
+    _s1_standard_certified_map_insert : (nat32) -> (nat64);
+    _s2_stable_certified_map_insert : (nat32) -> (nat64);
+    _s3_stable_certified_map_insert_batch : (nat32, nat32) -> (nat64);
+
+    _t1_standard_certified_map_witness : (nat32) -> (nat64) query;
+    _t2_stable_certified_map_witness : (nat32) -> (nat64) query;
+
+    _u1_standard_certified_map_remove : (nat32) -> (nat64);
+    _u2_stable_certified_map_remove : (nat32) -> (nat64);
+    _u3_stable_certified_map_remove_batch : (nat32, nat32) -> (nat64);
+}
