@@ -23,7 +23,7 @@ use num_bigint::{BigInt, BigUint, Sign};
 /// 3. Tuples up to 6 elements, where each element implements [AsFixedSizeBytes]
 /// 4. [Option] of `T`, where `T`: [AsFixedSizeBytes]
 /// 5. IC native types: [candid::Principal], [candid::Nat], [candid::Int]
-pub trait AsFixedSizeBytes: Sized {
+pub trait AsFixedSizeBytes {
     /// Size of self when encoded
     const SIZE: usize;
 
@@ -511,8 +511,11 @@ impl AsFixedSizeBytes for Int {
 ///
 /// You can't implement this trait for any other type than these two.
 pub trait Buffer: private::Sealed {
+    #[doc(hidden)]
     fn new(size: usize) -> Self;
+    #[doc(hidden)]
     fn _deref(&self) -> &[u8];
+    #[doc(hidden)]
     fn _deref_mut(&mut self) -> &mut [u8];
 }
 
