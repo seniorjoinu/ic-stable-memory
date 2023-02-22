@@ -12,7 +12,5 @@ service : {
 
     balance_of : (principal) -> (nat64) query;
     total_supply : () -> (nat64) query;
-    get_history : (nat64, nat64) -> (vec HistoryEntry, nat64) query;
-
-    mem_metrics : () -> (nat64, nat64, nat64) query;
+    get_history : (nat32, nat32) -> (vec HistoryEntry, nat32) query;
 }

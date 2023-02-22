@@ -343,3 +343,99 @@ mod tests {
         assert_eq!(get_allocated_size(), 0);
     }
 }
+
+#[cfg(test)]
+mod readme_test {
+    use candid::{CandidType, Deserialize};
+    use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
+    use ic_stable_memory::collections::SVec;
+    use ic_stable_memory::derive::{CandidAsDynSizeBytes, StableType};
+    use ic_stable_memory::{
+        retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
+        stable_memory_pre_upgrade, store_custom_data, SBox,
+    };
+    use std::cell::RefCell;
+
+    #[derive(CandidType, Deserialize, StableType, CandidAsDynSizeBytes, Debug, Clone)]
+    struct Task {
+        title: String,
+        description: String,
+    }
+
+    type State = SVec<SBox<Task>>;
+
+    thread_local! {
+        static STATE: RefCell<Option<State>> = RefCell::default();
+    }
+
+    #[init]
+    fn init() {
+        stable_memory_init();
+
+        STATE.with(|s| {
+            *s.borrow_mut() = Some(SVec::new());
+        });
+    }
+
+    #[pre_upgrade]
+    fn pre_upgrade() {
+        let state: State = STATE.with(|s| s.borrow_mut().take().unwrap());
+        let boxed_state = SBox::new(state).expect("Out of memory");
+
+        store_custom_data(0, boxed_state);
+
+        stable_memory_pre_upgrade().expect("Out of memory");
+    }
+
+    #[post_upgrade]
+    fn post_upgrade() {
+        stable_memory_post_upgrade();
+
+        let state = retrieve_custom_data::<State>(0).unwrap().into_inner();
+        STATE.with(|s| {
+            *s.borrow_mut() = Some(state);
+        });
+    }
+
+    #[update]
+    fn add_task(task: Task) {
+        STATE.with(|s| {
+            let boxed_task = SBox::new(task).expect("Out of memory");
+            s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .push(boxed_task)
+                .expect("Out of memory");
+        });
+    }
+
+    #[update]
+    fn remove_task(idx: u32) {
+        STATE.with(|s| {
+            s.borrow_mut().as_mut().unwrap().remove(idx as usize);
+        });
+    }
+
+    #[update]
+    fn swap_tasks(idx_1: u32, idx_2: u32) {
+        STATE.with(|s| {
+            s.borrow_mut()
+                .as_mut()
+                .unwrap()
+                .swap(idx_1 as usize, idx_2 as usize);
+        });
+    }
+
+    #[query]
+    fn get_todo_list() -> Vec<Task> {
+        STATE.with(|s| {
+            let mut result = Vec::new();
+
+            for task in s.borrow().as_ref().unwrap().iter() {
+                result.push(task.clone());
+            }
+
+            result
+        })
+    }
+}

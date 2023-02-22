@@ -5,6 +5,21 @@
 
 Allows using canister's stable memory as main memory.
 
+## Features
+* `8` stable data structures:
+  * `SBox` in replacement for `Box`
+  * `SVec` and `SLog` in replacement for `Vec`
+  * `SHashMap` in replacement for `HashMap`
+  * `SHashSet` in replacement for `HashSet`
+  * `SBTreeMap` in replacement for `BTreeMap`
+  * `SBTreeSet` in replacement for `BTreeSet`
+  * `SCertifiedBTreeMap` in replacement for Dfinity's `RBTree`
+* Enforced Rust's borrower rules: 
+  * data structures drop automatically when leaving the scope
+  * data structures own their inner values, allowing by-reference access
+* The API allows programmatic reaction to `OutOfMemory` errors, while keeping it almost identical to `std`
+* Complete toolset to build your own stable data structure
+
 ## Installation
 ```toml
 # cargo.toml
@@ -13,235 +28,120 @@ Allows using canister's stable memory as main memory.
 ic-stable-memory = "0.4"
 ```
 
-## Documentation
-1. [Complete API documentation]
-
 ## Quick example
-Check out [the example project](./examples/token) to find out more.
+Let's build a `Todo` app, since they're very popular :)
 
-Let's imagine 
+```rust
+use candid::{CandidType, Deserialize};
+use ic_cdk_macros::{init, post_upgrade, pre_upgrade, query, update};
+use ic_stable_memory::collections::SVec;
+use ic_stable_memory::derive::{CandidAsDynSizeBytes, StableType};
+use ic_stable_memory::{
+  retrieve_custom_data, stable_memory_init, stable_memory_post_upgrade,
+  stable_memory_pre_upgrade, store_custom_data, SBox,
+};
+use std::cell::RefCell;
 
-## Collections
+#[derive(CandidType, Deserialize, StableType, CandidAsDynSizeBytes, Debug, Clone)]
+struct Task {
+  title: String,
+  description: String,
+}
 
-### SVec
-[source code](./src/collections/vec_direct)
+// If you can implement AsFixedSizeBytes for your data type, 
+// you can store it directly, without wrapping in SBox
+type State = SVec<SBox<Task>>;
 
-// TODO: API
+thread_local! {
+  static STATE: RefCell<Option<State>> = RefCell::default();
+}
 
-### SHashMap
-[source code](./src/collections/hash_map_indirect)
+#[init]
+fn init() {
+  stable_memory_init();
 
-// TODO: API
+  STATE.with(|s| {
+    *s.borrow_mut() = Some(SVec::new());
+  });
+}
 
-### SHashSet
-[source code](./src/collections/hash_set.rs)
+#[pre_upgrade]
+fn pre_upgrade() {
+  let state: State = STATE.with(|s| s.borrow_mut().take().unwrap());
+  let boxed_state = SBox::new(state).expect("Out of memory");
 
-// TODO: API
+  store_custom_data(0, boxed_state);
 
-### SBinaryHeap
-[source code](./src/collections/binary_heap_indirect)
+  stable_memory_pre_upgrade().expect("Out of memory");
+}
 
-// TODO: API
+#[post_upgrade]
+fn post_upgrade() {
+  stable_memory_post_upgrade();
 
-### SBTreeMap
-[source code](./src/collections/btree_map.rs)
+  let state = retrieve_custom_data::<State>(0).unwrap().into_inner();
+  STATE.with(|s| {
+    *s.borrow_mut() = Some(state);
+  });
+}
 
-// TODO: API
+#[update]
+fn add_task(task: Task) {
+  STATE.with(|s| {
+    let boxed_task = SBox::new(task).expect("Out of memory");
+    s.borrow_mut()
+            .as_mut()
+            .unwrap()
+            .push(boxed_task)
+            .expect("Out of memory");
+  });
+}
 
-### SBTreeSet
-[source code](./src/collections/btree_set.rs)
+#[update]
+fn remove_task(idx: u32) {
+  STATE.with(|s| {
+    s.borrow_mut().as_mut().unwrap().remove(idx as usize);
+  });
+}
 
-// TODO: API
+#[update]
+fn swap_tasks(idx_1: u32, idx_2: u32) {
+  STATE.with(|s| {
+    s.borrow_mut()
+            .as_mut()
+            .unwrap()
+            .swap(idx_1 as usize, idx_2 as usize);
+  });
+}
 
-### SCertifiedBTreeMap
-[source code](./src/collections/certified_btree_map.rs)
+#[query]
+fn get_todo_list() -> Vec<Task> {
+  STATE.with(|s| {
+    let mut result = Vec::new();
 
-// TODO: API
+    for task in s.borrow().as_ref().unwrap().iter() {
+      result.push(task.clone());
+    }
 
-## Benchmarks
-These benchmarks are run on my machine against testing environment, where I emulate stable memory with a huge vector.
-Performance difference in real canister should be less significant because of real stable memory.
-
-### Vec
-```
-"Classic vec push" 1000000 iterations: 46 ms
-"Stable vec push" 1000000 iterations: 212 ms (x4.6 slower)
-
-"Classic vec search" 1000000 iterations: 102 ms
-"Stable vec search" 1000000 iterations: 151 ms (x1.4 slower)
-
-"Classic vec pop" 1000000 iterations: 48 ms
-"Stable vec pop" 1000000 iterations: 148 ms (x3 slower)
-
-"Classic vec insert" 100000 iterations: 1068 ms
-"Stable vec insert" 100000 iterations: 3779 ms (x3.5 slower)
-
-"Classic vec remove" 100000 iterations: 1183 ms
-"Stable vec remove" 100000 iterations: 3739 ms (x3.1 slower)
-```
-
-### Log
-```
-"Classic vec push" 1000000 iterations: 50 ms 
-"Stable vec push" 1000000 iterations: 248 ms (x5 slower)
-
-"Classic vec search" 1000000 iterations: 63 ms
-"Stable vec search" 1000000 iterations: 2372 ms 
-
-"Classic vec pop" 1000000 iterations: 52 ms
-"Stable vec pop" 1000000 iterations: 156 ms
-```
-
-### Binary heap
-```
-"Classic binary heap push" 1000000 iterations: 461 ms
-"Stable binary heap push" 1000000 iterations: 11668 ms (x25 slower)
-
-"Classic binary heap peek" 1000000 iterations: 62 ms
-"Stable binary heap peek" 1000000 iterations: 144 ms (x2.3 slower)
-
-"Classic binary heap pop" 1000000 iterations: 715 ms
-"Stable binary heap pop" 1000000 iterations: 16524 ms (x23 slower)
-```
-
-### Hash map
-```
-"Classic hash map insert" 1000000 iterations: 1519 ms
-"Stable hash map insert" 1000000 iterations: 2689 ms (x1.7 slower)
-
-"Classic hash map search" 1000000 iterations: 748 ms
-"Stable hash map search" 1000000 iterations: 1120 ms (x1.5 slower)
-
-"Classic hash map remove" 1000000 iterations: 938 ms
-"Stable hash map remove" 1000000 iterations: 2095 ms (x2.2 slower)
-```
-
-### Hash set
-```
-"Classic hash set insert" 1000000 iterations: 1214 ms
-"Stable hash set insert" 1000000 iterations: 3210 ms (x2.6 slower)
-
-"Classic hash set search" 1000000 iterations: 701 ms
-"Stable hash set search" 1000000 iterations: 823 ms (x1.3 slower)
-
-"Classic hash set remove" 1000000 iterations: 924 ms
-"Stable hash set remove" 1000000 iterations: 1933 ms (x2.0 slower)
+    result
+  })
+}
 ```
 
-### BTree map
-```
-"Classic btree map insert" 1000000 iterations: 3413 ms
-"Stable btree map insert" 1000000 iterations: 7848 ms (x2.3 slower)
+## Documentation
+1. [Complete API documentation](https://docs.rs/ic-stable-memory/)
+2. [How to migrate from standard data structures](./docs/migration.md)
+3. [How to handle OutOfMemory errors](./docs/out-of-memory-error-handling.md)
+4. [How to ensure data upgradability](./docs/upgradeability.md)
+5. [How to implement encoding traits](./docs/encoding.md)
+6. [Performance tips](./docs/perfomance.md)
+7. [Benchmarks](./docs/benchmarks.md)
+8. [How to build your own stable data structure](./docs/user-defined-data-structures.md)
 
-"Classic btree map search" 1000000 iterations: 2053 ms
-"Stable btree map search" 1000000 iterations: 7128 ms (x3.4 slower)
-
-"Classic btree map remove" 1000000 iterations: 2216 ms
-"Stable btree map remove" 1000000 iterations: 7986 ms (x3.6 slower)
-```
-
-### BTree set
-```
-"Classic btree set insert" 1000000 iterations: 3654 ms
-"Stable btree set insert" 1000000 iterations: 9015 ms (x2.5 slower)
-
-"Classic btree set search" 1000000 iterations: 2160 ms
-"Stable btree set search" 1000000 iterations: 5111 ms (x2.3 slower)
-
-"Classic btree set remove" 1000000 iterations: 2012 ms
-"Stable btree set remove" 1000000 iterations: 7850 ms (x3.9 slower)
-```
-
-### Certified BTree map
-```
-"RBTree map insert" 10000 iterations: 10101 ms
-"Stable certified btree map insert" 10000 iterations: 13798 ms (x1.3 slower)
-
-"RBTree map search" 10000 iterations: 4 ms
-"Stable certified btree map search" 10000 iterations: 34 ms (x8.5 slower)
-
-"RBTree map witness" 10000 iterations: 4072 ms
-"Stable certified btree map witness" 10000 iterations: 3184 ms (x1.2 faster)
-
-"RBTree map remove" 10000 iterations: 12327 ms
-"Stable certified btree map remove" 10000 iterations: 7915 ms (x1.5 faster)
-```
-
-## Performance counter canister
-There is also a performance counter canister that I use to benchmark this library.
-It can measure the amount of computations being performed during various operations over collections.
-
-### Vec
-```
-› _a1_standard_vec_push(1000000) -> (59104497)
-› _a2_stable_vec_push(1000000) -> (139668340) - x2.3 slower
-
-› _b1_standard_vec_get(1000000) -> (28000204)
-› _b2_stable_vec_get(1000000) -> (101000204) - x3.6 slower
-
-› _c1_standard_vec_pop(1000000) -> (16000202)
-› _c2_stable_vec_pop(1000000) -> (101000202) - x6.3 slower
-```
-
-### Binary heap
-```
-› _d1_standard_binary_heap_push(10000) -> (3950685)
-› _d2_stable_binary_heap_push(10000) -> (47509416) - x12 slower
-
-› _e1_standard_binary_heap_peek(10000) -> (180202)
-› _e2_stable_binary_heap_peek(10000) -> (990202) - x5.5 slower
-
-› _f1_standard_binary_heap_pop(10000) -> (5470367)
-› _f2_stable_binary_heap_pop(10000) -> (68703887) - x12 slower
-```
-
-### Hash map
-```
-› _g1_standard_hash_map_insert(100000) -> (118009382)
-› _g2_stable_hash_map_insert(100000) -> (296932746) - x2.5 slower
-
-› _h1_standard_hash_map_get(100000) -> (46628530)
-› _h2_stable_hash_map_get(100000) -> (75102338) - x1.6 slower
-
-› _i1_standard_hash_map_remove(100000) -> (55432310)
-› _i2_stable_hash_map_remove(100000) -> (82431271) - x1.4 slower
-```
-
-### Hash set
-```
-› _j1_standard_hash_set_insert(100000) -> (119107220)
-› _j2_stable_hash_set_insert(100000) -> (280255730) - x2.3 slower
-
-› _k1_standard_hash_set_contains(100000) -> (51403728)
-› _k2_stable_hash_set_contains(100000) -> (67146485) - x1.3 slower
-
-› _l1_standard_hash_set_remove(100000) -> (55424480)
-› _l2_stable_hash_set_remove(100000) -> (81031271) - x1.4 slower
-```
-
-### BTree map
-```
-› _m1_standard_btree_map_insert(10000) -> (16868602)
-› _m2_stable_btree_map_insert(10000) -> (399357425) - x23 slower
-
-› _n1_standard_btree_map_get(10000) -> (7040037)
-› _n2_stable_btree_map_get(10000) -> (101096721) - x14 slower
-
-› _o1_standard_btree_map_remove(10000) -> (15155643)
-› _o2_stable_btree_map_remove(10000) -> (333109461) - x21 slower
-```
-
-### BTree set
-```
-› _p1_standard_btree_set_insert(10000) -> (15914762)
-› _p2_stable_btree_set_insert(10000) -> (495462730) - x31 slower
-
-› _q1_standard_btree_set_contains(10000) -> (6830037)
-› _q2_stable_btree_set_contains(10000) -> (99122577) - x14 slower
-
-› _r1_standard_btree_set_remove(10000) -> (10650814)
-› _r2_stable_btree_set_remove(10000) -> (317533303) - x29 slower
-```
+## Example projects
+* [Simple token canister](./examples/token)
+* [Performance counter canister](./examples/performance_counter)
+* [Stable certified assets canister](https://github.com/seniorjoinu/ic-stable-certified-assets)
 
 ## Contribution
 This is an emerging software, so any help is greatly appreciated.
