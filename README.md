@@ -128,14 +128,16 @@ fn post_upgrade() {
 ```
 
 ## Documentation
+0. [Quick start](./docs/quick-start.md)
 1. [Complete API documentation](https://docs.rs/ic-stable-memory/)
-2. [How to migrate from standard data structures](./docs/migration.md)
-3. [How to handle OutOfMemory errors](./docs/out-of-memory-error-handling.md)
+2. [How to migrate a running canister](./docs/migration.md)
+3. [How to handle `OutOfMemory` errors](./docs/out-of-memory-error-handling.md)
 4. [How to ensure data upgradability](./docs/upgradeability.md)
 5. [How to implement encoding traits](./docs/encoding.md)
-6. [How to save cycles](./docs/perfomance.md)
+6. [How to save cycles and make it faster](./docs/perfomance.md)
 7. [Benchmarks](./docs/benchmarks.md)
 8. [How to build your own stable data structure](./docs/user-defined-data-structures.md)
+9. [What's under the hood](./docs/architecture.md)
 
 ## Example projects
 * [Simple token canister](./examples/token)
