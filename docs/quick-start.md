@@ -31,7 +31,7 @@ struct State {
 }
 ```
 
-You can read more about fixed-size and dynamic-size types in `ic-stable-memory` [in this article](./encoding.md).
+More on this in section #4 of this document.
 
 #### 2. Handling `OutOfMemory` errors
 In `ic-stable-memory` you have an ability to react to `OutOfMemory` errors (raised when there is no more stable memory
@@ -95,7 +95,33 @@ fn post_upgrade() {
 }
 ```
 
-#### 4. The rest is the same
+#### 4. `StablyType`, `AsFixedSizeBytes` and `AsDynSizeBytes` traits
+The last thing that is different is that in order to put something into stable memory, 
+this something should implement at least two of these three traits. All your datatypes should
+always implement `StableType` trait - this is mandatory. You can use `derive::StableType` derive
+macro to make your life easier. Then you have to choose an encoding trait to also implement for your
+data: `AsFixedSizeBytes` or `AsDynSizeBytes`. As a beginner, you might want to choose the second one,
+because it is easier to implement it. For example, you can use `candid` to make all the hard work for you:
+```rust
+#[derive(CandidType, Deserialize, StableType, CandidAsDynSizeBytes)]
+struct MyStruct {
+    // ...
+}
+```
+In this example, `derive::CandidAsDynSizeBytes` derive macro is used to implement `AsDynSizeBytes` trait for
+a type that already implements `CandidType`. You can do the same thing in your code. But this solution has
+downsides:
+* you will have to use `SBox` smart-pointer to store this value (as shown in section #1);
+* your performance will suffer.
+
+So, in order to overcome these downsides, you want to implement `AsFixedSizeBytes` for your datatype. When you implement
+this trait for your datatype, you don't need to wrap values of this type with `SBox` anymore and you have a huge gain in
+performance. This is not always possible, but the main rule of thumb is: **if you can implement `Copy` for your type, 
+then you should definitely implement `AsFixedSizeBytes` for it**. More about how to implement these traits can be 
+found [here](./encoding.md). 
+
+More about performance tricks is in [this article](./perfomance.md).
+
+#### 5. The rest is the same
 Everything else works in exactly the same way as with `std` data structures. There is nothing you should manually allocate
-or deallocate. Nothing you have to manually serialize or make into certain byte-size. Yes, you have to implement a couple
-of traits for your data (more on this [here](./encoding.md)), but you can use derive macros for most of the cases.
+or deallocate memory. Nothing you have to manually serialize or make into certain byte-size.
