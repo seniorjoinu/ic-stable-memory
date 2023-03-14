@@ -37,3 +37,19 @@ impl<'a, T: StableType + AsFixedSizeBytes> Iterator for SVecIter<'a, T> {
         unsafe { Some(SRef::new(ptr)) }
     }
 }
+
+impl <A: StableType + AsFixedSizeBytes> FromIterator<A> for SVec<A>{
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut new_svec = SVec::new_with_capacity(lower).expect("Failed to allocate memory");
+        for i in iter{
+            let result = new_svec.push(i);
+            match result{
+                Ok(_) => continue,
+                Err(_) => panic!("Failed to push element")
+            }
+        }
+        new_svec
+    }
+}
