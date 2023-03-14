@@ -42,12 +42,15 @@ impl <A: StableType + AsFixedSizeBytes> FromIterator<A> for SVec<A>{
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let (lower, _) = iter.size_hint();
-        let mut new_svec = SVec::new_with_capacity(lower).expect("Failed to allocate memory");
+        let mut new_svec = match SVec::new_with_capacity(lower){
+            Ok(new_svec) => new_svec,
+            Err(_) => return SVec::new()
+        };
         for i in iter{
             let result = new_svec.push(i);
             match result{
                 Ok(_) => continue,
-                Err(_) => panic!("Failed to push element")
+                Err(_) => return new_svec
             }
         }
         new_svec
