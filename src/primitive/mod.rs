@@ -178,6 +178,9 @@ impl StableType for isize {}
 impl StableType for f32 {}
 impl StableType for f64 {}
 impl StableType for char {}
+impl StableType for Principal {}
+impl StableType for Nat {}
+impl StableType for Int {}
 
 impl<const N: usize> StableType for [(); N] {}
 impl<const N: usize> StableType for [bool; N] {}
@@ -196,10 +199,10 @@ impl<const N: usize> StableType for [isize; N] {}
 impl<const N: usize> StableType for [f32; N] {}
 impl<const N: usize> StableType for [f64; N] {}
 impl<const N: usize> StableType for [char; N] {}
-
-impl StableType for Principal {}
-impl StableType for Nat {}
-impl StableType for Int {}
+impl<const N: usize> StableType for [String; N] {}
+impl<const N: usize> StableType for [Principal; N] {}
+impl<const N: usize> StableType for [Nat; N] {}
+impl<const N: usize> StableType for [Int; N] {}
 
 impl StableType for ByteBuf {}
 impl<T: StableType> StableType for Option<T> {
@@ -215,6 +218,113 @@ impl<T: StableType> StableType for Option<T> {
         if let Some(it) = self {
             it.stable_drop_flag_off();
         }
+    }
+}
+impl<const N: usize> StableType for [ByteBuf; N] {}
+
+impl<A: StableType> StableType for (A,) {
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+    }
+}
+
+impl<A: StableType, B: StableType> StableType for (A, B) {
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+        self.1.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+        self.1.stable_drop_flag_off();
+    }
+}
+
+impl<A: StableType, B: StableType, C: StableType> StableType for (A, B, C) {
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+        self.1.stable_drop_flag_on();
+        self.2.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+        self.1.stable_drop_flag_off();
+        self.2.stable_drop_flag_off();
+    }
+}
+
+impl<A: StableType, B: StableType, C: StableType, D: StableType> StableType for (A, B, C, D) {
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+        self.1.stable_drop_flag_on();
+        self.2.stable_drop_flag_on();
+        self.3.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+        self.1.stable_drop_flag_off();
+        self.2.stable_drop_flag_off();
+        self.3.stable_drop_flag_off();
+    }
+}
+
+impl<A: StableType, B: StableType, C: StableType, D: StableType, E: StableType> StableType
+    for (A, B, C, D, E)
+{
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+        self.1.stable_drop_flag_on();
+        self.2.stable_drop_flag_on();
+        self.3.stable_drop_flag_on();
+        self.4.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+        self.1.stable_drop_flag_off();
+        self.2.stable_drop_flag_off();
+        self.3.stable_drop_flag_off();
+        self.4.stable_drop_flag_off();
+    }
+}
+
+impl<A: StableType, B: StableType, C: StableType, D: StableType, E: StableType, F: StableType>
+    StableType for (A, B, C, D, E, F)
+{
+    #[inline]
+    unsafe fn stable_drop_flag_on(&mut self) {
+        self.0.stable_drop_flag_on();
+        self.1.stable_drop_flag_on();
+        self.2.stable_drop_flag_on();
+        self.3.stable_drop_flag_on();
+        self.4.stable_drop_flag_on();
+        self.5.stable_drop_flag_on();
+    }
+
+    #[inline]
+    unsafe fn stable_drop_flag_off(&mut self) {
+        self.0.stable_drop_flag_off();
+        self.1.stable_drop_flag_off();
+        self.2.stable_drop_flag_off();
+        self.3.stable_drop_flag_off();
+        self.4.stable_drop_flag_off();
+        self.5.stable_drop_flag_off();
     }
 }
 
@@ -236,10 +346,11 @@ impl StableType for Vec<f64> {}
 impl StableType for Vec<()> {}
 impl StableType for Vec<bool> {}
 impl StableType for Vec<char> {}
-
+impl StableType for Vec<String> {}
 impl StableType for Vec<Principal> {}
 impl StableType for Vec<Nat> {}
 impl StableType for Vec<Int> {}
+impl StableType for Vec<ByteBuf> {}
 
 impl StableType for HashSet<u8> {}
 impl StableType for HashSet<i8> {}
@@ -258,6 +369,11 @@ impl StableType for HashSet<f64> {}
 impl StableType for HashSet<()> {}
 impl StableType for HashSet<bool> {}
 impl StableType for HashSet<char> {}
+impl StableType for HashSet<String> {}
+impl StableType for HashSet<Principal> {}
+impl StableType for HashSet<Nat> {}
+impl StableType for HashSet<Int> {}
+impl StableType for HashSet<ByteBuf> {}
 
 impl StableType for BTreeSet<u8> {}
 impl StableType for BTreeSet<i8> {}
@@ -276,3 +392,8 @@ impl StableType for BTreeSet<f64> {}
 impl StableType for BTreeSet<()> {}
 impl StableType for BTreeSet<bool> {}
 impl StableType for BTreeSet<char> {}
+impl StableType for BTreeSet<String> {}
+impl StableType for BTreeSet<Principal> {}
+impl StableType for BTreeSet<Nat> {}
+impl StableType for BTreeSet<Int> {}
+impl StableType for BTreeSet<ByteBuf> {}
