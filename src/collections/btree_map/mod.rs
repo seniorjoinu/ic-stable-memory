@@ -1925,10 +1925,14 @@ mod tests {
                 assert_eq!(i, *k);
                 assert_eq!(i, *v);
 
+                print!("({:?}, {:?}), ", *k, *v);
+
                 i += 1;
             }
 
-            assert_eq!(i, 199);
+            println!();
+
+            assert_eq!(i, 200);
         }
 
         _debug_validate_allocator();

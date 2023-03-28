@@ -32,10 +32,7 @@ impl<'a, K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeByte
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(node) = &self.node {
-            let k = node.get_key(self.node_idx);
-            let v = node.get_value(self.node_idx);
-
-            if self.node_idx == self.node_len - 1 {
+            if self.node_idx == self.node_len {
                 let next_ptr = u64::from_fixed_size_bytes(&node.read_next_ptr_buf());
 
                 if next_ptr == 0 {
@@ -48,11 +45,16 @@ impl<'a, K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeByte
                 self.node_idx = 0;
                 self.node_len = len;
                 self.node = Some(next);
-            } else {
-                self.node_idx += 1;
-            }
 
-            Some((k, v))
+                self.next()
+            } else {
+                let k = node.get_key(self.node_idx);
+                let v = node.get_value(self.node_idx);
+
+                self.node_idx += 1;
+
+                Some((k, v))
+            }
         } else {
             let mut node = unsafe { self.root.as_ref()?.copy() };
             let leaf = loop {
