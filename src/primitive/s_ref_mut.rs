@@ -1,5 +1,7 @@
 use crate::encoding::AsFixedSizeBytes;
 use crate::primitive::StableType;
+use candid::types::{Serializer, Type};
+use candid::CandidType;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -54,9 +56,11 @@ impl<'o, T: StableType + AsFixedSizeBytes> Deref for SRefMut<'o, T> {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { self.read() };
+        unsafe {
+            self.read();
 
-        unsafe { (*self.inner.get()).as_ref().unwrap() }
+            (*self.inner.get()).as_ref().unwrap()
+        }
     }
 }
 
@@ -73,5 +77,27 @@ impl<'o, T: StableType + AsFixedSizeBytes> Drop for SRefMut<'o, T> {
     #[inline]
     fn drop(&mut self) {
         unsafe { self.repersist() };
+    }
+}
+
+impl<'o, T: StableType + AsFixedSizeBytes + CandidType> CandidType for SRefMut<'o, T> {
+    #[inline]
+    fn _ty() -> Type {
+        T::_ty()
+    }
+
+    #[inline]
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        unsafe {
+            self.read();
+
+            (*self.inner.get())
+                .as_ref()
+                .unwrap()
+                .idl_serialize(serializer)
+        }
     }
 }

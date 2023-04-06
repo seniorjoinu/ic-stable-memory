@@ -40,7 +40,10 @@ pub use crate::utils::mem_context::{stable, OutOfMemory, PAGE_SIZE_BYTES};
 pub use encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 pub use primitive::s_box::SBox;
 pub use primitive::StableType;
-pub use utils::certification::{fork, fork_hash, leaf, leaf_hash, AsHashTree, AsHashableBytes};
+pub use utils::certification::{
+    empty, empty_hash, fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, AsHashTree,
+    AsHashableBytes,
+};
 
 thread_local! {
     static STABLE_MEMORY_ALLOCATOR: RefCell<Option<StableMemoryAllocator>> = RefCell::new(None);

@@ -1,3 +1,4 @@
+use candid::{encode_one, CandidType};
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -310,6 +311,16 @@ pub trait AsHashTree {
 
     /// Returns a [HashTree] of this value. Must be equivalent to [AsHashTree::root_hash].
     fn hash_tree(&self) -> HashTree;
+}
+
+impl AsHashTree for () {
+    fn root_hash(&self) -> Hash {
+        empty_hash()
+    }
+
+    fn hash_tree(&self) -> HashTree {
+        empty()
+    }
 }
 
 #[cfg(test)]

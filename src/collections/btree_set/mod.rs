@@ -1,6 +1,7 @@
 use crate::collections::btree_map::SBTreeMap;
 use crate::collections::btree_set::iter::SBTreeSetIter;
 use crate::encoding::AsFixedSizeBytes;
+use crate::primitive::s_ref::SRef;
 use crate::primitive::StableType;
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
@@ -68,6 +69,12 @@ impl<T: Ord + StableType + AsFixedSizeBytes> SBTreeSet<T> {
         Q: Ord + ?Sized,
     {
         self.map.contains_key(value)
+    }
+
+    /// See [SBTreeMap::get_random_key]
+    #[inline]
+    pub fn get_random(&self, seed: u32) -> Option<SRef<T>> {
+        self.map.get_random_key(seed)
     }
 
     /// See [SBTreeMap::iter]

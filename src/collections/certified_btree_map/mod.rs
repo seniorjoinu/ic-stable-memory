@@ -187,7 +187,7 @@ pub struct SCertifiedBTreeMap<
     K: StableType + AsFixedSizeBytes + Ord + AsHashableBytes,
     V: StableType + AsFixedSizeBytes + AsHashTree,
 > {
-    inner: SBTreeMap<K, V>,
+    pub(crate) inner: SBTreeMap<K, V>,
     modified: LeveledList,
     uncommited: bool,
 }
@@ -293,6 +293,12 @@ impl<
         self.inner.get(key)
     }
 
+    /// See [SBTreeMap::get]
+    #[inline]
+    pub fn get_random_key(&self, seed: u32) -> Option<SRef<K>> {
+        self.inner.get_random_key(seed)
+    }
+
     /// Allows mutation of the value stored by the provided key, accepting a lambda to perform it
     ///
     /// This method recomputes the underlying Merkle tree, if the key-value pair is found
@@ -341,18 +347,6 @@ impl<
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<'_, K, V> {
         self.inner.iter()
-    }
-
-    /// See [SBTreeMap::first]
-    #[inline]
-    pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
-        self.inner.first()
-    }
-
-    /// See [SBTreeMap::last]
-    #[inline]
-    pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
-        self.inner.last()
     }
 
     /// Commits all `uncommited` changes to this data structure, recalculating the underlying Merkle
@@ -520,8 +514,8 @@ impl<
     fn hash_tree(&self) -> HashTree {
         assert!(!self.uncommited);
 
-        let e1 = self.inner.first();
-        let e2 = self.inner.last();
+        let e1 = self.inner.iter().next();
+        let e2 = self.inner.iter().rev().next();
 
         match (e1, e2) {
             (None, None) => HashTree::Empty,

@@ -3,6 +3,9 @@ use crate::mem::s_slice::SSlice;
 use crate::primitive::StableType;
 use crate::utils::certification::{AsHashTree, AsHashableBytes, HashTree};
 use crate::{allocate, deallocate, reallocate, OutOfMemory};
+use candid::types::{Serializer, Type, TypeId};
+use candid::CandidType;
+use serde::{Deserialize, Deserializer};
 use std::borrow::Borrow;
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
@@ -297,6 +300,27 @@ impl<T: AsHashTree + AsDynSizeBytes + StableType> AsHashTree for SBox<T> {
     }
 }
 
+impl<T: CandidType + AsDynSizeBytes + StableType> CandidType for SBox<T> {
+    #[inline]
+    fn _ty() -> Type {
+        T::_ty()
+    }
+
+    #[inline]
+    fn idl_serialize<S>(&self, serializer: S) -> Result<(), S::Error>
+    where
+        S: Serializer,
+    {
+        unsafe {
+            self.lazy_read(false);
+            (*self.inner.get())
+                .as_ref()
+                .unwrap()
+                .idl_serialize(serializer)
+        }
+    }
+}
+
 impl<T: PartialEq + AsDynSizeBytes + StableType> PartialEq for SBox<T> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -392,6 +416,7 @@ mod tests {
         _debug_validate_allocator, get_allocated_size, retrieve_custom_data, stable,
         stable_memory_init, store_custom_data,
     };
+    use candid::encode_one;
     use std::cmp::Ordering;
     use std::ops::Deref;
 
@@ -490,5 +515,18 @@ mod tests {
 
         _debug_validate_allocator();
         assert_eq!(get_allocated_size(), 0);
+    }
+
+    #[test]
+    fn serialization_works_fine() {
+        stable::clear();
+        stable_memory_init();
+
+        {
+            let b = SBox::new(String::from("test-test")).unwrap();
+            let bytes = encode_one(&b).unwrap();
+
+            assert_eq!(bytes.len(), 17);
+        }
     }
 }

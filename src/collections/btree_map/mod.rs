@@ -8,6 +8,7 @@ use crate::mem::{StablePtr, StablePtrBuf};
 use crate::primitive::s_ref::SRef;
 use crate::primitive::s_ref_mut::SRefMut;
 use crate::primitive::StableType;
+use crate::utils::math::shuffle_bits;
 use crate::{isoprint, make_sure_can_allocate, OutOfMemory, SSlice};
 use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter};
@@ -346,6 +347,42 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
         Some(leaf_node.get_value(idx))
     }
 
+    /// Returns a random key, deterministically deriving the randomness from the seed.
+    /// This function is usefull, when you have a source of real randomness.
+    ///
+    /// If the collection is empty, returns [None].
+    ///
+    /// Same seed on the same collection leads to the same returned key.
+    /// Same seed on a modified collection may still lead to the same returned key.
+    /// You can use [utils::math::shuffle_bits] function to pseudo-randomly generate more seeds.
+    pub fn get_random_key(&self, mut seed: u32) -> Option<SRef<K>> {
+        if self.is_empty() {
+            return None;
+        }
+
+        let mut node = self.get_root()?;
+
+        loop {
+            match node {
+                BTreeNode::Internal(i) => {
+                    let len = i.read_len();
+                    let idx = seed as usize % (len + 1);
+                    let child_ptr = u64::from_fixed_size_bytes(&i.read_child_ptr_buf(idx));
+
+                    seed = shuffle_bits(seed);
+
+                    node = BTreeNode::from_ptr(child_ptr);
+                }
+                BTreeNode::Leaf(l) => {
+                    let len = l.read_len();
+                    let idx = seed as usize % len;
+
+                    break Some(l.get_key(idx));
+                }
+            }
+        }
+    }
+
     /// Returns a mutable reference [SRefMut] to a value stored by the key
     ///
     /// See also [SBTreeMap::get].
@@ -450,6 +487,33 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     ///
     ///     i += 1;
     /// }
+    ///
+    /// assert_eq!(i, 100);
+    /// ```
+    ///
+    /// One can use `.rev()` to get elements in reverse order.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use ic_stable_memory::collections::SBTreeMap;
+    /// # use ic_stable_memory::stable_memory_init;
+    /// # unsafe { ic_stable_memory::mem::clear(); }
+    /// # stable_memory_init();
+    /// let mut map = SBTreeMap::new();
+    ///
+    /// for i in 0..100 {
+    ///     map.insert(i, i).expect("Out of memory");
+    /// }
+    ///
+    /// let mut i = 100;
+    /// for (k, v) in map.iter().rev() {
+    ///     i -= 1;
+    ///
+    ///     assert_eq!(*k, i);
+    ///     assert_eq!(*v, i);
+    /// }
+    ///
+    /// assert_eq!(i, 0);
     /// ```
     #[inline]
     pub fn iter(&self) -> SBTreeMapIter<K, V> {
@@ -466,48 +530,6 @@ impl<K: StableType + AsFixedSizeBytes + Ord, V: StableType + AsFixedSizeBytes> S
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-
-    /// Returns an immutable reference [SRef] to the first key-value pair in order
-    ///
-    /// If the collection is empty, returns [None]
-    pub fn first(&self) -> Option<(SRef<K>, SRef<V>)> {
-        let mut node = self.get_root()?;
-
-        loop {
-            match node {
-                BTreeNode::Internal(n) => {
-                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr_buf(0));
-                    node = BTreeNode::from_ptr(ptr);
-                }
-                BTreeNode::Leaf(n) => {
-                    return Some((n.get_key(0), n.get_value(0)));
-                }
-            }
-        }
-    }
-
-    /// Returns a mutable reference [SRefMut] to the first key-value pair in order
-    ///
-    /// If the collection is empty, returns [None]
-    pub fn last(&self) -> Option<(SRef<K>, SRef<V>)> {
-        let mut node = self.get_root()?;
-
-        loop {
-            match node {
-                BTreeNode::Internal(n) => {
-                    let len = n.read_len();
-
-                    let ptr = u64::from_fixed_size_bytes(&n.read_child_ptr_buf(len));
-                    node = BTreeNode::from_ptr(ptr);
-                }
-                BTreeNode::Leaf(n) => {
-                    let len = n.read_len();
-
-                    return Some((n.get_key(len - 1), n.get_value(len - 1)));
-                }
-            }
-        }
     }
 
     /// Removes all key-value pairs from this collection, releasing all occupied stable memory
@@ -1720,8 +1742,10 @@ impl LeveledList {
         match self {
             LeveledList::None => {}
             LeveledList::Some((v, _)) => {
-                if let Ok(idx) = v[level].binary_search(&ptr) {
-                    v[level].remove(idx);
+                if let Some(level_list) = v.get_mut(level) {
+                    if let Ok(idx) = level_list.binary_search(&ptr) {
+                        level_list.remove(idx);
+                    }
                 }
             }
         }
@@ -1731,7 +1755,8 @@ impl LeveledList {
         match self {
             LeveledList::None => unreachable!(),
             LeveledList::Some((v, max_level)) => {
-                let mut ptr = v[*max_level].pop();
+                let level_list = v.get_mut(*max_level)?;
+                let mut ptr = level_list.pop();
 
                 while ptr.is_none() {
                     if *max_level == 0 {
@@ -1925,10 +1950,14 @@ mod tests {
                 assert_eq!(i, *k);
                 assert_eq!(i, *v);
 
+                print!("({:?}, {:?}), ", *k, *v);
+
                 i += 1;
             }
 
-            assert_eq!(i, 199);
+            println!();
+
+            assert_eq!(i, 200);
         }
 
         _debug_validate_allocator();
@@ -2061,6 +2090,16 @@ mod tests {
             _debug_validate_allocator();
             assert_eq!(self.map().len() as usize, self.example.len());
 
+            // check random key
+            let seed: u32 = self.rng.gen();
+            let rand_key = self.map.as_ref().unwrap().get_random_key(seed);
+            if self.map.as_ref().unwrap().is_empty() {
+                assert!(rand_key.is_none());
+            } else {
+                assert!(rand_key.is_some());
+            }
+
+            // check consistency
             for key in self.keys.clone() {
                 let contains = self.map().contains_key(&key);
                 assert!(contains);
