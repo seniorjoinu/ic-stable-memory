@@ -13,6 +13,7 @@ Allows using canister's stable memory as main memory.
   * `SBTreeMap` in replacement for `BTreeMap`
   * `SBTreeSet` in replacement for `BTreeSet`
   * `SCertifiedBTreeMap` in replacement for Dfinity's `RBTree`
+  * `SCertifiedBTreeSet` as a thin wrapper for `SCertifiedBTreeMap<T, ()>`
 * Enforced Rust's borrower rules: 
   * data structures drop automatically when leaving the scope
   * data structures own their inner values, allowing by-reference access
