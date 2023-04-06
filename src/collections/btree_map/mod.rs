@@ -1742,8 +1742,10 @@ impl LeveledList {
         match self {
             LeveledList::None => {}
             LeveledList::Some((v, _)) => {
-                if let Ok(idx) = v[level].binary_search(&ptr) {
-                    v[level].remove(idx);
+                if let Some(level_list) = v.get_mut(level) {
+                    if let Ok(idx) = level_list.binary_search(&ptr) {
+                        level_list.remove(idx);
+                    }
                 }
             }
         }
@@ -1753,7 +1755,8 @@ impl LeveledList {
         match self {
             LeveledList::None => unreachable!(),
             LeveledList::Some((v, max_level)) => {
-                let mut ptr = v[*max_level].pop();
+                let level_list = v.get_mut(*max_level)?;
+                let mut ptr = level_list.pop();
 
                 while ptr.is_none() {
                     if *max_level == 0 {
