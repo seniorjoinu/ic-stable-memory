@@ -23,3 +23,9 @@ impl<'a, T: StableType + AsFixedSizeBytes + Ord> Iterator for SBTreeSetIter<'a, 
         self.iter.next().map(|it| it.0)
     }
 }
+
+impl<'a, T: StableType + AsFixedSizeBytes + Ord> DoubleEndedIterator for SBTreeSetIter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.iter.next_back().map(|it| it.0)
+    }
+}
