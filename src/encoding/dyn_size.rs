@@ -1,6 +1,7 @@
 use candid::de::IDLDeserialize;
 use candid::utils::ArgumentDecoder;
 use candid::{CandidType, Deserialize, Result};
+use serde_bytes::ByteBuf;
 
 /// Trait allowing encoding and decoding of unsized data.
 ///
@@ -77,6 +78,46 @@ impl AsDynSizeBytes for Vec<u8> {
         v.copy_from_slice(&buf[usize::SIZE..(usize::SIZE + len)]);
 
         v
+    }
+}
+
+#[cfg(not(feature = "custom_dyn_encoding"))]
+impl AsDynSizeBytes for ByteBuf {
+    #[inline]
+    fn as_dyn_size_bytes(&self) -> Vec<u8> {
+        let mut v = vec![0u8; usize::SIZE + self.len()];
+
+        self.len().as_fixed_size_bytes(&mut v[0..usize::SIZE]);
+        v[usize::SIZE..(usize::SIZE + self.len())].copy_from_slice(self.as_slice());
+
+        v
+    }
+
+    #[inline]
+    fn from_dyn_size_bytes(buf: &[u8]) -> Self {
+        let len = usize::from_fixed_size_bytes(&buf[0..usize::SIZE]);
+        let mut v = vec![0u8; len];
+
+        v.copy_from_slice(&buf[usize::SIZE..(usize::SIZE + len)]);
+
+        Self::from(v)
+    }
+}
+
+#[cfg(test)]
+mod byte_buf_tests {
+    use crate::encoding::dyn_size::AsDynSizeBytes;
+    use serde_bytes::ByteBuf;
+
+    #[test]
+    fn works_fine() {
+        let v = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let b = ByteBuf::from(v);
+
+        let s = b.as_dyn_size_bytes();
+        let b_copy = ByteBuf::from_dyn_size_bytes(&s);
+
+        assert_eq!(b, b_copy);
     }
 }
 

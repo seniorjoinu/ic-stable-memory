@@ -1,0 +1,7 @@
+{
+    "rust-analyzer.linkedProjects": [
+        "./ic-stable-memory-derive/Cargo.toml",
+        "./ic-stable-memory-derive-tests/Cargo.toml",
+    ],
+    "rust-analyzer.showUnlinkedFileNotification": false
+}
