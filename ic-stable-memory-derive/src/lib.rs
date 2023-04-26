@@ -3,9 +3,7 @@ use crate::candid_as_dyn_size_bytes::derive_candid_as_dyn_size_bytes_impl;
 use crate::fixed_size_as_dyn_size_bytes::derive_fixed_size_as_dyn_size_bytes_impl;
 use crate::stable_type::derive_stable_type_impl;
 use proc_macro::TokenStream as Tokens;
-use proc_macro2::{self, TokenStream};
-use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Fields, Ident, Index};
+use syn::{parse_macro_input, DeriveInput};
 
 mod as_fixed_size_bytes;
 mod candid_as_dyn_size_bytes;

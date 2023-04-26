@@ -1,6 +1,6 @@
 use proc_macro2::{self, TokenStream};
 use quote::quote;
-use syn::{Generics, Ident, Index};
+use syn::{Generics, Ident};
 
 pub fn derive_candid_as_dyn_size_bytes_impl(ident: &Ident, generics: &Generics) -> TokenStream {
     if !generics.params.is_empty() {
