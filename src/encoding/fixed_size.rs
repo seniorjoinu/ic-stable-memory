@@ -12,6 +12,7 @@
 //! [AsFixedSizeBytes] trait encapusaltes these differences providing a simple API.
 
 use candid::{Int, Nat, Principal};
+use ic_stable_memory_derive::{AsFixedSizeBytes, StableType};
 use num_bigint::{BigInt, BigUint, Sign};
 use ic_ledger_types::Subaccount;
 
@@ -463,21 +464,18 @@ impl AsFixedSizeBytes for Principal {
 }
 
 impl AsFixedSizeBytes for Subaccount{
-    const SIZE: usize = 32;
+    const SIZE: usize = <[u8; 32]>::SIZE;
     type Buf = [u8; Self::SIZE];
 
+    #[inline]
     fn as_fixed_size_bytes(&self, buf: &mut [u8]) {
-        let slice = self.0.as_slice();
-
-        buf[0] = slice.len() as u8;
-        buf[1..(1 + slice.len())].copy_from_slice(slice)
+        self.0.as_fixed_size_bytes(buf);
     }
 
+    #[inline]
     fn from_fixed_size_bytes(buf: &[u8]) -> Self {
-        let len = buf[0] as usize;
-        let mut subaccount: [u8; 32] = [0; 32];
-        subaccount.copy_from_slice(&buf[1..(1 + len)]);
-        Subaccount(subaccount)
+        let inner = <[u8; 32]>::from_fixed_size_bytes(buf);
+        Subaccount(inner)
     }
 }
 
@@ -578,4 +576,14 @@ mod private {
 
     impl<const N: usize> Sealed for [u8; N] {}
     impl Sealed for Vec<u8> {}
+}
+
+#[test]
+fn subaccount_test() {
+  assert_eq!(Subaccount::SIZE, 32);
+  let acc = Subaccount([1;32]);
+  let buf = acc.as_new_fixed_size_bytes();
+  let acc_copy = Subaccount::from_fixed_size_bytes(&buf);
+
+  assert_eq!(acc, acc_copy);
 }
