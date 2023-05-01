@@ -1,0 +1,22 @@
+[package]
+name = "schema_evolution"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+codegen-units = 1
+strip = true
+lto = true
+opt-level = 'z'
+panic = 'abort'
+
+[lib]
+path = "src/actor.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+ic-cdk = "0.7.4"
+ic-cdk-macros = "0.6.10"
+serde = "1.0.160"
+candid = "0.8.4"
+ic-stable-memory = { path = "../../.." }

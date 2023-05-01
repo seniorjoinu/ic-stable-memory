@@ -1,0 +1,24 @@
+type User001 = record {
+    id : principal;
+    name : text;
+};
+
+type User002 = record {
+    id : principal;
+    first_name : text;
+    last_name : text;
+};
+
+type UserLatest = User002;
+
+type User = variant {
+    V001 : User001;
+    V002 : User002;
+};
+
+service : {
+    update_user : (principal, text, text) -> ();
+
+    create_user : (UserLatest) -> ();
+    get_user : (principal) -> (opt User) query;
+};

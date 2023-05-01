@@ -444,6 +444,21 @@ impl<T: StableType + AsFixedSizeBytes> SVec<T> {
         Ok(())
     }
 
+    fn grow(&mut self, new_capacity: usize) -> Result<bool, OutOfMemory> {
+        if new_capacity <= self.cap {
+            return Ok(false);
+        }
+
+        self.cap = new_capacity;
+        assert!(self.cap <= Self::max_capacity());
+
+        let slice = unsafe { SSlice::from_ptr(self.ptr).unwrap() };
+
+        self.ptr = unsafe { reallocate(slice, (self.cap * T::SIZE) as u64)?.as_ptr() };
+
+        Ok(true)
+    }
+
     pub(crate) fn get_element_ptr(&self, idx: usize) -> Option<StablePtr> {
         if idx < self.len() {
             Some(SSlice::_offset(self.ptr, (idx * T::SIZE) as u64))
@@ -538,6 +553,32 @@ impl<T: StableType + AsFixedSizeBytes> Drop for SVec<T> {
                 self.stable_drop();
             }
         }
+    }
+}
+
+impl SVec<u8> {
+    pub fn from_std_blob<T: AsRef<[u8]>>(blob: T) -> Result<Self, OutOfMemory> {
+        let b = blob.as_ref();
+        let mut svec = SVec::<u8>::new_with_capacity(b.len())?;
+        svec.len = b.len();
+
+        let ptr = SSlice::_offset(svec.ptr, 0);
+        unsafe { crate::mem::write_bytes(ptr, b) };
+
+        Ok(svec)
+    }
+
+    pub fn as_std_blob(&self) -> Vec<u8> {
+        let mut blob = vec![0; self.len()];
+
+        let ptr = SSlice::_offset(self.ptr, 0);
+        unsafe { crate::mem::read_bytes(ptr, &mut blob) };
+
+        return blob;
+    }
+
+    pub fn extend_from_slice(&mut self, slice: &[u8]) {
+        self.grow(new_capacity)
     }
 }
 

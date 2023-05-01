@@ -30,6 +30,8 @@ pub mod encoding;
 pub mod mem;
 /// Stable memory smart-pointers
 pub mod primitive;
+/// Stable memory native types
+pub mod types;
 /// Various utilities: certification, stable memory API wrapper etc.
 pub mod utils;
 
@@ -41,8 +43,8 @@ pub use encoding::{AsDynSizeBytes, AsFixedSizeBytes, Buffer};
 pub use primitive::s_box::SBox;
 pub use primitive::StableType;
 pub use utils::certification::{
-    empty, empty_hash, fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, AsHashTree,
-    AsHashableBytes,
+    empty, empty_hash, fork, fork_hash, labeled, labeled_hash, leaf, leaf_hash, pruned, AsHashTree,
+    AsHashableBytes, HashTree,
 };
 
 thread_local! {

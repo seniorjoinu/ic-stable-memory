@@ -1,0 +1,16 @@
+{
+  "canisters": {
+    "schema_evolution": {
+      "candid": "./v1.did",
+      "package": "schema_evolution",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "version": 1
+}
