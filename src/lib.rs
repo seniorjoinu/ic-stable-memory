@@ -30,6 +30,8 @@ pub mod encoding;
 pub mod mem;
 /// Stable memory smart-pointers
 pub mod primitive;
+/// Stable memory native types
+pub mod types;
 /// Various utilities: certification, stable memory API wrapper etc.
 pub mod utils;
 
