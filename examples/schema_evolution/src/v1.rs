@@ -27,6 +27,13 @@ impl User {
         }
     }
 
+    pub fn as_latest(&self) -> Self {
+        match self {
+            User::V001(_) => self.clone(),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn latest_inner_mut(&mut self) -> &mut UserLatest {
         match self {
             User::V001(u) => u,

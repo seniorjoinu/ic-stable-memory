@@ -15,6 +15,7 @@ use v1::{User, UserLatest};
 mod v2;
 use v2::{User, UserLatest};
  */
+
 #[update]
 fn create_user(user_payload: UserLatest) {
     with_state(|state| {
