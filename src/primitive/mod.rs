@@ -3,6 +3,7 @@
 use candid::{Int, Nat, Principal};
 use serde_bytes::ByteBuf;
 use std::collections::{BTreeSet, HashSet};
+use ic_ledger_types::Subaccount;
 
 /// [SBox] smart-pointer that allows storing dynamically-sized data to stable memory
 pub mod s_box;
@@ -397,3 +398,4 @@ impl StableType for BTreeSet<Principal> {}
 impl StableType for BTreeSet<Nat> {}
 impl StableType for BTreeSet<Int> {}
 impl StableType for BTreeSet<ByteBuf> {}
+impl StableType for Subaccount{}
